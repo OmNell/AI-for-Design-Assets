@@ -27,6 +27,13 @@ from app.logging_config import configure_logging
 from app.services.crypto import SecretCipher
 from app.services.jobs import JobQueue
 from app.services.thumbs import ThumbService
+from app.services.ai.orchestrator import AiService
+from app.services.ai.settings import AiSettingsService
+from app.services.ai.fields import TagFieldService
+from app.api.ai_settings import router as ai_settings_router
+from app.api.ai_runtime import router as ai_runtime_router
+from app.db.models import Job
+from sqlalchemy.orm import Session
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -43,6 +50,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
         pool = None
         upload = None
         jobs = None
+        ai = None
         try:
             database = Database(config.paths.data_dir)
             application.state.settings = config
@@ -56,19 +64,38 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             application.state.jobs = jobs
             thumbs = ThumbService(application.state.auth, jobs)
             application.state.thumbs = thumbs
-            jobs.register("thumb", thumbs.handle, concurrency=2, retries=1, recoverable=True, state_callback=thumbs.on_job_state)
+            application.state.ai_settings = AiSettingsService(application.state.auth, application.state.cipher)
+            application.state.tag_fields = TagFieldService(application.state.auth)
+            ai = AiService(application.state.auth, jobs, application.state.ai_settings, application.state.cipher, thumbs)
+            application.state.ai = ai
+            def thumb_changed(session: Session, job: Job) -> None:
+                thumbs.on_job_state(session, job)
+                ai.thumb_changed(session, job)
+            jobs.register("thumb", thumbs.handle, concurrency=2, retries=1, recoverable=True, state_callback=thumb_changed)
+            jobs.register("ai_tag_batch", ai.handle_batch, concurrency=1, retries=3, recoverable=True, state_callback=ai.job_changed)
+            # 网络调用的总并发和重试由共享客户端控制，避免两层重试相乘。
+            jobs.register("ai_tag_product", ai.handle_product, concurrency=config.jobs.workers, retries=0, recoverable=True, state_callback=ai.job_changed)
             application.state.auth.on_login = thumbs.resume_for_user
-            upload = UploadService(application.state.auth, thumbs)
+            upload = UploadService(application.state.auth, thumbs, ai)
             application.state.upload = upload
             jobs.start()
+            ai.start()
             logger.info("工作台启动完成，模式：%s", config.mode)
             yield
         finally:
             try:
                 try:
                     try:
-                        if jobs is not None:
-                            jobs.shutdown()
+                        try:
+                            if ai is not None:
+                                ai.shutdown()
+                        finally:
+                            try:
+                                if jobs is not None:
+                                    jobs.shutdown()
+                            finally:
+                                if ai is not None:
+                                    ai.close_clients()
                     finally:
                         if upload is not None:
                             upload.shutdown()
@@ -88,6 +115,8 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
     application.include_router(auth_router)
     application.include_router(admin_router)
     application.include_router(upload_router)
+    application.include_router(ai_settings_router)
+    application.include_router(ai_runtime_router)
     static_root = static_dir.resolve()
 
     @application.get("/{path:path}", include_in_schema=False)

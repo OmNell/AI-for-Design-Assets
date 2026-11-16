@@ -132,3 +132,62 @@ class PreflightAck(Record, Base):
     __table_args__ = (UniqueConstraint("batch_id", "rule_code"),)
     batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"))
     rule_code: Mapped[str] = mapped_column(String)
+
+
+class TagField(Record, Base):
+    __tablename__ = "tag_fields"
+    key: Mapped[str] = mapped_column(String, unique=True)
+    label: Mapped[str] = mapped_column(String)
+    hint: Mapped[str] = mapped_column(Text)
+    sort_order: Mapped[int] = mapped_column(Integer)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class BatchProduct(Record, Base):
+    __tablename__ = "batch_products"
+    __table_args__ = (UniqueConstraint("batch_id", "batch_file_id"),)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), index=True)
+    batch_file_id: Mapped[int] = mapped_column(ForeignKey("batch_files.id"))
+    kind: Mapped[str] = mapped_column(String)
+    display_name: Mapped[str] = mapped_column(String)
+    existing_product_id: Mapped[int | None] = mapped_column(Integer)
+    ai_status: Mapped[str] = mapped_column(String, default="pending")
+    ai_error: Mapped[str | None] = mapped_column(Text)
+    tags: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    free_text: Mapped[str] = mapped_column(Text, default="")
+    relation_items: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    relation_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    flags: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+
+class CompanyIndustryMap(Record, Base):
+    __tablename__ = "company_industry_map"
+    company_name: Mapped[str] = mapped_column(String, unique=True)
+    aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
+    company_seq: Mapped[int] = mapped_column(Integer)
+    industry_name: Mapped[str] = mapped_column(String)
+    industry_seq: Mapped[int] = mapped_column(Integer)
+
+
+class AiCall(Record, Base):
+    __tablename__ = "ai_calls"
+    model: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String)
+    batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"), index=True)
+    batch_product_id: Mapped[int | None] = mapped_column(ForeignKey("batch_products.id"))
+    duration_ms: Mapped[int] = mapped_column(Integer)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    success: Mapped[bool] = mapped_column(Boolean)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class AiAlert(Record, Base):
+    __tablename__ = "ai_alerts"
+    __table_args__ = (UniqueConstraint("batch_id", "run_id"),)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"))
+    run_id: Mapped[str] = mapped_column(String)
+    reason: Mapped[str] = mapped_column(Text)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

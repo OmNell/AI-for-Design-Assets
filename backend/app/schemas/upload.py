@@ -75,3 +75,35 @@ class BatchResponse(BaseModel):
     parallel_files: int
     upload_token: str | None = None
     differences: dict[str, list[str]] | None = None
+    owner_id: int | None = None
+    uploader_id: int | None = None
+    recommended_path: str | None = None
+    tag_labels: dict[str, str] = Field(default_factory=dict)
+    ai_progress: AiProgress = Field(default_factory=lambda: AiProgress())
+    products: list[BatchProductResponse] = Field(default_factory=list)
+
+
+class AiProgress(BaseModel):
+    items_total: int = 0
+    items_done: int = 0
+    sets_total: int = 0
+    sets_done: int = 0
+    failed: int = 0
+
+
+class BatchProductResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    batch_file_id: int
+    kind: str
+    display_name: str
+    ai_status: str
+    ai_error: str | None
+    tags: dict[str, object]
+    free_text: str
+    flags: list[str]
+    relation_items: list[dict[str, object]]
+    relation_confirmed: bool
+
+
+BatchResponse.model_rebuild()

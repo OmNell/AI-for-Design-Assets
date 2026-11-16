@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from fastapi.responses import Response
 
-from app.api.dependencies import client_host, require_role
+from app.api.dependencies import client_host, require_role, require_login
 from app.db.models import User
 from app.schemas.auth import Role
 from app.schemas.upload import BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, ResumeRequest
@@ -48,8 +48,13 @@ def list_batches(request: Request, user: User = Depends(require_role(Role.UPLOAD
 
 
 @router.get("/{id}", response_model=BatchResponse)
-def detail(id: int, request: Request, user: User = Depends(require_role(Role.UPLOADER))) -> BatchResponse:
-    return request.app.state.upload.state(id, user, client_host(request))
+def detail(id: int, request: Request, user: User = Depends(require_login)) -> BatchResponse:
+    return request.app.state.upload.view(id, user)
+
+
+@router.post("/{id}/retry-ai", response_model=BatchResponse)
+def retry_ai(id: int, request: Request, user: User = Depends(require_login)) -> BatchResponse:
+    return request.app.state.upload.retry_ai(id, user, client_host(request))
 
 
 @router.get("/{id}/upload-state", response_model=BatchResponse)

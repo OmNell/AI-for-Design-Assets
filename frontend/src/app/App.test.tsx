@@ -70,3 +70,27 @@ it('生产模式不显示组件入口且直接访问也重定向首页', async (
   expect(window.location.pathname).toBe('/')
   expect([...host.querySelectorAll('nav a')].map(node => node.textContent)).not.toContain('组件样例')
 })
+
+it('会话失效后换账号，不展示前一个账号缓存的批次详情', async () => {
+  logged = true; window.history.replaceState({}, '', '/batches/1')
+  const originalFetch = fetch
+  let batchReads = 0
+  vi.stubGlobal('fetch', vi.fn((url: string, options: RequestInit) => {
+    if (url === '/api/batches/1') {
+      batchReads++
+      if (batchReads === 1) return Promise.resolve(response({ id: 1, batch_no: 'B1', folder_name: '前一账号的私有批次', status: '待核对', files: [], products: [], uploader_id: 1 }))
+      return new Promise<Response>(() => undefined)
+    }
+    return originalFetch(url, options)
+  }))
+  act(() => root.render(<App />))
+  await until(() => host.textContent!.includes('前一账号的私有批次'))
+  act(() => useAuthStore.getState().clear('登录已过期'))
+  await until(() => window.location.pathname === '/login')
+  act(() => useAuthStore.getState().setUser({ id: 2, username: 'other', display_name: null, roles: ['uploader'], enabled: true }))
+  await until(() => window.location.pathname === '/')
+  act(() => { window.history.pushState({}, '', '/batches/1'); window.dispatchEvent(new PopStateEvent('popstate')) })
+  await until(() => batchReads === 2)
+  expect(host.textContent).not.toContain('前一账号的私有批次')
+  expect(host.textContent).toContain('正在加载批次')
+})

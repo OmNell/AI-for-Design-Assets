@@ -12,9 +12,9 @@ from collections.abc import AsyncIterator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Batch, BatchFile, PreflightAck, Project, User, utcnow
+from app.db.models import Batch, BatchFile, BatchProduct, PreflightAck, Project, User, utcnow
 from app.errors import AppError
-from app.schemas.upload import BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, ResumeRequest, UploadFileResponse
+from app.schemas.upload import AiProgress, BatchProductResponse, BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, ResumeRequest, UploadFileResponse
 from app.services.auth.service import AuthService, token_hash
 from app.services.nas import NasFs, NasUnavailable, Region
 from app.services.nas.factory import create_paths
@@ -22,6 +22,7 @@ from app.services.oplog import OplogService
 from app.services.preflight import check, ignored
 from .fingerprint import HashState, fingerprint
 from app.services.thumbs import ThumbService
+from app.services.ai.orchestrator import AiService
 
 UPLOADING = "上传中"
 INTERRUPTED = "上传中断"
@@ -31,9 +32,10 @@ AI = "AI 处理中"
 
 
 class UploadService:
-    def __init__(self, auth: AuthService, thumbs: ThumbService | None = None) -> None:
+    def __init__(self, auth: AuthService, thumbs: ThumbService | None = None, ai: AiService | None = None) -> None:
         self.auth = auth
         self.thumbs = thumbs
+        self.ai = ai
         self.database = auth.database
         self.lock = auth.lock
         self.paths = create_paths(auth.config)
@@ -112,12 +114,45 @@ class UploadService:
     def _snapshot(self, session: Session, batch: Batch, token: str | None = None,
                   differences: dict[str, list[str]] | None = None) -> BatchResponse:
         session.flush()
+        products = list(session.scalars(select(BatchProduct).where(BatchProduct.batch_id == batch.id).order_by(BatchProduct.id)))
         return BatchResponse(id=batch.id, batch_no=batch.batch_no, project_code=batch.project_code,
             folder_name=str(batch.payload["folder_name"]), original_folder_name=str(batch.payload["original_folder_name"]),
             status=batch.status, queued=bool(batch.payload.get("queued")), won=batch.won, updated_at=batch.updated_at,
             files=[UploadFileResponse.model_validate(file) for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id).order_by(BatchFile.id))],
             directories=list(batch.payload.get("directories", [])), chunk_bytes=self.chunk_bytes,
-            parallel_files=self.auth.config.upload.parallel_files, upload_token=token, differences=differences)
+            parallel_files=self.auth.config.upload.parallel_files, upload_token=token, differences=differences,
+            owner_id=batch.owner_id, uploader_id=batch.uploader_id, recommended_path=batch.recommended_path,
+            tag_labels={field["key"]: field["label"] for field in batch.payload.get("ai_fields", [])},
+            products=[BatchProductResponse.model_validate(product) for product in products],
+            ai_progress=AiProgress(items_total=sum(p.kind == "item" for p in products), items_done=sum(p.kind == "item" and p.ai_status == "done" for p in products),
+                sets_total=sum(p.kind == "set" for p in products), sets_done=sum(p.kind == "set" and p.ai_status == "done" for p in products),
+                failed=sum(p.ai_status == "failed" for p in products)))
+
+    def view(self, batch_id: int, actor: User) -> BatchResponse:
+        with self.lock, self.database.session() as session:
+            batch = session.get(Batch, batch_id)
+            if batch is None:
+                raise AppError("batch_not_found", "批次不存在", 404)
+            user = session.get(User, actor.id)
+            if user is None or not user.enabled or not ("admin" in user.roles or user.id in (batch.owner_id, batch.uploader_id)
+                or user.id == batch.first_reviewer_id and "first_reviewer" in user.roles
+                or user.id == batch.final_reviewer_id and "final_reviewer" in user.roles):
+                raise AppError("forbidden", "无权查看该批次", 403)
+            return self._snapshot(session, batch)
+
+    def retry_ai(self, batch_id: int, actor: User, host: str) -> BatchResponse:
+        with self.lock, self.database.session() as session:
+            batch = session.get(Batch, batch_id)
+            if batch is None:
+                raise AppError("batch_not_found", "批次不存在", 404)
+            user = session.get(User, actor.id)
+            if user is None or not user.enabled or not ("admin" in user.roles or user.id == batch.uploader_id and set(user.roles) & {"uploader", "first_reviewer", "final_reviewer"}):
+                raise AppError("forbidden", "只有上传人或管理员可以重试 AI", 403)
+            if batch.status not in (AI, "待核对", "AI 处理失败") or self.ai is None:
+                raise AppError("invalid_batch_state", "该批次当前不能重试 AI", 409)
+            self.ai.start_batch(session, batch, user, host)
+            OplogService(session).write(user.id, ",".join(user.roles), "重试整批 AI", "batch", str(batch.id), None, {"status": AI}, "成功", host)
+            return self._snapshot(session, batch)
 
     def _fs(self, batch: Batch) -> NasFs:
         return self.auth.pool.get(batch.uploader_id)
@@ -353,13 +388,15 @@ class UploadService:
             batch = self._batch(session, batch_id, user)
             if batch.status == WITHDRAWN:
                 return self._snapshot(session, batch)
-            if batch.status not in (UPLOADING, INTERRUPTED, STAGED):
+            if batch.status not in (UPLOADING, INTERRUPTED, STAGED, AI):
                 raise AppError("invalid_batch_state", "该状态不能取消上传", 409)
             fs = self._fs(batch)
             root = self.paths.join(Region.TEMP, batch.batch_no)
             if fs.exists(root):
                 fs.delete(root, recursive=True)
             batch.status = WITHDRAWN
+            if self.ai is not None:
+                self.ai.cancel_jobs(session, batch, "批次已撤回", user.id, host)
             if self.thumbs is not None:
                 self.thumbs.invalidate(batch.id)
             batch.payload = {**batch.payload, "upload_token_hash": None, "queued": False}
@@ -376,6 +413,8 @@ class UploadService:
             if batch.status != STAGED:
                 raise AppError("invalid_batch_state", "只有已暂存批次可以确认", 409)
             batch.status = AI
+            if self.ai is not None:
+                self.ai.start_batch(session, batch, user, host)
             self._log(session, batch, "确认开始 AI 处理", "uploader", host)
             return self._snapshot(session, batch)
 

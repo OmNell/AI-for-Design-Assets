@@ -153,9 +153,9 @@ export function UploadPage() {
       <span className="break-all">{file.rel_path}</span></div><span className="shrink-0 text-slate-500">{file.upload_status === 'done' ? '已完成' : file.upload_status === 'partial' ? '上传中' : '等待'} · {formatSize(file.bytes_received)} / {formatSize(file.size)}</span></div>)}</div>
     <div className="flex gap-4">{running && <GlassButton onClick={() => void pause()}>暂停</GlassButton>}{['上传中', '上传中断', '已暂存'].includes(batch.status) && <GlassButton disabled={busy} onClick={() => void cancel()}>取消上传</GlassButton>}
       {batch.status === '上传中断' && <GlassButton onClick={() => { setBatch(null); navigate(`/upload?resume=${batch.id}`) }}>重新拖入继续</GlassButton>}
-      {batch.status === '已暂存' && <GlassButton onClick={() => { void confirmBatch(batch.id).then(apply).catch((reason: Error) => setError(reason.message)) }}>确认，开始 AI 处理</GlassButton>}</div>
+      {batch.status === '已暂存' && <GlassButton disabled={busy} onClick={() => { setBusy(true); void confirmBatch(batch.id).then(value => { apply(value); navigate(`/batches/${value.id}`) }).catch((reason: Error) => setError(reason.message)).finally(() => setBusy(false)) }}>确认，开始 AI 处理</GlassButton>}</div>
     {batch.status === '已暂存' && <p className="mt-5 text-emerald-800">{batch.files.length} 个文件已到达临时区，指纹已计算；空目录已保留。</p>}
-    {batch.status === 'AI 处理中' && <p role="status" className="mt-5 text-emerald-800">AI 处理功能尚未开放</p>}
+    {['AI 处理中', 'AI 处理失败', '待核对'].includes(batch.status) && <p className="mt-5 text-emerald-800"><a href={`/batches/${batch.id}`} className="underline underline-offset-4">查看 AI 进度与结果</a></p>}
   </GlassPanel>}
   <GlassModal open={confirm} title="确认上传" onClose={() => setConfirm(false)}><div className="space-y-3 text-sm"><p>编号：{batch?.project_code ?? (checked?.project_code === 'H' ? `系统将发放 H${year}-四位流水` : checked?.project_code)}</p><p>企业：{checked?.company_name}</p><p>项目：{checked?.project_name}</p><p>{won ? '已中标' : '未中标'} · 位置待定</p><p>{selectionFiles.length} 个文件 · {formatSize(selectionFiles.reduce((sum, file) => sum + (file.file?.size ?? 0), 0))}</p><GlassButton disabled={busy} onClick={() => void createOrResume()}>确认上传</GlassButton></div></GlassModal>
   </div>

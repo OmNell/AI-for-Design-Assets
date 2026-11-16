@@ -6,6 +6,7 @@ import { roleLabels, type User, type Role } from '../api/types'
 import { useAuthStore } from '../stores/auth'
 import { GlassPanel } from '../components/glass/GlassPanel'
 import { GlassButton } from '../components/glass/GlassButton'
+import { AdminLinks } from '../components/AdminLinks'
 
 function UserRow({ user }: { user: User }) {
   const [roles, setRoles] = useState<Role[]>(user.roles)
@@ -29,7 +30,7 @@ function UserRow({ user }: { user: User }) {
 }
 export function RolesPage() {
   const query = useQuery({ queryKey: ['roles'], queryFn: listUsers, retry: false })
-  return <GlassPanel><h1 className="text-2xl font-semibold">角色表</h1><p className="mb-7 mt-3 text-sm text-slate-500">维护已登录用户的工作台角色与启用状态。NAS 目录权限由群晖管理。</p>
+  return <GlassPanel><AdminLinks /><h1 className="text-2xl font-semibold">角色表</h1><p className="mb-7 mt-3 text-sm text-slate-500">维护已登录用户的工作台角色与启用状态。NAS 目录权限由群晖管理。</p>
     {query.isPending ? <p>正在加载用户…</p> : query.isError ? <p role="alert" className="text-red-800">{query.error.message}</p> :
       <table className="w-full text-left"><thead className="text-xs text-slate-500"><tr><th className="p-3">账号</th><th className="p-3">角色（可多选）</th><th className="p-3">状态</th><th className="p-3">操作</th></tr></thead>
         <tbody>{query.data.map(user => <UserRow key={`${user.id}:${user.roles.join(',')}:${user.enabled}`} user={user} />)}</tbody></table>}

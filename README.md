@@ -1,6 +1,6 @@
 # NAS 设计资产工作台
 
-公司内网设计资产工作台。当前完成 WP00～WP05：探路、工程骨架、NAS 接入、登录/角色、预检与分片上传，以及后台任务队列和三档缩略图。AI、核对、审核和补充流程尚未开放。
+公司内网设计资产工作台。当前完成 WP00～WP06：NAS 接入、登录/角色、预检与分片上传、后台队列与缩略图，以及 AI 打标、自由文本字段管理和套装关系推荐。核对编辑、审核、补充流程与向量检索尚未开放。
 
 ## 开发环境
 
@@ -46,6 +46,7 @@ npm --prefix frontend run build
 - 首次启动自动生成 `data/secret.key`、通过 Alembic 创建 `data/app.db`。SQLite 启用 WAL、`busy_timeout=5000` 和外键检查。每次启动执行 `upgrade head`，重复启动不会重建已有表或密钥。
 - 首个迁移包含 `users`、`sessions`、`settings`、`oplog`、`jobs`，WP04 的 `0002_upload` 增加 `projects`、`batches`、`batch_files`、`preflight_acks`。`projects` 本包仅查重，不在上传时创建正式项目。`oplog` 数据库触发器禁止 UPDATE/DELETE。
 - WP05 的 `0003_thumbnails` 增加 batch_files.thumb_status/thumb_error 和 jobs 状态/调度时间索引；启动自动迁移。
+- WP06 的 `0004_ai` 增加 tag_fields、batch_products、company_industry_map、ai_calls、ai_alerts，并初始化业务文档9.5的11个自由文本字段。
 - 密钥 POSIX 权限为 `0600`；Windows 使用受保护 DACL，仅当前服务身份、管理员组及 SYSTEM 可访问。应部署在支持权限控制的本地文件系统，权限设置失败会中止启动。Windows ACL 分支尚待在实际 Windows 环境验证。
 - 密钥与数据库应一并备份；已有密钥无效时会报错，不自动覆盖。删除 `data/` 并重新启动会创建全新数据库与密钥，旧密钥加密的内容无法用新密钥解密。
 - 普通 NAS 密码不写配置；`nas.system_password_enc` 和 `ai.api_key_enc` 只放密文。prod 登录时使用真实 DSM 和本人 SMB；只有显式使用系统会话才解密系统账号密码，不连接百炼。
@@ -341,3 +342,46 @@ Pillow 直接读取本人 NasFs 流，按 EXIF 方向转正，保留比例生成
 **重启恢复需要本人身份：**running 的 thumb/AI 类恢复 queued；其他有副作用的任务标 failed 等待人工处理。缩略图仍必须读 NAS，重启后不能从磁盘找回用户密码，执行取不到连接会失败并明确记录“操作人会话已失效”。上传人重新登录后，这一原因的缩略图任务会自动重排并继续；其他失败需管理员重试。恢复/重试不影响已暂存批次，也不改变原 run_as_user_id。正常停止等待正在执行的任务完成，未开始的任务保留；强退留下的派生临时目录可在停止服务后清理 `data/thumbs/thumb-*`，不要清理原始 NAS 文件。
 
 本地验收：`python -m pytest backend/tests/integration/test_thumbnails_jobs.py -q -s`，包含 20 张 2000×1000 主图上传后 10 秒内三档可访问、EXIF 方向与清除、坏图隔离、404 标记/授权/管理员重试、取消竞态，以及真正子进程执行中 kill 后启动并由本人重新登录恢复。该用例使用 dev/LocalFs，不代表真实 NAS 性能；内网需用专用测试项目重复，并检查三档尺寸、访问权限和断线后的本人会话恢复。
+
+## WP06 · AI 打标与自由文本字段
+
+没有新依赖。更新代码后执行全部 pytest、前端 check，再重启；启动自动迁移至 `0004_ai`。dev 模式永远使用 FakeAiClient，不调用外部模型；prod 使用已保存的百炼兼容配置。设置页保存的配置优先于 config.yaml，生效于后续请求，在途请求继续使用原配置。
+
+- 管理员进入“设置”，填写接口地址、API Key、识图/文本/向量模型、并发数、超时、重试和停滞分钟数。密钥留空保留旧值；写入 settings 的只有 Fernet 密文，读取只返回 api_key_set，表单提交后清空密钥输入。接口地址不接受内嵌凭据/查询参数；服务不跟随重定向。
+- “测试连接”使用已保存配置，分别发一次最小识图、文本、向量请求，逐项显示成功/错误原文（凭据、图片、提示词脱敏）。向量只用于这一次连接测试，不写入向量库或进行向量业务。生产调用协议参考[百炼视觉兼容接口](https://www.alibabacloud.com/help/en/model-studio/qwen-vl-compatible-with-openai)、[百炼向量兼容接口](https://www.alibabacloud.com/help/en/model-studio/embedding-interfaces-compatible-with-openai)；模型和地区地址由管理员按实际账号填写。
+- 管理→标签字段支持新增、改显示名/填写说明、上移下移、启用/停用；删除仅停用。key 是历史值标识，已保存后不改；新增不同 key 等同新增字段。GET/PUT 使用完整 `{version,fields}` 清单，保存后全局版本+1，版本冲突409需刷新。没有可选值、数量上限或人工必填；停用字段历史值仍保留。
+- 初始化的11字段为 category/material/color/style/festival/audience/usage_scene/size/craft/material_name/structure。字段 hint 逐字取自业务9.5。festival 只填具体节日，不针对节日写“通用”；usage_scene 填用途/场合。当前批次开跑时保存字段说明快照；下次打标或整批重试使用最新启用字段。
+
+上传完成后点“确认，开始 AI 处理”会进入 `/batches/{id}` 只读详情：先从企业标准名/别名对照表给出行业/企业位置建议，查不到或存在歧义就“位置待定”，不调用模型猜位置。对照表本包只建表与查找，没有管理/导入页面，生产映射维护留后续工作包；开发测试通过数据库种子验证命中。推荐路径为正式区内的中标状态/行业/企业相对目录，不执行建目录或入库。
+
+所有单品先处理，全部结束后才派发套装；一次套装调用同时打标签与推荐关系。单品清单只含临时序号、名称、标签；额外元数据/停用字段不进入提示词。生产客户端不发送源文件名；已知编号、企业及别名、上传人账号、NAS配置会从候选文字/说明中去除，外发图像只取本地无EXIF且长边≤1024的JPEG。损坏或尚未恢复的送审图不能借系统身份读取NAS，也不会改用原图发送。
+
+模板位于 backend/app/prompts/item_tagging.txt、set_tagging.txt，每次按启用字段逐项列出填写说明，要求仅输出JSON。解析保留 value/ai_value 原文，缺字段补空、多字段丢弃；terms 按顿号、逗号、分号、空格、斜线拆分，去空白和重复，不统一同义词。标黄只有字段 uncertain、一图 multi_object、套装 empty_relation 三种；不做词表、标签矛盾或取值检查。关系序号不在本批单品清单中的丢弃，合法关系存 batch_product_id/source=ai，relation_confirmed 保持false，需后续人工核对。
+
+部分失败仍进“待核对”，全部失败或无主图进“AI 处理失败”。详情每秒更新完成数/失败数、位置、只读标签与关系，不含编辑。上传人/管理员可整批重试；新运行代际使旧在途结果失效，未开始的旧任务取消。处理中上传人可撤回，删除本人临时目录并取消尚未执行的AI任务；已经发出的请求不能撤销，但返回结果不再写入该批次。管理员不能借重试替换原上传人的NAS身份。
+
+每次HTTP尝试（包括重试）记录模型、用途、毫秒耗时和token用量到应用日志及 ai_calls，不保存图片、提示词、源文件名或密钥。网络重试由客户端统一控制，默认额外3次，避免与队列层叠乘；JSON解析失败另外按同一预算重新请求。429/5xx/超时可重试，401等明确失败不盲目重试；业务调用不保存可能回显输入的厂商错误正文。每5秒检查无进展时间，超过阈值为本批次本次运行新增一条 ai_alerts，管理员在设置页查看；后续进展不会删除历史异常。
+
+| 接口 | 权限/用途 |
+|---|---|
+| GET/PUT `/api/settings/ai` | 管理员读取/保存；PUT的api_key可省略或空串保留 |
+| POST `/api/settings/ai/test` | 管理员，返回 `{results:[{kind,model,success,error}]}` |
+| GET/PUT `/api/admin/tag-fields` | 管理员，完整版本化字段清单 |
+| GET `/api/admin/ai-alerts` | 管理员停滞异常列表 |
+| POST `/api/batches/{id}/retry-ai` | 上传人或管理员，处理中/待核对/AI失败可重跑 |
+| GET `/api/batches/{id}` | 本人/责任人/指定审核人/管理员，只读进度和商品结果 |
+
+Fake触发词可用于主图文件名：`无法判断`/`uncertain`、`一图多品`/`multi`、`空关系`/`empty_relation`（套装）、`调用失败`/`fail`。普通名称返回确定的11字段与自由描述，多值terms可直接观察；名字只在假模型内存里用于选择场景。
+
+默认自动化全部在 dev/MockTransport 跑，不需要百炼凭据。真实百炼验收另有两项 `bailian` 用例，必须由人在公司内网显式运行：先准备本机已获准发送的10张真实主图样本，不要指向NAS共享或映射盘；通过环境变量提供以下值，不将真实Key写入config示例、shell历史或报告：
+
+- BAILIAN_TEST_API_KEY（推荐用Python getpass隐藏输入后置入当前进程环境）。
+- BAILIAN_TEST_MODEL_VISION、BAILIAN_TEST_MODEL_TEXT、BAILIAN_TEST_MODEL_EMBED。
+- 可选 BAILIAN_TEST_BASE_URL，默认百炼北京兼容地址；地区须与账号模型匹配。
+- BAILIAN_TEST_IMAGES：本机10张样本目录。
+
+```sh
+python -m pytest backend/tests/bailian -m bailian -q -s --tb=short
+```
+
+缺环境变量会明确失败，不会假装通过。测试先用Pillow生成无EXIF的1024 JPEG再发，报告仅临时序号和festival/usage_scene值；不要加 `--showlocals`。人工抽看节日与使用场景是否区分，需调整的说明记入 QUESTIONS.md，再通过字段管理更新。显式测试会调用真实服务并产生实际用量；本次开发没有执行真实调用。

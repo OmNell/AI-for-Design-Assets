@@ -76,7 +76,13 @@ def test_upload_duplicate_out_of_order_complete_confirm(upload_client: TestClien
     assert done.json()["files"][0]["fingerprint"] == hashlib.sha256(b"abcdefghij").hexdigest()
     assert client.post(f'/api/batches/{batch["id"]}/confirm').json()["status"] == "AI 处理中"
     assert client.post(f'/api/batches/{batch["id"]}/confirm').status_code == 409
-    assert client.post(f'/api/batches/{batch["id"]}/cancel').status_code == 409
+    canceled = client.post(f'/api/batches/{batch["id"]}/cancel')
+    # WP06 允许处理中撤回；后台坏图也可能已先结束为 AI 处理失败。
+    if canceled.status_code == 200:
+        assert canceled.json()["status"] == "已撤回"
+    else:
+        assert canceled.status_code == 409
+        assert client.get(f'/api/batches/{batch["id"]}').json()["status"] in ("AI 处理失败", "待核对")
     with client.app.state.database.session() as session:
         assert "P08" in list(session.scalars(select(PreflightAck.rule_code)))
         assert session.scalar(select(Project)) is None
