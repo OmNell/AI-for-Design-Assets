@@ -1,0 +1,63 @@
+"""通过文件流生成三档 JPEG 缓存，不把原图复制到本地。"""
+from __future__ import annotations
+
+import os
+import struct
+import tempfile
+from pathlib import Path
+from typing import BinaryIO
+
+from PIL import Image, ImageOps, UnidentifiedImageError
+
+VARIANT_SIZES = (300, 1600, 1024)
+
+
+class ImageDecodeError(Exception):
+    """可安全向用户展示的图像解码失败原因。"""
+
+
+def _decode(source: BinaryIO) -> Image.Image:
+    try:
+        # 预检允许的主图格式只有 JPEG 和 PNG，避免启用无关解码器。
+        with Image.open(source, formats=("JPEG", "PNG")) as original:
+            original.seek(0)
+            if Image.MAX_IMAGE_PIXELS is not None and original.width * original.height > Image.MAX_IMAGE_PIXELS:
+                raise ImageDecodeError("图片像素过大，无法生成缩略图")
+            original.load()
+            with ImageOps.exif_transpose(original) as oriented:
+                if "A" in oriented.getbands() or "transparency" in oriented.info:
+                    with oriented.convert("RGBA") as rgba, rgba.getchannel("A") as alpha:
+                        decoded = Image.new("RGB", rgba.size, "white")
+                        decoded.paste(rgba, mask=alpha)
+                else:
+                    decoded = oriented.convert("RGB")
+                # 只保留像素，元数据不进入任何输出档位。
+                decoded.info.clear()
+                return decoded
+    except Image.DecompressionBombError:
+        raise ImageDecodeError("图片像素过大，无法生成缩略图") from None
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError, EOFError, struct.error, OverflowError, MemoryError):
+        raise ImageDecodeError("图片损坏或无法解码") from None
+
+
+def render_variants(source: BinaryIO, destination: Path) -> None:
+    """校正方向后保比例缩小；小图不放大，临时文件全部完成才发布。"""
+    temporary: list[tuple[Path, Path]] = []
+    with _decode(source) as decoded:
+        destination.mkdir(parents=True, exist_ok=True)
+        try:
+            for size in VARIANT_SIZES:
+                with decoded.copy() as variant:
+                    variant.thumbnail((size, size), Image.Resampling.LANCZOS)
+                    variant.info.clear()
+                    with tempfile.NamedTemporaryFile(prefix=f".{size}-", suffix=".tmp", dir=destination, delete=False) as output:
+                        path = Path(output.name)
+                        temporary.append((path, destination / f"{size}.jpg"))
+                        variant.save(output, format="JPEG", quality=85, optimize=True)
+                        output.flush()
+                        os.fsync(output.fileno())
+            for path, target in temporary:
+                path.replace(target)
+        finally:
+            for path, _ in temporary:
+                path.unlink(missing_ok=True)

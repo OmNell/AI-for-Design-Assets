@@ -21,6 +21,7 @@ from app.services.nas.factory import create_paths
 from app.services.oplog import OplogService
 from app.services.preflight import check, ignored
 from .fingerprint import HashState, fingerprint
+from app.services.thumbs import ThumbService
 
 UPLOADING = "上传中"
 INTERRUPTED = "上传中断"
@@ -30,8 +31,9 @@ AI = "AI 处理中"
 
 
 class UploadService:
-    def __init__(self, auth: AuthService) -> None:
+    def __init__(self, auth: AuthService, thumbs: ThumbService | None = None) -> None:
         self.auth = auth
+        self.thumbs = thumbs
         self.database = auth.database
         self.lock = auth.lock
         self.paths = create_paths(auth.config)
@@ -250,6 +252,10 @@ class UploadService:
                 file.bytes_received = min(actual // self.chunk_bytes * self.chunk_bytes, file.size)
                 file.upload_status = "partial" if file.bytes_received else "pending"
                 file.fingerprint = None
+                file.thumb_status = None
+                file.thumb_error = None
+                if self.thumbs is not None:
+                    self.thumbs.invalidate(batch.id, file.id)
             if actual:
                 with fs.open_write(path, append=True) as stream:
                     stream.truncate(file.bytes_received)
@@ -302,9 +308,13 @@ class UploadService:
             if file is None or file.batch_id != batch_id:
                 raise AppError("file_not_found", "文件不存在于该批次", 404)
             if batch.status == STAGED and file.upload_status == "done":
+                if self.thumbs is not None:
+                    self.thumbs.enqueue(session, batch, file)
                 return self._snapshot(session, batch)
             batch, file, fs = self._receiving(session, batch_id, user, file_id)
             if file.upload_status == "done":
+                if self.thumbs is not None:
+                    self.thumbs.enqueue(session, batch, file)
                 return self._snapshot(session, batch)
             path = self._file_path(batch, file)
             if file.size == 0 and not fs.exists(path):
@@ -323,6 +333,8 @@ class UploadService:
             batch.payload = {**batch.payload, "fingerprint_kinds": {**batch.payload.get("fingerprint_kinds", {}), str(file_id): kind}}
             self._hashes.pop((batch_id, file_id), None)
             self._log(session, batch, "文件上传完成", "uploader", host)
+            if self.thumbs is not None:
+                self.thumbs.enqueue(session, batch, file)
             self._finish_if_ready(session, batch, host)
             return self._snapshot(session, batch)
 
@@ -348,6 +360,8 @@ class UploadService:
             if fs.exists(root):
                 fs.delete(root, recursive=True)
             batch.status = WITHDRAWN
+            if self.thumbs is not None:
+                self.thumbs.invalidate(batch.id)
             batch.payload = {**batch.payload, "upload_token_hash": None, "queued": False}
             self._log(session, batch, "取消上传", "uploader", host)
             self._release(batch)
@@ -387,6 +401,8 @@ class UploadService:
                     if fs.exists(target):
                         fs.delete(target)
                     self._hashes.pop((batch.id, old[path].id), None)
+                    if self.thumbs is not None:
+                        self.thumbs.invalidate(batch.id, old[path].id)
                     if path in differences["missing"]:
                         session.delete(old.pop(path))
                     else:
@@ -395,6 +411,8 @@ class UploadService:
                         old[path].bytes_received = 0
                         old[path].upload_status = "pending"
                         old[path].fingerprint = None
+                        old[path].thumb_status = None
+                        old[path].thumb_error = None
                 for path in differences["added"]:
                     file = BatchFile(batch_id=batch.id, rel_path=path, size=new[path].size, mtime=new[path].mtime)
                     session.add(file)
@@ -412,6 +430,9 @@ class UploadService:
                     self._repair(session, batch, file, fs, host)
                 elif not fs.exists(self._file_path(batch, file)) or fs.stat(self._file_path(batch, file)).size != file.size:
                     file.upload_status = "pending"; file.bytes_received = 0; file.fingerprint = None
+                    file.thumb_status = None; file.thumb_error = None
+                    if self.thumbs is not None:
+                        self.thumbs.invalidate(batch.id, file.id)
             present_acks = set(session.scalars(select(PreflightAck.rule_code).where(PreflightAck.batch_id == batch.id)))
             for code in set(body.acks) - present_acks:
                 if code in {"P07", "P08", "P09"}:

@@ -1,6 +1,6 @@
 # NAS 设计资产工作台
 
-公司内网设计资产工作台。当前完成 WP00～WP04：探路、工程骨架、NAS 基础模块、登录/角色/界面框架，以及项目文件夹预检、分片上传与断点续传。AI、核对、审核和补充流程尚未开放。
+公司内网设计资产工作台。当前完成 WP00～WP05：探路、工程骨架、NAS 接入、登录/角色、预检与分片上传，以及后台任务队列和三档缩略图。AI、核对、审核和补充流程尚未开放。
 
 ## 开发环境
 
@@ -45,6 +45,7 @@ npm --prefix frontend run build
 - `paths.data_dir` 默认 `./data`；相对路径以配置文件所在目录为准。日志也位于该目录下的 `logs/`，每天滚动，保留 30 个归档。
 - 首次启动自动生成 `data/secret.key`、通过 Alembic 创建 `data/app.db`。SQLite 启用 WAL、`busy_timeout=5000` 和外键检查。每次启动执行 `upgrade head`，重复启动不会重建已有表或密钥。
 - 首个迁移包含 `users`、`sessions`、`settings`、`oplog`、`jobs`，WP04 的 `0002_upload` 增加 `projects`、`batches`、`batch_files`、`preflight_acks`。`projects` 本包仅查重，不在上传时创建正式项目。`oplog` 数据库触发器禁止 UPDATE/DELETE。
+- WP05 的 `0003_thumbnails` 增加 batch_files.thumb_status/thumb_error 和 jobs 状态/调度时间索引；启动自动迁移。
 - 密钥 POSIX 权限为 `0600`；Windows 使用受保护 DACL，仅当前服务身份、管理员组及 SYSTEM 可访问。应部署在支持权限控制的本地文件系统，权限设置失败会中止启动。Windows ACL 分支尚待在实际 Windows 环境验证。
 - 密钥与数据库应一并备份；已有密钥无效时会报错，不自动覆盖。删除 `data/` 并重新启动会创建全新数据库与密钥，旧密钥加密的内容无法用新密钥解密。
 - 普通 NAS 密码不写配置；`nas.system_password_enc` 和 `ai.api_key_enc` 只放密文。prod 登录时使用真实 DSM 和本人 SMB；只有显式使用系统会话才解密系统账号密码，不连接百炼。
@@ -308,3 +309,35 @@ upload:
 小于等于阈值的指纹是完整 SHA-256。大文件快速指纹为 `SHA256(首4MiB || 尾4MiB || 文件大小的 ASCII 十进制)`；`batch_files.fingerprint` 存摘要，类型暂存在批次 payload。服务重启丢失增量哈希时，从 NAS 以 1MiB 块重读完整指纹；快速指纹只读首尾。NAS 已写但数据库未提交的尾部在重试/续传时截断至确认偏移，文件变短则回退至完整分片边界。NAS 和 SQLite 无法原子提交；取消或磁盘故障后如仍失败，应重新登录重试，权限/硬件问题需现场处理。
 
 验收建议：在 dev 模式准备一个含中文、`05 详情页/空目录`、Thumbs.db、主图及 2GB 资料文件的项目，故意缺少 `04授权文件`。核对提醒知晓后可上传、空目录存在、垃圾文件不存在，抽查三个文件的完整 SHA-256；再测试半途关闭浏览器、重新登录/拖入续传，以及取消后临时目录消失。分别测试非三段名称、套装/单品子目录、系统保留名会拦截。`H_企业_项目名` 应获新编号。本机已验证 2GB 浏览器上传和三个完整摘要一致；真实 NAS 的 ACL、SMB 重连及性能仍需公司内网验收，不能用 dev 速度代替。
+
+## WP05 · 后台队列与三档主图缓存
+
+先更新 Python 依赖（新增约定栈内的 Pillow），然后执行全量测试、前端 check 并重启。启动自动升级到 `0003_thumbnails`。已有 config.yaml 可不修改，默认 4 个后台工作线程；要调整可增加：
+
+```yaml
+jobs:
+  workers: 4
+```
+
+`services/jobs` 使用 jobs 表与条件 UPDATE 抢占，处理函数在注册表登记。每类并发上限独立：缩略图 2、AI 类默认 3、入库/入库后操作/巡检/备份各 1。默认失败重试为 AI 类 3 次、其他 1 次，即最多执行 4/2 次；损坏图片、权限拒绝和会话缺失等明确不能重试的失败直接记录原因。定时任务到 scheduled_at 后执行。`enqueue(..., session=...)` 可与业务更新使用同一数据库事务，未提交或回滚的文件完成不会留下可执行任务。本包仅登记 thumb 处理器，未提供 AI 调用或其他业务任务。
+
+主图 complete 与 thumb 入队同事务完成，重复 complete 不重复入队。任务参数只记录批次/文件 ID 和源版本摘要，读取路径从数据库重新拼接；执行时从 SessionPool 获取上传人本人的连接，活动执行保留连接直至完成，不使用系统身份。主图范围是套装/单品下平铺的 jpg/jpeg/png；资料夹内图片不生成缓存。
+
+Pillow 直接读取本人 NasFs 流，按 EXIF 方向转正，保留比例生成以下 JPEG：
+
+| size 参数 | 本地文件 | 最长边上限 |
+|---|---|---|
+| 300 | `data/thumbs/batch/{batch_id}/{batch_file_id}/300.jpg` | 300px 缩略图 |
+| 1600 | 同目录 `1600.jpg` | 1600px 预览图 |
+| 1024 | 同目录 `1024.jpg` | 1024px 送审图 |
+
+小于目标的小图不放大；透明图合成白底，灰度/CMYK 转 RGB，动画 PNG 取首帧。三档都移除 EXIF、ICC、XMP、原注释等元数据；本包不把任何图像发送外部。原件不在本地另存，临时目录只含派生 JPEG。三档全部发布、任务 done 后才允许访问；损坏图片在 batch_files.thumb_error 与 jobs.error 记录中文原因，不改变文件上传 done 或批次已暂存。超出 Pillow 安全像素上限的图片也会安全失败，不能以此宣称支持任意大像素源图。
+
+- `GET /api/batches/{id}/thumbs/{batch_file_id}/{size}`：返回 image/jpeg；仅批次 owner、该批次指定且仍具相应角色的初审/终审、管理员可访问。验证有效工作台 Cookie 与启用状态；本地缓存读取不需要仍有 NAS 连接，不接受上传令牌。使用 private/no-store，防止浏览器复用到其他账号。
+- 未生成时 404，`detail: {retryable: true}`；永久失败 404，`detail: {retryable: false, reason: "图片损坏或无法解码"}`。无对应主图、文件不属该批次或批次已撤回也为不可重试 404。非法 size 返回 422，越权 403，未登录 401。
+- `GET /api/admin/jobs`：管理员查看 ID、类型、状态、attempts、操作人 ID、错误原因和时间，不暴露任务 payload。`POST /api/admin/jobs/{id}/retry` 仅允许失败任务重新排队，清零本轮 attempts；仍使用原 run_as_user_id，不能借管理员 NAS 连接。更改与执行状态均追加 oplog。
+- 上传进度页在每个已完成的主图行显示 300px 缩略图，生成中每秒重试；损坏显示原因。图片请求 401 只提示重新登录查看，不会清掉独立上传状态。取消、文件变化与卸载会中止图片请求并释放 Blob URL；撤回后后台任务也不能重新发布旧缓存。
+
+**重启恢复需要本人身份：**running 的 thumb/AI 类恢复 queued；其他有副作用的任务标 failed 等待人工处理。缩略图仍必须读 NAS，重启后不能从磁盘找回用户密码，执行取不到连接会失败并明确记录“操作人会话已失效”。上传人重新登录后，这一原因的缩略图任务会自动重排并继续；其他失败需管理员重试。恢复/重试不影响已暂存批次，也不改变原 run_as_user_id。正常停止等待正在执行的任务完成，未开始的任务保留；强退留下的派生临时目录可在停止服务后清理 `data/thumbs/thumb-*`，不要清理原始 NAS 文件。
+
+本地验收：`python -m pytest backend/tests/integration/test_thumbnails_jobs.py -q -s`，包含 20 张 2000×1000 主图上传后 10 秒内三档可访问、EXIF 方向与清除、坏图隔离、404 标记/授权/管理员重试、取消竞态，以及真正子进程执行中 kill 后启动并由本人重新登录恢复。该用例使用 dev/LocalFs，不代表真实 NAS 性能；内网需用专用测试项目重复，并检查三档尺寸、访问权限和断线后的本人会话恢复。

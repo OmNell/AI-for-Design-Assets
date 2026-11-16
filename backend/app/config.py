@@ -40,6 +40,10 @@ class UploadConfig(Section):
     full_fingerprint_max_mb: int = Field(default=200, gt=0)
 
 
+class JobsConfig(Section):
+    workers: int = Field(default=4, ge=1, le=32)
+
+
 class AiConfig(Section):
     base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     api_key_enc: SecretStr = SecretStr("")
@@ -87,6 +91,7 @@ class Settings(BaseSettings):
     server: ServerConfig = Field(default_factory=ServerConfig)
     nas: NasConfig = Field(default_factory=NasConfig)
     upload: UploadConfig = Field(default_factory=UploadConfig)
+    jobs: JobsConfig = Field(default_factory=JobsConfig)
     ai: AiConfig = Field(default_factory=AiConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     purge: PurgeConfig = Field(default_factory=PurgeConfig)

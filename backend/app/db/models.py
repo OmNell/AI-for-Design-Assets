@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -61,6 +61,7 @@ class Oplog(Record, Base):
 
 class Job(Record, Base):
     __tablename__ = "jobs"
+    __table_args__ = (Index("ix_jobs_status_scheduled_at", "status", "scheduled_at"),)
     kind: Mapped[str] = mapped_column(String)
     payload: Mapped[object] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String, default="queued")
@@ -119,6 +120,8 @@ class BatchFile(Record, Base):
     upload_status: Mapped[str] = mapped_column(String, default="pending")
     bytes_received: Mapped[int] = mapped_column(Integer, default=0)
     fingerprint: Mapped[str | None] = mapped_column(String)
+    thumb_status: Mapped[str | None] = mapped_column(String)
+    thumb_error: Mapped[str | None] = mapped_column(Text)
     conflict: Mapped[str | None] = mapped_column(String)
     conflict_choice: Mapped[str | None] = mapped_column(String)
     removed: Mapped[bool] = mapped_column(Boolean, default=False)

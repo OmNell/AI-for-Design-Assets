@@ -25,6 +25,8 @@ from app.db.database import Database
 from app.errors import register_handlers
 from app.logging_config import configure_logging
 from app.services.crypto import SecretCipher
+from app.services.jobs import JobQueue
+from app.services.thumbs import ThumbService
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -40,6 +42,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
         database: Database | None = None
         pool = None
         upload = None
+        jobs = None
         try:
             database = Database(config.paths.data_dir)
             application.state.settings = config
@@ -49,15 +52,26 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             pool = create_session_pool(config)
             application.state.auth = AuthService(database, pool, create_auth_backend(config), config)
             application.state.roles = RoleService(application.state.auth)
-            upload = UploadService(application.state.auth)
+            jobs = JobQueue(database, pool, workers=config.jobs.workers, auth_lock=application.state.auth.lock)
+            application.state.jobs = jobs
+            thumbs = ThumbService(application.state.auth, jobs)
+            application.state.thumbs = thumbs
+            jobs.register("thumb", thumbs.handle, concurrency=2, retries=1, recoverable=True, state_callback=thumbs.on_job_state)
+            application.state.auth.on_login = thumbs.resume_for_user
+            upload = UploadService(application.state.auth, thumbs)
             application.state.upload = upload
+            jobs.start()
             logger.info("工作台启动完成，模式：%s", config.mode)
             yield
         finally:
             try:
                 try:
-                    if upload is not None:
-                        upload.shutdown()
+                    try:
+                        if jobs is not None:
+                            jobs.shutdown()
+                    finally:
+                        if upload is not None:
+                            upload.shutdown()
                 finally:
                     if pool is not None:
                         pool.shutdown()

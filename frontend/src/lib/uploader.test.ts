@@ -5,7 +5,7 @@ import { ApiError } from '../api/client'
 import * as api from '../api/upload'
 vi.mock('../api/upload', () => ({ sendChunk: vi.fn(), completeFile: vi.fn(), getUploadState: vi.fn() }))
 const batch = (): Batch => ({ id: 1, batch_no: 'B1', folder_name: 'P_企业_项目', original_folder_name: 'P_企业_项目', project_code: 'P', status: '上传中', queued: false, won: true, updated_at: '', directories: [], chunk_bytes: 4, parallel_files: 3, upload_token: 'fake-token', differences: null,
-  files: [{ id: 1, rel_path: '单品/a.png', size: 10, mtime: 1, upload_status: 'pending', bytes_received: 0, fingerprint: null }] })
+  files: [{ id: 1, rel_path: '单品/a.png', size: 10, mtime: 1, upload_status: 'pending', bytes_received: 0, fingerprint: null, thumb_status: null, thumb_error: null }] })
 afterEach(() => vi.resetAllMocks())
 it('主图优先，其余按大小排序', () => {
   const base = batch().files[0]

@@ -18,6 +18,8 @@ nas:
   dsm_ca_file: null  # 自签名证书的受信 CA PEM 文件，不关闭证书校验。
   system_user: wb-system
   system_password_enc: ""
+jobs:
+  workers: 4
 upload:
   chunk_mb: 8
   parallel_files: 3

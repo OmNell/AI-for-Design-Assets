@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import secrets
 import threading
+import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, select
@@ -34,6 +36,7 @@ class AuthService:
         self.backend = backend
         self.config = config
         self.lock = threading.RLock()
+        self.on_login: Callable[[int], None] | None = None
 
     def _failed_login(self, username: str, host: str) -> None:
         with self.database.session() as session:
@@ -79,6 +82,11 @@ class AuthService:
                     user.last_login_at = utcnow()
                     OplogService(session).write(user.id, ",".join(user.roles), "登录", "user", str(user.id),
                                                None, None, "成功", host)
+                if self.on_login is not None:
+                    try:
+                        self.on_login(user.id)
+                    except Exception:
+                        logging.getLogger("nas_workbench").error("登录后的缩略图恢复未完成，可在任务列表重试")
                 return user, token, expires
             except (NasPermissionDenied, NasUnavailable) as error:
                 self._failed_login(username, host)
@@ -99,7 +107,7 @@ class AuthService:
         if active is None:
             self.pool.close(user_id)
 
-    def current(self, token: str | None, host: str) -> User:
+    def current(self, token: str | None, host: str, *, require_nas: bool = True) -> User:
         if token is None or len(token) != 43:
             raise AppError("login_required", "请先登录", 401)
         with self.lock:
@@ -115,7 +123,7 @@ class AuthService:
                 elif is_expired(login.expires_at):
                     session.delete(login)
                     failure = AppError("session_expired", "登录已过期，请重新登录", 401)
-                else:
+                elif require_nas:
                     try:
                         self.pool.get(user.id)
                     except NasSessionExpired:

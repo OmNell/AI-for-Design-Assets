@@ -1,6 +1,6 @@
 import { request } from './client'
 import type { Issue, ManifestEntry } from '../lib/preflight'
-export interface UploadFile { id: number; rel_path: string; size: number; mtime: number; upload_status: string; bytes_received: number; fingerprint: string | null }
+export interface UploadFile { id: number; rel_path: string; size: number; mtime: number; upload_status: string; bytes_received: number; fingerprint: string | null; thumb_status: 'pending' | 'running' | 'done' | 'failed' | null; thumb_error: string | null }
 export interface Batch { id: number; batch_no: string; folder_name: string; original_folder_name: string; project_code: string; status: string; queued: boolean; won: boolean; updated_at: string; files: UploadFile[]; directories: string[]; chunk_bytes: number; parallel_files: number; upload_token: string | null; differences: Record<string, string[]> | null }
 export interface Precheck { project_code: string; company_name: string; project_name: string; code_status: 'new' | 'exists' | 'need_h_code'; issues: Issue[]; path_prefix_length?: number }
 export interface SelectionBody { folder_name: string; files: ManifestEntry[] }

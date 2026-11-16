@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
+from fastapi.responses import Response
 
 from app.api.dependencies import client_host, require_role
 from app.db.models import User
@@ -10,6 +11,17 @@ from app.schemas.upload import BatchResponse, CreateBatchRequest, PrecheckReques
 from app.services.auth.service import COOKIE_NAME
 
 router = APIRouter(prefix="/api/batches")
+
+
+def cached_user(request: Request) -> User:
+    return request.app.state.auth.current(request.cookies.get(COOKIE_NAME), client_host(request), require_nas=False)
+
+
+@router.get("/{id}/thumbs/{batch_file_id}/{size}")
+def thumbnail(id: int, batch_file_id: int, size: int, request: Request,
+              user: User = Depends(cached_user)) -> Response:
+    data = request.app.state.thumbs.image(id, batch_file_id, size, user)
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
 class ChunkResponse(BaseModel):

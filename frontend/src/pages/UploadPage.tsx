@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router'
 import { GlassPanel } from '../components/glass/GlassPanel'
 import { GlassButton } from '../components/glass/GlassButton'
 import { GlassModal } from '../components/glass/GlassModal'
+import { ThumbnailPreview } from '../components/ThumbnailPreview'
 import { checkUpload, createBatch, resumeBatch, getBatch, pauseBatch, cancelBatch, confirmBatch, type Batch, type Precheck } from '../api/upload'
 import { readDrop, readInput, readPicker, type DirectorySelection } from '../lib/dirReader'
 import { isIgnored, manifest, preflight, type Issue } from '../lib/preflight'
@@ -147,7 +148,9 @@ export function UploadPage() {
     <div className="mt-6"><GlassButton disabled={busy} onClick={() => void createOrResume(true)}>确认差异，变化文件重新上传</GlassButton></div></GlassPanel>}
   {batch && !selection && <GlassPanel><h2 className="text-xl font-semibold">上传进度</h2><progress className="mt-6 h-3 w-full accent-emerald-700" max={Math.max(total, 1)} value={total ? received : batch.status === '已暂存' ? 1 : 0} />
     <p className="mt-3 text-sm text-slate-600">{formatSize(received)} / {formatSize(total)} · {formatSize(speed)}/秒 · 预计剩余 {speed > 0 ? Math.ceil((total - received) / speed) + ' 秒' : '—'}</p>
-    <div className="my-6 max-h-96 overflow-auto text-sm">{batch.files.map(file => <div key={file.id} className="flex justify-between gap-5 border-b border-slate-400/10 py-3"><span className="break-all">{file.rel_path}</span><span className="shrink-0 text-slate-500">{file.upload_status === 'done' ? '已完成' : file.upload_status === 'partial' ? '上传中' : '等待'} · {formatSize(file.bytes_received)} / {formatSize(file.size)}</span></div>)}</div>
+    <div className="my-6 max-h-96 overflow-auto text-sm">{batch.files.map(file => <div key={file.id} className="flex items-center justify-between gap-5 border-b border-slate-400/10 py-3"><div className="flex min-w-0 items-center gap-4">
+      {batch.status !== '已撤回' && file.upload_status === 'done' && /^(套装|单品)\/[^/]+\.(jpe?g|png)$/i.test(file.rel_path) && <ThumbnailPreview key={`${batch.id}:${file.id}:${file.fingerprint}`} batchId={batch.id} file={file} />}
+      <span className="break-all">{file.rel_path}</span></div><span className="shrink-0 text-slate-500">{file.upload_status === 'done' ? '已完成' : file.upload_status === 'partial' ? '上传中' : '等待'} · {formatSize(file.bytes_received)} / {formatSize(file.size)}</span></div>)}</div>
     <div className="flex gap-4">{running && <GlassButton onClick={() => void pause()}>暂停</GlassButton>}{['上传中', '上传中断', '已暂存'].includes(batch.status) && <GlassButton disabled={busy} onClick={() => void cancel()}>取消上传</GlassButton>}
       {batch.status === '上传中断' && <GlassButton onClick={() => { setBatch(null); navigate(`/upload?resume=${batch.id}`) }}>重新拖入继续</GlassButton>}
       {batch.status === '已暂存' && <GlassButton onClick={() => { void confirmBatch(batch.id).then(apply).catch((reason: Error) => setError(reason.message)) }}>确认，开始 AI 处理</GlassButton>}</div>

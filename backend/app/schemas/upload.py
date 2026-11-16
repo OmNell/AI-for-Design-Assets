@@ -55,6 +55,8 @@ class UploadFileResponse(BaseModel):
     upload_status: str
     bytes_received: int
     fingerprint: str | None
+    thumb_status: str | None = None
+    thumb_error: str | None = None
 
 
 class BatchResponse(BaseModel):
