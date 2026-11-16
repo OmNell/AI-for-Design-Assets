@@ -53,10 +53,11 @@ export function BatchDetailPage() {
     <div className="mt-6 flex gap-4">{value.status === '已暂存' && canOperate && <GlassButton disabled={busy} onClick={() => void act(() => confirmBatch(id))}>确认，开始 AI 处理</GlassButton>}
       {['AI 处理中', 'AI 处理失败', '待核对'].includes(value.status) && canRetry && <GlassButton disabled={busy} onClick={() => void act(() => retryAi(id))}>重试整批 AI</GlassButton>}
       {value.status === 'AI 处理中' && canOperate && <GlassButton disabled={busy} primary={false} onClick={() => void act(() => cancelBatch(id))}>撤回批次</GlassButton>}
+      {['待核对', '已驳回'].includes(value.status) && <Link to={`/batches/${id}/review`} className="self-center text-sm font-medium text-emerald-800 underline underline-offset-4">进入核对页</Link>}
       {['上传中', '上传中断'].includes(value.status) && canOperate && <Link to={`/upload?resume=${id}`} className="text-sm text-emerald-800 underline underline-offset-4">继续上传</Link>}</div>
   </GlassPanel>
     <div className="grid grid-cols-3 gap-5"><GlassCard><p className="text-sm text-slate-500">单品完成</p><p className="mt-3 text-2xl">{progress.items_done} / {progress.items_total}</p></GlassCard><GlassCard><p className="text-sm text-slate-500">套装完成</p><p className="mt-3 text-2xl">{progress.sets_done} / {progress.sets_total}</p></GlassCard><GlassCard><p className="text-sm text-slate-500">失败</p><p className="mt-3 text-2xl">{progress.failed}</p></GlassCard></div>
     {value.status !== '已撤回' && !!products.length && <div className="grid grid-cols-2 gap-5">{products.map(product => <Product key={product.id} product={product} batch={value} />)}</div>}
-    {value.status === '待核对' && <p className="text-sm text-slate-500">AI 处理已结束。本页只展示结果，核对编辑功能将在后续工作包开放。</p>}
+    {['待核对', '已驳回'].includes(value.status) && <p className="text-sm text-slate-500">AI 处理已结束。本页只展示结果，修改标签、确认套装关系和提交审核请到核对页。</p>}
   </div>
 }

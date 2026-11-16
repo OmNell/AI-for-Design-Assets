@@ -1,6 +1,6 @@
 # NAS 设计资产工作台
 
-公司内网设计资产工作台。当前完成 WP00～WP06：NAS 接入、登录/角色、预检与分片上传、后台队列与缩略图，以及 AI 打标、自由文本字段管理和套装关系推荐。核对编辑、审核、补充流程与向量检索尚未开放。
+公司内网设计资产工作台。当前完成 WP00～WP07：NAS 接入、登录/角色、预检与分片上传、后台队列与缩略图、AI 打标与自由文本字段管理、套装关系推荐，以及上传人核对页（改标签、确认套装关系、追加/移除主图、提交审核）。审核、补充流程与向量检索尚未开放。
 
 ## 开发环境
 
@@ -46,6 +46,7 @@ npm --prefix frontend run build
 - 首次启动自动生成 `data/secret.key`、通过 Alembic 创建 `data/app.db`。SQLite 启用 WAL、`busy_timeout=5000` 和外键检查。每次启动执行 `upgrade head`，重复启动不会重建已有表或密钥。
 - 首个迁移包含 `users`、`sessions`、`settings`、`oplog`、`jobs`，WP04 的 `0002_upload` 增加 `projects`、`batches`、`batch_files`、`preflight_acks`。`projects` 本包仅查重，不在上传时创建正式项目。`oplog` 数据库触发器禁止 UPDATE/DELETE。
 - WP05 的 `0003_thumbnails` 增加 batch_files.thumb_status/thumb_error 和 jobs 状态/调度时间索引；启动自动迁移。
+- WP07 的 `0005_review` 给 batch_products 增加 free_text_source、ai_free_text；配置新增 `upload.append_max_mb`（核对页追加主图上限，默认 50）。
 - WP06 的 `0004_ai` 增加 tag_fields、batch_products、company_industry_map、ai_calls、ai_alerts，并初始化业务文档9.5的11个自由文本字段。
 - 密钥 POSIX 权限为 `0600`；Windows 使用受保护 DACL，仅当前服务身份、管理员组及 SYSTEM 可访问。应部署在支持权限控制的本地文件系统，权限设置失败会中止启动。Windows ACL 分支尚待在实际 Windows 环境验证。
 - 密钥与数据库应一并备份；已有密钥无效时会报错，不自动覆盖。删除 `data/` 并重新启动会创建全新数据库与密钥，旧密钥加密的内容无法用新密钥解密。
@@ -385,3 +386,25 @@ python -m pytest backend/tests/bailian -m bailian -q -s --tb=short
 ```
 
 缺环境变量会明确失败，不会假装通过。测试先用Pillow生成无EXIF的1024 JPEG再发，报告仅临时序号和festival/usage_scene值；不要加 `--showlocals`。人工抽看节日与使用场景是否区分，需调整的说明记入 QUESTIONS.md，再通过字段管理更新。显式测试会调用真实服务并产生实际用量；本次开发没有执行真实调用。
+
+## WP07 · 上传人核对页
+
+新增依赖 `python-multipart`（追加主图的 multipart 解析），更新代码后重新执行 `python -m pip install -e './backend[test]'`，启动自动迁移至 `0005_review`。
+
+批次进入「待核对」或「已驳回」后，责任人从首页点「去核对」进入 `/batches/{id}/review`；管理员可进入任意批次并更换责任人。只有责任人和管理员能调用写接口，其他状态一律只读。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | /api/batches/{id}/products | 核对页全部数据 |
+| PATCH | /api/batches/{id}/products/{pid} | `{tags, free_text, confirm_fields, resolve_flags}`，自由文本只限 500 字 |
+| POST | /api/batches/{id}/products/bulk | `{product_ids, tags}` 多个商品统一设置字段 |
+| GET | /api/tag-values?field=&q=&batch_id= | 已用过的说法及次数，前 20 条，仅供参考 |
+| POST | /api/batches/{id}/products/{pid}/retry-ai | 单张重新打标，不覆盖人工字段 |
+| PUT | /api/batches/{id}/products/{pid}/relations | `{item_ids}` 设置套装包含的单品并确认 |
+| POST | /api/batches/{id}/products | multipart：`kind`（set/item）、`file`、可选 `filename`、`mtime` |
+| DELETE | /api/batches/{id}/products/{pid} | 移到 `临时区/{批次号}/_回收区/` |
+| POST | /api/batches/{id}/submit | `{note}`；未处理项返回 409 与各项数量 |
+| PUT | /api/admin/batches/{id}/owner | `{user_id}` 管理员更换责任人 |
+
+提交条件：字段标黄与一图多品已处理、所有套装已「确认关系」、打标失败的图已重试成功或手工填了至少一个字段、没有仍在打标的图。字段是否为空不检查。手动验收步骤见 `docs/PROGRESS.md` 的 WP07 一节。
+

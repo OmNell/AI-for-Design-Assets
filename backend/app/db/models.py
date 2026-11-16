@@ -159,6 +159,8 @@ class BatchProduct(Record, Base):
     relation_items: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     relation_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     flags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    free_text_source: Mapped[str] = mapped_column(String, default="ai")
+    ai_free_text: Mapped[str] = mapped_column(Text, default="")
 
 
 class CompanyIndustryMap(Record, Base):

@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from collections.abc import AsyncIterator
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models import Batch, BatchFile, BatchProduct, PreflightAck, Project, User, utcnow
@@ -22,7 +22,7 @@ from app.services.oplog import OplogService
 from app.services.preflight import check, ignored
 from .fingerprint import HashState, fingerprint
 from app.services.thumbs import ThumbService
-from app.services.ai.orchestrator import AiService
+from app.services.ai.orchestrator import AiService, active_products
 
 UPLOADING = "上传中"
 INTERRUPTED = "上传中断"
@@ -114,7 +114,7 @@ class UploadService:
     def _snapshot(self, session: Session, batch: Batch, token: str | None = None,
                   differences: dict[str, list[str]] | None = None) -> BatchResponse:
         session.flush()
-        products = list(session.scalars(select(BatchProduct).where(BatchProduct.batch_id == batch.id).order_by(BatchProduct.id)))
+        products = active_products(session, batch.id)
         return BatchResponse(id=batch.id, batch_no=batch.batch_no, project_code=batch.project_code,
             folder_name=str(batch.payload["folder_name"]), original_folder_name=str(batch.payload["original_folder_name"]),
             status=batch.status, queued=bool(batch.payload.get("queued")), won=batch.won, updated_at=batch.updated_at,
@@ -255,7 +255,7 @@ class UploadService:
 
     def list(self, user: User) -> list[BatchResponse]:
         with self.lock, self.database.session() as session:
-            return [self._snapshot(session, batch) for batch in session.scalars(select(Batch).where(Batch.uploader_id == user.id).order_by(Batch.id.desc()))]
+            return [self._snapshot(session, batch) for batch in session.scalars(select(Batch).where(or_(Batch.uploader_id == user.id, Batch.owner_id == user.id)).order_by(Batch.id.desc()))]
 
     def _receiving(self, session: Session, batch_id: int, user: User, file_id: int) -> tuple[Batch, BatchFile, NasFs]:
         batch = self._batch(session, batch_id, user)

@@ -38,6 +38,7 @@ class UploadConfig(Section):
     chunk_mb: int = Field(default=8, gt=0)
     parallel_files: int = Field(default=3, gt=0)
     full_fingerprint_max_mb: int = Field(default=200, gt=0)
+    append_max_mb: int = Field(default=50, gt=0)
 
 
 class JobsConfig(Section):
