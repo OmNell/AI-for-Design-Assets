@@ -3,3 +3,11 @@
 __pycache__/
 .pytest_cache/
 *.pyc
+data/
+logs/
+devdata/
+config.yaml
+node_modules/
+backend/app/static/
+*.egg-info/
+.coverage

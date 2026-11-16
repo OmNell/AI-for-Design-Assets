@@ -1,0 +1,40 @@
+# 复制到仓库根目录 config.yaml；本文件不含真实凭据。
+mode: dev
+bootstrap_admin: ""  # 留给后续登录工作包处理，本包不创建账号。
+server:
+  host: 0.0.0.0
+  port: 8080
+  session_hours: 8
+nas:
+  host: 192.168.0.177
+  dsm_port: 5001
+  dsm_https: true
+  share: 设计资产共享
+  root_path: /设计资产
+  temp_path: /工作台临时区
+  backup_path: /_工作台备份
+  system_user: wb-system
+  system_password_enc: ""
+upload:
+  chunk_mb: 8
+  parallel_files: 3
+  full_fingerprint_max_mb: 200
+ai:
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_key_enc: ""
+  model_vision: ""
+  model_text: ""
+  model_embed: ""
+  concurrency: 3
+  timeout_s: 60
+  retries: 3
+  stall_alert_min: 30
+review:
+  overdue_days: 3
+purge:
+  cooling_days: 30
+schedule:
+  inspection: "0 2 * * *"
+  backup: "0 3 * * *"
+paths:
+  data_dir: ./data

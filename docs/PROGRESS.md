@@ -42,3 +42,46 @@
 ## 后续工作包模板
 
 <!-- WP 编号 / 日期 / 完成内容 / 新依赖及理由 / 自动化验证 / 已知限制 / 手动验收 -->
+
+## WP01 · 项目骨架
+
+- 日期：2026-11-16。
+- 状态：最小骨架、自动化验证及本机 HTTP 冒烟验证完成。浏览器工具连接不可用，图形界面人工验收待按根 README 执行。
+- 本次只做 WP01；误开 WP02 时产生的未提交 NAS 草稿已移出仓库，不包含在本次提交。
+
+### 已完成
+
+- 按架构目录建立 `backend/`、`frontend/`，根 README 给出 Windows/macOS/Linux 安装、启动、测试及迁移命令。
+- Python 3.12 后端包、pydantic-settings YAML/环境变量配置与完整 `config.example.yaml`；增加 `mode`、`bootstrap_admin`。管理员名称仅加载，不创建账号。
+- Fernet 加解密与首次启动的 `data/secret.key`；已有密钥复用，损坏时拒绝覆盖。POSIX 0600；Windows 受保护 DACL 限定服务身份、管理员与 SYSTEM。
+- SQLite WAL、busy_timeout=5000、外键及 SQLAlchemy 事务会话；首个 Alembic 迁移只建 `users/sessions/settings/oplog/jobs` 五张业务表。启动自动 upgrade head，不绕过迁移建表。
+- oplog 仅追加服务，与调用者事务一并提交/回滚；数据库 BEFORE UPDATE/DELETE 触发器直接拒绝修改。
+- 统一 `{code,message,detail}` 错误处理、`GET /api/health`（版本、模式、数据库可用性）、按天滚动的中文应用日志。
+- FastAPI 托管构建产物及 SPA 路由回退，未知 API 和缺失 assets 资源不回退首页；路径穿越拒绝。
+- React 18 + TypeScript + Vite + Tailwind 占位首页，统一 API 请求、读取并显示 health；玻璃封装、视觉偏好持久化及 Safari/Firefox 默认 lite。
+- 前端构建输出 `backend/app/static/`；Git 忽略运行数据、日志、配置、依赖和构建产物，提交前端锁文件。
+
+### 依赖与验证
+
+- 后端新增约定栈内的 FastAPI/Uvicorn、SQLAlchemy/Alembic、pydantic-settings、cryptography；`pydantic-settings[yaml]` 额外安装 PyYAML，仅用于读取明确要求的 YAML 配置，不替换配置技术选型。
+- 前端使用 React/ReactDOM 18.3.1、Vite 6.4.6、Tailwind 3.4、liquid-glass-react 1.1.1、TypeScript；Vitest 5.1.0，开发 Node 22.23.5。PostCSS、Autoprefixer 和 Vite React 插件为构建所需，不引入其他 UI 库。
+- 根目录 `python -m pytest -q`：41 项通过（WP01 17 项 + WP00 24 项）。覆盖配置、加解密、密钥复用/损坏、五表、WAL/超时/外键、日志触发器、事务回滚、health 成败、错误脱敏、静态托管/路径拒绝以及删除 data 后重建。
+- `npm --prefix frontend run check`：5 项前端测试通过，TypeScript 检查与生产构建成功。初次安装旧 Vitest 的依赖审计出现问题，升级后 npm audit 为 0；依赖兼容性检查通过。
+- 已实际启动 8080 后端：health 返回 200、dev、database_available=true；首页和 SPA 深层页面返回构建 HTML，未知 API 返回统一 404。手动 Alembic current 为 `0001_skeleton (head)`。
+- 当前 Starlette 对 httpx TestClient 发出弃用提示；现有 httpx 测试仍通过，未引入栈外的 httpx2。
+
+### 已知限制
+
+- liquid-glass-react 的 peerDependencies 要求 React >=19，与固定 React 18 冲突（Q004）。保留 React 18，项目级 legacy-peer-deps 安装；full/lite 偏好已保存，实时滤镜尚未启用，两档均使用半透明兼容样式。后续界面工作包再处理，不宣称实时液态玻璃已完成。
+- Windows ACL 实现未在本机 macOS 实跑；现场 Windows 需核对 secret.key 的实际权限。密钥丢失不可解密旧密文，备份需同时保留数据库与密钥。
+- 图形浏览器工具未能连接，未声称浏览器验收已通过；本机服务与构建资源已通过 HTTP 验证。
+- 不包含登录、NAS、上传、任务执行器、角色授权或前端业务页面。`bootstrap_admin`、NAS 和 AI 配置只加载，不触发业务行为。
+- 数据库与 Alembic 初始化按单进程部署设计；未设计多实例同时初始化密钥/执行迁移。
+
+### 手动验收
+
+1. 按根 README 安装 Python 3.12、Node 22.12+，创建虚拟环境、安装依赖、复制配置；运行 `npm --prefix frontend ci` 和 `npm --prefix frontend run check`。
+2. 执行 `python -m app`，浏览器打开 `http://localhost:8080`，确认中文占位页显示版本 v0.1.0、开发模式和数据库连接正常；刷新深层页面也能返回首页。
+3. 执行 `python -m pytest -q`，确认所有本地测试通过，oplog 的更新/删除被触发器拒绝。
+4. 停止服务，备份或删除可丢弃的开发 `data/` 后重新启动，确认 app.db/secret.key 自动重建且 health 正常；核对日志位于 logs/。Windows 核对密钥 DACL。
+5. 如需切换配置位置，用 NASWB_CONFIG 指向新 config.yaml；确认相对 data 路径以该文件目录为准。
