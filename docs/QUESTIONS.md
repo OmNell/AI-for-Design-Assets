@@ -7,7 +7,7 @@
 | Q001 | WP00 | 提示词要求 A 对只读目录写入，但未指定该目录，也未提供对应参数。 | 增加必填 `--read-only-dir`；相对于同一个共享文件夹，由运行人预先建立，A 可列不可写、B 可读写。不推断或默认触碰正式目录。 | 待现场填写实测结果 |
 | Q002 | WP00 | 技术架构 §3.2 的“同卷 rename”要求临时区与正式目录同共享、同卷；本包未给出这两个目录的实际部署及 ACL。 | 仅在随机测试子目录的同一父目录内做纯 SMB rename，不降级为复制；不能据此证明未来跨目录入库一定成功。 | 待现场人工核实共享/卷/跨目录 ACL |
 | Q003 | WP00 | 技术架构 §3.2 已注明 DSM 令牌不能换取重开 SMB 所需的密码。 | 本包不实现池与自动重连；SMB 建连后清除会话对象的密码引用，连接断开即报告失败。 | 正式会话池工作包需确定重新登录策略 |
-| Q004 | WP01 | 固定 React 18 与 liquid-glass-react@1.1.1 的 React/ReactDOM >=19 peerDependencies 冲突；已核对 npm 元数据，0.0.2 起均要求 >=19，0.0.1 缺乏可据以确认 React 18 兼容的声明。 | 保留 React 18.3.1 和指定玻璃库；项目级 legacy-peer-deps 安装，统一封装使用兼容半透明样式。保存 full/lite 偏好，但暂不启用实时滤镜，未改用其他库。 | 待后续界面工作包确定兼容方案；当前不宣称 full 实时滤镜已实现 |
+| Q004 | WP01 | npm liquid-glass-react@1.1.1 声明 React >=19，但上游提交 fff31be69fc674ebb71070a0f3e45659d66a5560 已修正为 >=18。 | 已保留 React 18.3.1，以仅针对 liquid-glass-react@1.1.1 的 npm overrides 对齐根 React/ReactDOM；移除 legacy-peer-deps。真实 SVG 滤镜已启用，full/lite 按区域优先级生效。 | 已解决当前固定版本的接入与安装问题；真实库 DOM 测试及本机 Chrome 通过，Safari/Firefox 保留 CSS 回退 |
 | Q005 | WP01 | oplog 表格排版把各字段挤在一行，且未明确 nullable、唯一约束、日志归档保留期与 bootstrap_admin 的初始化时机。 | 按字段原名建表；user_id/object_id 和前后快照允许空；username/token_hash/settings.key 唯一。bootstrap_admin 只加载，不自动创建账号；日志保留 30 个每日归档。 | 后续可经迁移调整；本包无登录和账号初始化 |
 | Q006 | WP01 | 架构 §16 提到 Node 20，而 Vitest 5.1.0 要求 Node 22.12+；旧 Vitest 3.2.7 的依赖审计有高风险项。 | 保留 Vite/React 技术选型，采用 Node 22.12+ 与 Vitest 5.1.0；锁文件与 README 已更新，npm audit 为 0。 | 开发工具版本取舍；未修改四份设计文档 |
 

@@ -99,8 +99,14 @@ curl http://localhost:8080/api/health
 
 ## 前端兼容性
 
-`liquid-glass-react@1.1.1` 的 peerDependencies 要求 React/ReactDOM >=19，项目固定 React 18.3.1。为遵守技术栈，安装阶段通过项目级 `.npmrc` 的 `legacy-peer-deps=true` 保留 React 18，并记录 Q004。没有使用 `--force` 或升级 React。
+`liquid-glass-react@1.1.1` 的 npm 发布包将 peerDependencies 写为 React >=19，但[上游修复提交](https://github.com/rdev/liquid-glass-react/commit/fff31be69fc674ebb71070a0f3e45659d66a5560)已改为 >=18。项目保留 React/ReactDOM 18.3.1，针对固定版本使用 npm overrides 指向根依赖，不修改库源码，不再使用全局 legacy-peer-deps。干净 `npm ci` 与 `npm ls react react-dom liquid-glass-react` 均可成功。
 
-当前首页经 `src/components/glass/` 统一封装，使用半透明样式；full/lite 偏好可切换、持久化，Safari/Firefox 默认 lite。**实时折射滤镜暂不启用，两档均使用兼容样式**，待后续兼容性处理。页面不直接导入玻璃库，不引入其他 UI 组件库。这个限制不影响 health 与骨架验收。
+玻璃效果统一经 `src/components/glass/GlassSurface.tsx` 封装：Chrome/Edge 使用库的真实 SVG 位移、色散和鼠标高光，装饰层与正文分开，避免文字变形与点击被遮挡。ResizeObserver 让滤镜随容器尺寸更新，正文节点保持不变。
+
+- full：导航、主要按钮、卡片及次要条目均使用实时滤镜。
+- lite：导航、主要按钮、卡片保留玻璃效果；次要条目使用 Tailwind 半透明样式，不挂载 SVG 滤镜。
+- 右上角可切换，偏好存于 localStorage，刷新保持。Safari/Firefox 默认 lite，其 SVG 背景位移支持不完整，使用 CSS 毛玻璃；不把这些浏览器的折射效果宣称为与 Chrome 相同。
+
+本地验证：`npm --prefix frontend run check` 包含真实库的 React 18 DOM 集成测试，验证滤镜绑定、唯一 ID、模式切换、正文保留、尺寸变化及兼容回退。DOM 测试不能代替像素渲染；已另外在本机 Chrome 检查完整/轻量画面及刷新持久化。Safari/Firefox 和 Edge 的实际画面仍需现场验收。
 
 技术文档见 `docs/`，进度及手动验收记录见 `docs/PROGRESS.md`；NAS 探路详见 `scripts/probe/README.md`。

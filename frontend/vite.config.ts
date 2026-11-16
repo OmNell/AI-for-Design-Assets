@@ -9,5 +9,5 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: { proxy: { '/api': 'http://127.0.0.1:8080' } },
-  test: { environment: 'node', include: ['src/**/*.test.ts'] },
+  test: { environment: 'node', include: ['src/**/*.test.{ts,tsx}'] },
 })
