@@ -13,6 +13,9 @@ nas:
   root_path: /设计资产
   temp_path: /工作台临时区
   backup_path: /_工作台备份
+  idle_minutes: 30
+  timeout_s: 30
+  dsm_ca_file: null  # 自签名证书的受信 CA PEM 文件，不关闭证书校验。
   system_user: wb-system
   system_password_enc: ""
 upload:
@@ -38,3 +41,12 @@ schedule:
   backup: "0 3 * * *"
 paths:
   data_dir: ./data
+  dev_nas_dir: ./devdata/nas
+# 仅 dev 模式使用的假账号，禁止填写真实 NAS 密码。
+dev_users:
+  - username: demo-uploader
+    password: demo-uploader-only
+    permissions: {formal: read, temp: write, backup: none}
+  - username: demo-final
+    password: demo-final-only
+    permissions: {formal: write, temp: write, backup: none}

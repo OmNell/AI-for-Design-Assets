@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, YamlConfigSettingsSource
 
 
@@ -27,6 +27,9 @@ class NasConfig(Section):
     root_path: str = "/设计资产"
     temp_path: str = "/工作台临时区"
     backup_path: str = "/_工作台备份"
+    idle_minutes: float = Field(default=30, gt=0, allow_inf_nan=False)
+    timeout_s: float = Field(default=30, gt=0, allow_inf_nan=False)
+    dsm_ca_file: Path | None = None
     system_user: str = "wb-system"
     system_password_enc: SecretStr = SecretStr("")
 
@@ -64,6 +67,13 @@ class ScheduleConfig(Section):
 
 class PathsConfig(Section):
     data_dir: Path = Path("./data")
+    dev_nas_dir: Path = Path("./devdata/nas")
+
+
+class DevUser(Section):
+    username: str = Field(min_length=1)
+    password: SecretStr
+    permissions: dict[Literal["formal", "temp", "backup"], Literal["none", "read", "write"]] = Field(default_factory=dict)
 
 
 class Settings(BaseSettings):
@@ -73,6 +83,7 @@ class Settings(BaseSettings):
     )
     mode: Literal["dev", "prod"] = "dev"
     bootstrap_admin: str = ""
+    dev_users: list[DevUser] = Field(default_factory=list)
     server: ServerConfig = Field(default_factory=ServerConfig)
     nas: NasConfig = Field(default_factory=NasConfig)
     upload: UploadConfig = Field(default_factory=UploadConfig)
@@ -81,6 +92,13 @@ class Settings(BaseSettings):
     purge: PurgeConfig = Field(default_factory=PurgeConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
+
+    @model_validator(mode="after")
+    def unique_dev_users(self) -> Settings:
+        names = [user.username for user in self.dev_users]
+        if len(set(names)) != len(names):
+            raise ValueError("开发账号不能重复")
+        return self
 
 
 def load_settings(config_file: Path | str | None = None) -> Settings:
@@ -100,4 +118,8 @@ def load_settings(config_file: Path | str | None = None) -> Settings:
     settings = FileSettings()
     if not settings.paths.data_dir.is_absolute():
         settings.paths.data_dir = (path.parent / settings.paths.data_dir).resolve()
+    if not settings.paths.dev_nas_dir.is_absolute():
+        settings.paths.dev_nas_dir = (path.parent / settings.paths.dev_nas_dir).resolve()
+    if settings.nas.dsm_ca_file is not None and not settings.nas.dsm_ca_file.is_absolute():
+        settings.nas.dsm_ca_file = (path.parent / settings.nas.dsm_ca_file).resolve()
     return settings

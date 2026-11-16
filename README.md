@@ -1,6 +1,6 @@
 # NAS 设计资产工作台
 
-公司内网设计资产工作台。当前完成 WP00 探路和 WP01 可运行骨架；本包不包含登录、NAS 接入或上传。
+公司内网设计资产工作台。当前完成 WP00 探路、WP01 可运行骨架和 WP02 NAS/认证基础模块；尚无登录或上传接口。
 
 ## 开发环境
 
@@ -110,3 +110,117 @@ curl http://localhost:8080/api/health
 本地验证：`npm --prefix frontend run check` 包含真实库的 React 18 DOM 集成测试，验证滤镜绑定、唯一 ID、模式切换、正文保留、尺寸变化及兼容回退。DOM 测试不能代替像素渲染；已另外在本机 Chrome 检查完整/轻量画面及刷新持久化。Safari/Firefox 和 Edge 的实际画面仍需现场验收。
 
 技术文档见 `docs/`，进度及手动验收记录见 `docs/PROGRESS.md`；NAS 探路详见 `scripts/probe/README.md`。
+
+## WP02 · NAS 文件接口与会话池
+
+当前提供可复用模块，不新增登录或上传接口；应用启动不会自动登录 NAS。已有开发环境先执行 `python -m pip install -e "./backend[test]"` 更新依赖。首次复制示例配置可直接使用假账号；已有配置请补充下面的新字段，不覆盖真实配置。
+
+```yaml
+nas:
+  # 保留原有 host/share/root_path/temp_path/backup_path 等字段
+  idle_minutes: 30
+  timeout_s: 30
+  dsm_ca_file: null
+paths:
+  data_dir: ./data
+  dev_nas_dir: ./devdata/nas
+dev_users:
+  - username: demo-uploader
+    password: demo-uploader-only  # 假密码，严禁在 dev_users 填真实 NAS 凭据
+    permissions: {formal: read, temp: write, backup: none}
+  - username: demo-final
+    password: demo-final-only
+    permissions: {formal: write, temp: write, backup: none}
+```
+
+权限键为 `formal`（正式）、`temp`（临时）、`backup`（备份）；值为 `read`（只读）、`write`（读写）、`none`（无权限），缺项默认无权限。三个区域根由 `nas.root_path/temp_path/backup_path` 配置，必须不重叠。`paths.dev_nas_dir` 和 `nas.dsm_ca_file` 的相对路径仍以配置文件目录为准。
+
+调用示例（在激活的 Python 环境中）：
+
+```python
+from app.config import load_settings
+from app.services.nas import Region
+from app.services.nas.factory import create_auth_backend, create_paths, create_session_pool
+
+config = load_settings()
+auth = create_auth_backend(config)
+assert auth.verify("demo-uploader", "demo-uploader-only")
+paths = create_paths(config)
+with create_session_pool(config) as pool:
+    fs = pool.open(1, "demo-uploader", "demo-uploader-only")
+    path = paths.join(Region.TEMP, "开发演示.bin")
+    with fs.open_write(path) as stream:
+        stream.write(b"abc")
+    with fs.open_write(path, append=True) as stream:
+        stream.write(b"def")
+    with pool.get(1).open_read(path, offset=2) as stream:
+        assert stream.read() == b"cdef"
+    fs.delete(path)
+    pool.close(1)
+```
+
+接口约定：
+
+- `list(path) -> list[str]` 返回排序后的直接子项名；`stat(path) -> NasStat(size,is_dir,mtime)`，mtime 为 Unix 时间；`exists` 仅在不存在时返回 False，权限和断网异常仍抛出。
+- 所有运行时路径均为共享文件夹内的相对路径，通过 `create_paths(...).join(Region, ...)` / `safe_join` 构造；拒绝绝对路径、盘符、UNC、`..`、空片段及非法字符。配置根允许文档中的一个前导 `/`，不代表运行时允许绝对路径。
+- `open_read(path, offset=0)`、`open_write(path, append=False)` 返回需关闭的二进制流，推荐 `with`；普通写会截断旧文件，追加写保留旧内容；不自动创建父目录。
+- `mkdir(path, recursive=False)` 需显式开启递归，目标已存在报 `NasAlreadyExists`；`rename` 使用同共享文件夹的服务端改名，不降级为复制；`delete(path, recursive=False)` 可删文件或空目录，非空目录需显式递归。
+- 禁止删除/改名三个区域根；LocalFs 拒绝符号链接/联接点，SmbFs 拒绝路径上的重解析点。不接受 DFS、其他服务器/共享文件夹路径；LocalFs 是受控开发模拟器，不作为多用户本机操作系统沙箱。
+- 统一异常为 `NasPermissionDenied`、`NasNotFound`、`NasAlreadyExists`、`NasUnavailable`；错误消息为中文，不包含原始凭据或上游请求对象。
+- `SessionPool.open/get/close/system` 线程安全；取不存在或空闲过期的用户会话抛 `NasSessionExpired`，要求重新登录。池有后台回收线程，默认每 30 秒扫一次，`get` 也会同步检查。`get` 和实际文件操作均刷新活动时间；打开的文件流阻止空闲回收，使用完必须关闭。应用结束调用 `shutdown()`，或使用上下文管理器。
+- 每个 SmbFs 以本人凭据、私有缓存建立独立 SMB 连接；使用 NTLM 并要求签名。为了重连，密码只保留在活动实例的内存 SecretStr 中，不落盘/写日志，关闭或超时清除引用；Python 字符串不能保证物理内存擦除。DSM SID 不能替代 SMB 密码。
+- 每次操作发现连接已断可先重连一次；安全的 `list/stat/exists/open_read` 建立句柄阶段遇到连接故障可重连重试一次。**已发送的变更、流内读写不自动重放**，否则可能重复追加或无法判断 rename 是否完成；活动流存在时不替换底层连接。关闭流后由上层核对大小/状态再按偏移恢复。
+- `DsmAuthBackend.verify` 发现接口后 POST 登录，成功立即 POST 注销，SID/密码不保留到实例。身份拒绝返回 False；网络、协议或注销失败抛 `AuthUnavailable`。没有 OTP / Secure SignIn 交互和自动认证重试；HTTPS 默认校验证书，自签名用 `dsm_ca_file` 指定受信 CA。
+- `system()` 采用独立实例：dev 使用固定权限（正式只读、备份读写、临时无权限）；prod 解密 `nas.system_password_enc` 后建立系统账号连接，同时保留上述权限上限，实际 NAS ACL 仍须正确配置。普通用户文件操作从不回退系统账号。
+
+### 内网真实 NAS 测试
+
+默认 `python -m pytest -q` 排除 nas/bailian；即使只指定 `backend/tests` 也使用根测试配置。真实测试与本地实现共用 `backend/tests/nas/test_contract.py` 中的同一套参数化用例，另有两个账号的 DSM 登录/立即注销测试。
+
+先由管理员创建**专用测试共享文件夹内的三个空区域目录**，例如 `WP02测试/正式`、`WP02测试/临时`、`WP02测试/备份`。不要指向公司正式资产目录。账号 A 对正式区只读、临时区读写，B 对正式区及临时区读写；两账号对测试目录需有列目录/遍历权限。备份区不参与写测试。测试将在正式测试区创建 UUID 子目录、写入并删除测试文件，因此 B 必须是被授权的终审测试账号。NAS 实际 ACL 是 prod 的最终权限执行点。
+
+Windows PowerShell（当前进程环境变量，不写配置/源码）：
+
+```powershell
+$env:NAS_TEST_HOST = "192.168.0.177"
+$env:NAS_TEST_SHARE = "专用测试共享"
+$env:NAS_TEST_FORMAL = "WP02测试/正式"
+$env:NAS_TEST_TEMP = "WP02测试/临时"
+$env:NAS_TEST_BACKUP = "WP02测试/备份"
+$env:NAS_TEST_USER_A = "测试上传人"
+$env:NAS_TEST_USER_B = "测试终审"
+$env:NAS_TEST_PASSWORD_A = [Net.NetworkCredential]::new("", (Read-Host "账号 A 密码" -AsSecureString)).Password
+$env:NAS_TEST_PASSWORD_B = [Net.NetworkCredential]::new("", (Read-Host "账号 B 密码" -AsSecureString)).Password
+$env:NAS_TEST_DSM_PORT = "5001"
+$env:NAS_TEST_DSM_HTTPS = "true"
+# 自签名证书时设置受信 CA，证书名称须与 HOST 匹配：
+# $env:NAS_TEST_CA_FILE = "C:\certs\nas-ca.pem"
+python -m pytest backend/tests/nas -m nas -q --tb=short
+Remove-Item Env:NAS_TEST_PASSWORD_A, Env:NAS_TEST_PASSWORD_B
+```
+
+macOS/Linux（bash；zsh 用 `read -s 'NAS_TEST_PASSWORD_A?账号 A 密码：'` 等同义语法）：
+
+```bash
+export NAS_TEST_HOST=192.168.0.177
+export NAS_TEST_SHARE='专用测试共享'
+export NAS_TEST_FORMAL='WP02测试/正式'
+export NAS_TEST_TEMP='WP02测试/临时'
+export NAS_TEST_BACKUP='WP02测试/备份'
+export NAS_TEST_USER_A='测试上传人'
+export NAS_TEST_USER_B='测试终审'
+read -r -s -p '账号 A 密码：' NAS_TEST_PASSWORD_A
+read -r -s -p '账号 B 密码：' NAS_TEST_PASSWORD_B
+export NAS_TEST_PASSWORD_A NAS_TEST_PASSWORD_B
+export NAS_TEST_DSM_PORT=5001
+export NAS_TEST_DSM_HTTPS=true
+# export NAS_TEST_CA_FILE=/path/to/nas-ca.pem
+python -m pytest backend/tests/nas -m nas -q --tb=short
+unset NAS_TEST_PASSWORD_A NAS_TEST_PASSWORD_B
+```
+
+显式选择 nas 后缺少必要环境变量会报错，不会跳过并假装通过。不要加 `--showlocals`、输出完整环境或开启协议调试日志；测试报告仅记通过/失败、中文错误与现场权限。每个用例只清理本次创建的 UUID 子目录；网络断开或权限错误可能残留，请按前缀确认后人工清理，不能删除测试父目录。
+
+现场验收需确认：全部 nas 用例通过；A/B 同时连接时 ACL 分别生效；A 不能把文件移入正式测试区、B 能用本人会话完成移动。也请继续填写 WP00 的 `scripts/probe/RESULT.md`（20MiB 与 rename <1 秒的性能验收属于探路脚本）。本次开发未连接真实 NAS，不能用本地测试结果替代内网验收。
+
+实现参考：[smbprotocol 1.16.1 官方连接缓存实现](https://github.com/jborean93/smbprotocol/blob/v1.16.1/src/smbclient/_pool.py)、[DSM 官方登录 API 指南](https://global.download.synology.com/download/Document/Software/DeveloperGuide/Os/DSM/All/enu/DSM_Login_Web_API_Guide_enu.pdf)。

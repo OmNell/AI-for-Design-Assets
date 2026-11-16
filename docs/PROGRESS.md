@@ -97,3 +97,43 @@
 - `npm ci --strict-peer-deps`、依赖树检查和 npm audit（0 项）通过。前端 13 项测试通过（原有 5 项 + 8 项真实库集成测试），覆盖滤镜实际引用、唯一 ID、两档差异、持久化、内容保留、动态尺寸、鼠标重绘和浏览器回退。Python 全部 41 项仍通过；TypeScript 与生产构建通过。
 - 已在本机 Chrome 实际打开生产构建，观察完整/轻量两种画面和次要条目的效果差异，验证切换、刷新保持，并恢复为完整模式。Edge、Safari、Firefox 实际画面尚未现场验证，自动化覆盖其回退判断。
 - 手动验收：构建后打开 localhost:8080，在 Chrome/Edge 切换右上角完整/轻量；导航和卡片保持玻璃，三个状态条目仅完整档有折射边缘；刷新应保留选择。移动鼠标检查高光变化，缩放窗口检查边缘与容器对齐。Safari/Firefox 验证默认轻量和 CSS 回退。
+
+## WP02 · NAS 文件接口与会话池
+
+- 日期：2026-11-16。
+- 开发与本地验证完成；**真实 NAS 人工验收尚未执行**。探路 RESULT.md 仍未填写，不把本地测试记成真实 NAS 验收。
+
+### 已完成
+
+- `backend/app/services/nas/fs.py` 定义 NasFs 协议与 NasStat，实现所有规定方法、流式异常转换和生命周期管理；支持追加、偏移读、递归建目录及显式递归删除。
+- `LocalFs` 根据用户区域权限表执行只读/读写/无权限模拟；默认根 `./devdata/nas` 来自配置。`SmbFs` 使用本人凭据、独立连接缓存及 SMB 连接，不挂盘、不借用系统身份。
+- 三个区域根均来自配置；安全拼接拒绝路径穿越、绝对路径、非法名称和区域外访问，禁止删除/改名区域根；拒绝链接/重解析点。重命名检查源与目标权限，只用 rename，不退化复制。
+- 统一四类文件异常；SMB 按 NTSTATUS 优先分类，共享冲突不能误判为权限拒绝。错误不返回上游请求对象和认证材料。
+- SessionPool 提供 open/get/close/system、后台空闲回收与 shutdown，支持上下文管理；用户会话过期抛 NasSessionExpired 并要求重新登录。实例操作和池操作分别上锁，活动流阻止空闲回收。
+- FakeAuthBackend 从 dev_users 读取假账号、密码与权限；DsmAuthBackend 发现接口后 POST 登录，成功立即 POST 注销，不保留用户凭据或 SID，认证拒绝与服务不可用分别处理。
+- 模式工厂提供验证后端、用户文件会话、系统文件会话及会话池；prod 系统账号从 Fernet 密文解密，dev 使用 LocalFs。系统权限固定为正式只读/备份读写/临时无权限，并仍受 NAS ACL 限制。
+- 配置示例与 README 已补齐 dev_users、dev_nas_dir、idle_minutes、timeout_s、受信 CA，以及两个测试账号的环境变量运行方式。根 pytest 配置统一管理 nas/bailian 默认排除。
+- 本包没有登录或上传 API，没有新数据库表/迁移，没有前端业务改动。工厂由后续调用者显式创建，启动 health 不会访问真实 NAS。
+
+### 依赖与验证
+
+- 运行依赖增加既定技术栈中的 `smbprotocol==1.16.1`、`httpx==0.28.1`（探路已使用），Fernet 复用 WP01。无栈外运行依赖。
+- 全部 Python 测试：90 项通过、14 项真实 NAS 测试默认排除；其中 WP02 新增 49 项本地验证，覆盖 NasFs 契约、权限、路径、符号链接、系统权限、池打开/替换/获取/超时/后台关闭/并发获取、活动流保护、DSM 成功/拒绝/注销失败、SMB 隔离/重连上限/错误脱敏/不重复写入。
+- 同一套文件契约参数化使用 LocalFs 与 SmbFs，smb 参数加 nas 标记；另有真实 DSM 双账号验证/注销用例。`pytest backend/tests/nas -m nas --collect-only -q` 确认可收集 14 项真实用例，未执行连接。
+- `npm --prefix frontend run check`：13 项测试通过，TypeScript 与生产构建通过。Python 编译与依赖兼容检查通过。保留现有 Starlette/httpx TestClient 弃用提示，没有引入 httpx2。
+
+### 已知限制与取舍
+
+- 为满足本包“断线重连一次”，活动 SMB 实例仅在内存 SecretStr 保留本人密码，关闭/过期清除引用；不落盘或写日志，不使用 DSM SID 换 SMB 凭据。Python 无法保证字符串物理内存擦除；架构中的冲突已更新 Q003。
+- 每次方法调用最多重连一次；已知断线可在执行前恢复，安全读请求可重试；已发送变更、流内 I/O 不重放，活动流存在时不替换连接，以免重复追加或移动结果不确定。上层恢复策略留给后续上传/入库工作包，详见 Q007。
+- 目录删除默认非递归；显式递归过程不是事务，失败可能留下部分目录。LocalFs 是受控开发模拟器，不是本机多用户沙箱；本包不实现跨共享/DFS/IPv6、OTP/Secure SignIn 交互或工作台角色授权。
+- 池关闭与流关闭由调用者负责。空闲回收默认每 30 秒扫一次，get 同步检查；打开的流不视为空闲，可避免长上传被回收，但忘记关闭会阻止回收。
+- 真实群晖 DSM/SMB、现场 ACL 与跨目录 rename 均待内网验证；不宣称公司 NAS 已验证通过，也不自动改动生产配置或正式目录。
+
+### 手动验收
+
+1. 更新依赖 `python -m pip install -e './backend[test]'`；使用示例 dev 配置的两个假账号，通过 README 的工厂/会话池示例验证本地读写、追加及偏移读；全量运行 `python -m pytest -q`。
+2. 管理员提前设置专用测试共享内三个区域：A 正式只读、临时读写；B 为授权终审测试账号，正式与临时读写。不得指向公司正式资产目录。
+3. 按 README 用环境变量提供 NAS_TEST_HOST/SHARE/FORMAL/TEMP/BACKUP、USER_A/B、PASSWORD_A/B；DSM 端口/HTTPS 与 CA 按现场设置，密码隐藏输入且不写文件。
+4. 在公司内网执行 `python -m pytest backend/tests/nas -m nas -q --tb=short`，全部 14 项应通过。验证两账号同时存在、A 拒绝写正式测试区而 B 本人可移动；DSM 验证后立即注销。
+5. 检查本次 UUID 子目录已清理；若网络/权限导致残留，确认后人工清理。记录真实结果并更新探路 RESULT.md；20MiB 与 rename <1 秒性能验收仍按 WP00 脚本执行。
