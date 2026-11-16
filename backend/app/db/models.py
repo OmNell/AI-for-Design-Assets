@@ -294,3 +294,15 @@ class Link(Record, Base):
     link_id: Mapped[str] = mapped_column(String, unique=True)
     kind: Mapped[str] = mapped_column(String)
     target_id: Mapped[int] = mapped_column(Integer)
+
+
+class InspectionFinding(Record, Base):
+    """run_id 为空表示尚未被巡检处理（如下载时发现文件丢失）。"""
+    __tablename__ = "inspection_findings"
+    run_id: Mapped[int | None] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String)
+    path: Mapped[str] = mapped_column(String)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    file_id: Mapped[int | None] = mapped_column(ForeignKey("files.id"), index=True)
+    auto_fixed: Mapped[bool] = mapped_column(Boolean, default=False)
+    detail: Mapped[str | None] = mapped_column(Text)

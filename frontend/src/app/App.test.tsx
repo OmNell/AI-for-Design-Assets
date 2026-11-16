@@ -88,8 +88,8 @@ it('会话失效后换账号，不展示前一个账号缓存的批次详情', a
   act(() => useAuthStore.getState().clear('登录已过期'))
   await until(() => window.location.pathname === '/login')
   act(() => useAuthStore.getState().setUser({ id: 2, username: 'other', display_name: null, roles: ['uploader'], enabled: true }))
-  await until(() => window.location.pathname === '/')
-  act(() => { window.history.pushState({}, '', '/batches/1'); window.dispatchEvent(new PopStateEvent('popstate')) })
+  // 登录后回到原来要去的地址（永久链接依赖这一点），但必须重新向服务端取数。
+  await until(() => window.location.pathname === '/batches/1')
   await until(() => batchReads === 2)
   expect(host.textContent).not.toContain('前一账号的私有批次')
   expect(host.textContent).toContain('正在加载批次')

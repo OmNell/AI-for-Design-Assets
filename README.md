@@ -1,6 +1,6 @@
 # NAS 设计资产工作台
 
-公司内网设计资产工作台。当前完成 WP00～WP09：NAS 接入、登录/角色、预检与分片上传、后台队列与缩略图、AI 打标与自由文本字段管理、套装关系推荐、上传人核对页、初审/终审两级审核、对照表与站内待办，以及终审通过后的入库执行（移入正式目录、发放商品编号、三层档案、卡片柜、永久链接）。项目页、下载、搜索、补充流程与向量检索尚未开放。
+公司内网设计资产工作台。当前完成 WP00～WP10：NAS 接入、登录/角色、预检与分片上传、后台队列与缩略图、AI 打标与自由文本字段管理、套装关系推荐、上传人核对页、初审/终审两级审核、对照表与站内待办、入库执行（正式目录、商品编号、三层档案、卡片柜、永久链接），以及项目页、商品页、文件下载和永久链接跳转。语义搜索、入库后操作与巡检尚未开放。
 
 ## 开发环境
 
@@ -46,6 +46,7 @@ npm --prefix frontend run build
 - 首次启动自动生成 `data/secret.key`、通过 Alembic 创建 `data/app.db`。SQLite 启用 WAL、`busy_timeout=5000` 和外键检查。每次启动执行 `upgrade head`，重复启动不会重建已有表或密钥。
 - 首个迁移包含 `users`、`sessions`、`settings`、`oplog`、`jobs`，WP04 的 `0002_upload` 增加 `projects`、`batches`、`batch_files`、`preflight_acks`。`projects` 本包仅查重，不在上传时创建正式项目。`oplog` 数据库触发器禁止 UPDATE/DELETE。
 - WP05 的 `0003_thumbnails` 增加 batch_files.thumb_status/thumb_error 和 jobs 状态/调度时间索引；启动自动迁移。
+- WP10 的 `0008_findings` 增加 inspection_findings（下载找不到文件时登记，巡检沿用）。
 - WP09 的 `0007_catalog` 增加 files、history_versions、products、product_relations、product_tags、links。
 - WP08 的 `0006_audit` 增加 review_rounds、review_pins、industries。
 - WP07 的 `0005_review` 给 batch_products 增加 free_text_source、ai_free_text；配置新增 `upload.append_max_mb`（核对页追加主图上限，默认 50）。
@@ -444,4 +445,21 @@ python -m pytest backend/tests/bailian -m bailian -q -s --tb=short
 ```
 
 档案由 `services/archive` 生成，是卡片柜的投影：`verify` 只读比对，`rebuild` 按卡片柜重写，`parse_product` / `parse_project` 把档案解析回结构化数据。永久链接由 `services/links` 生成与解析，页面跳转在后续工作包接入。手动验收步骤见 `docs/PROGRESS.md` 的 WP09 一节。
+
+## WP10 · 项目页与下载
+
+没有新依赖。启动自动迁移至 `0008_findings`。dev 示例配置多了假账号 `demo-noaccess`（对正式目录无读权限）。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | /api/projects?q=&won=&industry=&company=&page= | 查找已入库项目 |
+| GET | /api/projects/{id}、/api/projects/{id}/files?category= | 项目页、资料夹文件 |
+| GET | /api/products/{id} | 商品详情 |
+| GET | /api/thumbs/{product_id}/{size} | 商品缩略图，失败给占位图 |
+| GET | /api/files/{id}/check | 下载前探测（权限、是否存在） |
+| GET | /api/files/{id}/download | 流式下载，支持 Range / If-Range |
+| POST | /api/files/download-many | `{file_ids}` → 逐个下载地址 |
+| GET | /api/l/{link_id} | 永久链接：重定向；`?format=json` 返回解析结果 |
+
+下载用当前登录人本人的 NAS 会话读取，NAS 拒绝即 403「NAS 无权限」。文件不在记录位置时按四层查找（记录路径 → 立项编号定位项目文件夹 → 文件名+大小+修改时间 → 指纹），找到就更新卡片柜，找不到返回「文件已不存在」并登记待巡检。对外分享的永久链接是 `http://工作台地址/l/{短ID}`。手动验收步骤见 `docs/PROGRESS.md` 的 WP10 一节。
 

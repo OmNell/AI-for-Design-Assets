@@ -38,6 +38,8 @@ from app.api.audit import router as audit_router
 from app.services.audit import AuditService
 from app.services.notify import NotifyService
 from app.services.ingest import IngestService
+from app.services.catalog import CatalogService
+from app.api.catalog import router as catalog_router
 from app.services.admin.company_map import CompanyMapService
 from app.db.models import Job
 from sqlalchemy.orm import Session
@@ -94,6 +96,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             application.state.company_map = CompanyMapService(application.state.auth)
             ingest = IngestService(application.state.auth, jobs, application.state.notify, application.state.ai_settings)
             application.state.ingest = ingest
+            application.state.catalog = CatalogService(application.state.auth)
             application.state.audit = AuditService(application.state.auth, application.state.review, application.state.notify, ingest)
             jobs.start()
             ai.start()
@@ -136,6 +139,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
     application.include_router(ai_runtime_router)
     application.include_router(review_router)
     application.include_router(audit_router)
+    application.include_router(catalog_router)
     static_root = static_dir.resolve()
 
     @application.get("/{path:path}", include_in_schema=False)

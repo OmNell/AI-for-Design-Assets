@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
-import { Navigate } from 'react-router'
+import { Navigate, useLocation } from 'react-router'
 import { login } from '../api/auth'
 import { useAuthStore } from '../stores/auth'
 import { GlassPanel } from '../components/glass/GlassPanel'
@@ -13,7 +13,9 @@ export function LoginPage() {
   const notice = useAuthStore(state => state.notice)
   const [error, setError] = useState('')
   const { register, handleSubmit, resetField, formState: { isSubmitting, errors } } = useForm<FormValues>()
-  if (user) return <Navigate to="/" replace />
+  // 从永久链接等地址被带到登录页时，登录后回到原地址。
+  const from: unknown = (useLocation().state as { from?: unknown } | null)?.from
+  if (user) return <Navigate to={typeof from === 'string' && from.startsWith('/') && !from.startsWith('//') ? from : '/'} replace />
   const submit = handleSubmit(async values => {
     setError('')
     try { useAuthStore.getState().setUser(await login(values.username, values.password)) }

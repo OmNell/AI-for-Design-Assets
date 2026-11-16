@@ -56,6 +56,9 @@ dev_users:
   - username: demo-final
     password: demo-final-only
     permissions: {formal: write, temp: write, backup: none}
+  - username: demo-noaccess  # 对正式目录没有读权限，用来验证下载时的「NAS 无权限」
+    password: demo-noaccess-only
+    permissions: {formal: none, temp: write, backup: none}
   - username: demo-admin
     password: demo-admin-only
     permissions: {formal: read, temp: write, backup: none}

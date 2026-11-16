@@ -36,6 +36,8 @@ def register_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def application_error(request: Request, error: AppError) -> JSONResponse:
         response = error_response(error.status_code, error.code, error.message, error.detail)
+        if error.status_code == 416 and isinstance(error.detail, dict) and "size" in error.detail:
+            response.headers["Content-Range"] = f"bytes */{error.detail['size']}"
         if error.status_code == 401:
             response.delete_cookie("nas_workbench_session", path="/", httponly=True, samesite="lax")
         return response

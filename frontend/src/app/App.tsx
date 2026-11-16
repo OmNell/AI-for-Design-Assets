@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, Outlet, NavLink } from 'react-router'
+import { BrowserRouter, Routes, Route, Navigate, Outlet, NavLink, useLocation } from 'react-router'
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getMe, logout } from '../api/auth'
 import { getHealth } from '../api/health'
@@ -22,12 +22,17 @@ import { ReviewPage } from '../pages/ReviewPage'
 import { AuditPage } from '../pages/AuditPage'
 import { QueuePage } from '../pages/QueuePage'
 import { CompanyMapPage } from '../pages/CompanyMapPage'
+import { ProjectsPage } from '../pages/ProjectsPage'
+import { ProjectPage } from '../pages/ProjectPage'
+import { ProductPage } from '../pages/ProductPage'
+import { LinkPage } from '../pages/LinkPage'
 import { canAccess, navigation, type NavigationItem } from './navigation'
 
 
 function Guard() {
   const user = useAuthStore(state => state.user)
-  return user ? <Outlet /> : <Navigate to="/login" replace />
+  const location = useLocation()
+  return user ? <Outlet /> : <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />
 }
 function RoleGuard({ item, children }: { item: NavigationItem; children: React.ReactNode }) {
   const user = useAuthStore(state => state.user)!
@@ -76,12 +81,13 @@ function AuthBootstrap() {
     <Route element={<Guard />}><Route element={<Shell />}>
       <Route index element={<HomePage />} />
       {navigation.filter(item => item.path !== '/').map(item => <Route key={item.path} path={item.path} element={<RoleGuard item={item}>
-        {item.path === '/admin/roles' ? <RolesPage /> : item.path === '/upload' ? <UploadPage /> : item.path === '/settings' ? <AiSettingsPage /> : item.path === '/first-review' ? <QueuePage stage="first" /> : item.path === '/final-review' ? <QueuePage stage="final" /> : <PlaceholderPage title={item.label} />}
+        {item.path === '/admin/roles' ? <RolesPage /> : item.path === '/upload' ? <UploadPage /> : item.path === '/settings' ? <AiSettingsPage /> : item.path === '/projects' ? <ProjectsPage /> : item.path === '/first-review' ? <QueuePage stage="first" /> : item.path === '/final-review' ? <QueuePage stage="final" /> : <PlaceholderPage title={item.label} />}
       </RoleGuard>} />)}
       <Route path="/admin/tag-fields" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><TagFieldsPage /></RoleGuard>} />
       <Route path="/batches/:id" element={<BatchDetailPage />} />
       <Route path="/batches/:id/review" element={<ReviewPage />} />
       <Route path="/review/:id" element={<AuditPage />} />
+      <Route path="/projects/:id" element={<ProjectPage />} /><Route path="/products/:id" element={<ProductPage />} /><Route path="/l/:linkId" element={<LinkPage />} />
       <Route path="/admin/company-map" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><CompanyMapPage /></RoleGuard>} />
       <Route path="/components" element={<DevComponents />} /><Route path="*" element={<PlaceholderPage title="页面不存在" />} />
     </Route></Route></Routes>
