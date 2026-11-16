@@ -1,6 +1,7 @@
 """核对页的请求与响应；标签取值是自由文本，不做取值校验。"""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -82,7 +83,26 @@ class ReviewBatch(BaseModel):
     editable: bool
 
 
+class PinView(BaseModel):
+    batch_product_id: int
+    product_name: str
+    x: float
+    y: float
+    text: str
+
+
+class RoundView(BaseModel):
+    round: int
+    stage: str
+    reviewer_name: str
+    decision: str
+    comment: str | None
+    decided_at: datetime | None
+    pins: list[PinView]
+
+
 class ReviewResponse(BaseModel):
+    history: list[RoundView] = Field(default_factory=list)
     batch: ReviewBatch
     fields: list[ReviewField]
     products: list[ReviewProduct]

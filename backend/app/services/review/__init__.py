@@ -11,12 +11,13 @@ import time
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Batch, BatchFile, BatchProduct, TagField, User
+from app.db.models import Batch, BatchFile, BatchProduct, TagField, User, utcnow
 from app.errors import AppError
 from app.schemas.review import (BulkRequest, FolderFile, FolderGroup, OwnerResponse, Pending, ProductPatch, ProductUpdate,
                                 RelationView, ReviewBatch, ReviewField, ReviewProduct, ReviewResponse, TagValue, TagView)
 from app.services.ai.orchestrator import RELATION_FLAGS, REVIEWING, AiService, active_products
 from app.services.ai.parsing import split_terms
+from .history import round_history
 from app.services.auth.service import AuthService
 from app.services.nas import NasPermissionDenied, Region, safe_join
 from app.services.nas.factory import create_paths
@@ -141,7 +142,7 @@ class ReviewService:
             groups.setdefault(head if rest else "项目根目录", []).append(FolderFile(name=rest or head, size=file.size))
         owner = session.get(User, batch.owner_id)
         parts = str(batch.payload["folder_name"]).split("_")
-        return ReviewResponse(
+        return ReviewResponse(history=round_history(session, batch.id),
             batch=ReviewBatch(id=batch.id, batch_no=batch.batch_no, project_code=batch.project_code,
                 folder_name=str(batch.payload["folder_name"]), company_name=parts[1] if len(parts) == 3 else "",
                 project_name=parts[2] if len(parts) == 3 else "", status=batch.status, won=batch.won, round=batch.round,
@@ -418,8 +419,11 @@ class ReviewService:
                 raise AppError("submit_blocked", "还有未处理的项，暂不能提交审核", 409, pending.model_dump())
             before = {"status": batch.status, "round": batch.round, "note_to_reviewer": batch.note_to_reviewer}
             if batch.status == REJECTED:
+                # 重新提交从初审重新开始：轮次 +1，清空两级审核人。
                 batch.round += 1
+            batch.first_reviewer_id = batch.final_reviewer_id = None
             batch.status, batch.note_to_reviewer = SUBMITTED, note or None
+            batch.payload = {**batch.payload, "stage_since": utcnow().isoformat()}
             self._log(session, user, "提交审核", "batch", batch.id, before,
                       {"status": batch.status, "round": batch.round, "note_to_reviewer": batch.note_to_reviewer}, host)
             return self._response(session, batch, user)

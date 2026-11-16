@@ -34,6 +34,10 @@ from app.api.ai_settings import router as ai_settings_router
 from app.api.ai_runtime import router as ai_runtime_router
 from app.api.review import router as review_router
 from app.services.review import ReviewService
+from app.api.audit import router as audit_router
+from app.services.audit import AuditService
+from app.services.notify import NotifyService
+from app.services.admin.company_map import CompanyMapService
 from app.db.models import Job
 from sqlalchemy.orm import Session
 
@@ -81,6 +85,9 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             upload = UploadService(application.state.auth, thumbs, ai)
             application.state.upload = upload
             application.state.review = ReviewService(application.state.auth, thumbs, ai)
+            application.state.notify = NotifyService(application.state.auth)
+            application.state.company_map = CompanyMapService(application.state.auth)
+            application.state.audit = AuditService(application.state.auth, application.state.review, application.state.notify)
             jobs.start()
             ai.start()
             logger.info("工作台启动完成，模式：%s", config.mode)
@@ -121,6 +128,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
     application.include_router(ai_settings_router)
     application.include_router(ai_runtime_router)
     application.include_router(review_router)
+    application.include_router(audit_router)
     static_root = static_dir.resolve()
 
     @application.get("/{path:path}", include_in_schema=False)

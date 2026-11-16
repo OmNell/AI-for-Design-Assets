@@ -388,7 +388,7 @@ class UploadService:
             batch = self._batch(session, batch_id, user)
             if batch.status == WITHDRAWN:
                 return self._snapshot(session, batch)
-            if batch.status not in (UPLOADING, INTERRUPTED, STAGED, AI):
+            if batch.status not in (UPLOADING, INTERRUPTED, STAGED, AI, "已驳回"):
                 raise AppError("invalid_batch_state", "该状态不能取消上传", 409)
             fs = self._fs(batch)
             root = self.paths.join(Region.TEMP, batch.batch_no)

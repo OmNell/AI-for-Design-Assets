@@ -106,16 +106,8 @@ class AiService:
 
     @staticmethod
     def _recommend(session: Session, batch: Batch) -> str | None:
-        company = str(batch.payload["folder_name"]).split("_")[1]
-        matches = [row for row in session.scalars(select(CompanyIndustryMap)) if row.company_name == company or company in row.aliases]
-        if len(matches) != 1:
-            return None
-        row = matches[0]
-        try:
-            return safe_join("01已中标项目" if batch.won else "02未中标项目",
-                             f"{row.industry_seq:02d}{row.industry_name}", f"{row.company_seq:02d}{row.company_name}")
-        except NasPermissionDenied:
-            return None
+        from app.services.admin.company_map import recommend
+        return recommend(session, batch)
 
     def handle_batch(self, context: JobContext) -> None:
         with self.auth.lock, self.auth.database.session() as session:

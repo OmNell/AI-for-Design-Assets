@@ -50,6 +50,9 @@ dev_users:
   - username: demo-uploader
     password: demo-uploader-only
     permissions: {formal: read, temp: write, backup: none}
+  - username: demo-first
+    password: demo-first-only
+    permissions: {formal: read, temp: write, backup: none}
   - username: demo-final
     password: demo-final-only
     permissions: {formal: write, temp: write, backup: none}

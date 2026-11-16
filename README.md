@@ -1,6 +1,6 @@
 # NAS 设计资产工作台
 
-公司内网设计资产工作台。当前完成 WP00～WP07：NAS 接入、登录/角色、预检与分片上传、后台队列与缩略图、AI 打标与自由文本字段管理、套装关系推荐，以及上传人核对页（改标签、确认套装关系、追加/移除主图、提交审核）。审核、补充流程与向量检索尚未开放。
+公司内网设计资产工作台。当前完成 WP00～WP08：NAS 接入、登录/角色、预检与分片上传、后台队列与缩略图、AI 打标与自由文本字段管理、套装关系推荐、上传人核对页，以及初审/终审两级审核、企业→行业对照表和站内待办。终审通过后批次停在「入库中」，入库执行、补充流程与向量检索尚未开放。
 
 ## 开发环境
 
@@ -46,6 +46,7 @@ npm --prefix frontend run build
 - 首次启动自动生成 `data/secret.key`、通过 Alembic 创建 `data/app.db`。SQLite 启用 WAL、`busy_timeout=5000` 和外键检查。每次启动执行 `upgrade head`，重复启动不会重建已有表或密钥。
 - 首个迁移包含 `users`、`sessions`、`settings`、`oplog`、`jobs`，WP04 的 `0002_upload` 增加 `projects`、`batches`、`batch_files`、`preflight_acks`。`projects` 本包仅查重，不在上传时创建正式项目。`oplog` 数据库触发器禁止 UPDATE/DELETE。
 - WP05 的 `0003_thumbnails` 增加 batch_files.thumb_status/thumb_error 和 jobs 状态/调度时间索引；启动自动迁移。
+- WP08 的 `0006_audit` 增加 review_rounds、review_pins、industries。
 - WP07 的 `0005_review` 给 batch_products 增加 free_text_source、ai_free_text；配置新增 `upload.append_max_mb`（核对页追加主图上限，默认 50）。
 - WP06 的 `0004_ai` 增加 tag_fields、batch_products、company_industry_map、ai_calls、ai_alerts，并初始化业务文档9.5的11个自由文本字段。
 - 密钥 POSIX 权限为 `0600`；Windows 使用受保护 DACL，仅当前服务身份、管理员组及 SYSTEM 可访问。应部署在支持权限控制的本地文件系统，权限设置失败会中止启动。Windows ACL 分支尚待在实际 Windows 环境验证。
@@ -407,4 +408,23 @@ python -m pytest backend/tests/bailian -m bailian -q -s --tb=short
 | PUT | /api/admin/batches/{id}/owner | `{user_id}` 管理员更换责任人 |
 
 提交条件：字段标黄与一图多品已处理、所有套装已「确认关系」、打标失败的图已重试成功或手工填了至少一个字段、没有仍在打标的图。字段是否为空不检查。手动验收步骤见 `docs/PROGRESS.md` 的 WP07 一节。
+
+## WP08 · 两级审核、对照表与待办
+
+没有新依赖。启动自动迁移至 `0006_audit`。dev 示例配置多了假账号 `demo-first`；审核角色在「管理 → 角色管理」里勾选，企业与行业在「管理 → 对照表」里录入。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET/PUT | /api/admin/company-map | 对照表；带 id 为修改，不带 id 为新增并发放序号 |
+| GET | /api/catalog/tree | 中标状态 → 行业 → 企业，来自对照表 |
+| GET | /api/review/queue?stage=first\|final | 待审队列 |
+| POST | /api/review/{id}/claim、/release | 领取；领取人或管理员释放 |
+| GET | /api/review/{id} | 审核页数据 |
+| PUT | /api/review/{id}/pins | `{pins:[{batch_product_id,x,y,text}]}` 暂存钉图意见 |
+| PUT | /api/review/{id}/path | 仅终审：`{won, company_id}` |
+| POST | /api/review/{id}/pass | `{checklist}` 六项全为 true |
+| POST | /api/review/{id}/reject | `{comment}` 必填 |
+| GET | /api/todos | 当前用户待办 |
+
+状态迁移：待初审 —初审通过→ 待终审 —终审通过→ 入库中；任一级驳回 → 已驳回 —重新提交→ 待初审（轮次 +1，清空两级审核人）。同一批次同一轮的初审人不能做终审。手动验收步骤见 `docs/PROGRESS.md` 的 WP08 一节。
 

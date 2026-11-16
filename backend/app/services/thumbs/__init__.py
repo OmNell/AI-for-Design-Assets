@@ -117,7 +117,9 @@ class ThumbService:
             if current is None or not current.enabled or not (
                 "admin" in current.roles or current.id == batch.owner_id
                 or current.id == batch.first_reviewer_id and "first_reviewer" in current.roles
-                or current.id == batch.final_reviewer_id and "final_reviewer" in current.roles):
+                or current.id == batch.final_reviewer_id and "final_reviewer" in current.roles
+                or batch.status == "待初审" and "first_reviewer" in current.roles
+                or batch.status == "待终审" and "final_reviewer" in current.roles):
                 raise AppError("forbidden", "无权查看该批次缩略图", 403)
             file = session.get(BatchFile, file_id)
             if batch.status == "已撤回" or file is None or file.batch_id != batch.id or file.removed or not is_main_image(file):

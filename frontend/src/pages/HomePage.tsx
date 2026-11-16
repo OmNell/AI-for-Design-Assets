@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router'
 import { getBatches } from '../api/upload'
 import { getHealth } from '../api/health'
+import { getTodos } from '../api/audit'
 import { useAuthStore } from '../stores/auth'
 import { GlassPanel } from '../components/glass/GlassPanel'
 import { GlassCard } from '../components/glass/GlassCard'
@@ -12,8 +13,12 @@ export function HomePage() {
   const health = useQuery({ queryKey: ['health'], queryFn: () => getHealth(), retry: false })
   const upload = canAccess(user.roles, navigation.find(item => item.path === '/upload')!)
   const batches = useQuery({ queryKey: ['batches'], queryFn: getBatches, retry: false, enabled: upload })
+  const todos = useQuery({ queryKey: ['todos'], queryFn: getTodos, retry: false, refetchInterval: 30000 })
   return <div className="space-y-7"><div><p className="mb-4 text-xs tracking-widest text-emerald-800">公司内网 · 设计资产</p>
     <h1 className="text-4xl font-semibold">你好，{user.display_name || user.username}</h1><p className="mt-4 text-slate-500">从这里开始整理与查找团队的设计资产。</p></div>
+    {!!todos.data?.length && <nav aria-label="待办" data-testid="todos" className="flex flex-wrap gap-3">{todos.data.map(item =>
+      <Link key={item.key} to={item.link} title={item.batches.map(batch => batch.label).join('\n')} className="flex items-center gap-2 rounded-full border border-white/70 bg-white/50 px-4 py-2 text-sm hover:bg-white/75">
+        <span>{item.label}</span><span className="rounded-full bg-emerald-800 px-2 py-0.5 text-xs font-semibold text-white">{item.count}</span></Link>)}</nav>}
     <GlassPanel><h2 className="text-xl font-semibold">我的工作台</h2><div className="mt-5 space-y-4">{batches.data?.length ? batches.data.map(batch => <div key={batch.id} className="flex items-center justify-between border-b border-slate-400/15 py-3 text-sm"><div><p>{batch.batch_no} · {batch.folder_name}</p><p className="mt-2 text-xs text-slate-500">{batch.queued ? '排队中' : batch.status} · {new Date(batch.updated_at).toLocaleString('zh-CN')}</p></div><Link to={['上传中', '上传中断'].includes(batch.status) ? `/upload?resume=${batch.id}` : ['待核对', '已驳回'].includes(batch.status) ? `/batches/${batch.id}/review` : `/batches/${batch.id}`} className="text-emerald-800 underline underline-offset-4">{['上传中', '上传中断'].includes(batch.status) ? '继续上传' : ['待核对', '已驳回'].includes(batch.status) ? '去核对' : '查看详情'}</Link></div>) : <p className="text-slate-500">{!upload ? '当前账号没有上传角色。' : batches.isPending ? '正在加载批次…' : batches.isError ? '批次加载失败，请刷新重试。' : '暂无批次，请上传一个项目文件夹。'}</p>}</div>
       <div className="mt-6 flex gap-6 text-sm text-emerald-800">{upload && <Link to="/upload" className="underline underline-offset-4">上传新项目</Link>}<Link to="/projects" className="underline underline-offset-4">对已入库项目操作</Link></div>
     </GlassPanel>
