@@ -2,20 +2,30 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; color: #273b36; background: #edf1ec; font-synthesis: none; }
-body { margin: 0; min-width: 1000px; background: radial-gradient(ellipse at 10% 15%, #d1e7d8 0%, transparent 55%), radial-gradient(ellipse at 90% 45%, #ede4d0 0%, transparent 50%); }
+:root { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; color: #273b36; background: #e6ede6; font-synthesis: none; }
+/* 玻璃的折射只有在背后有明暗和色彩变化时才看得见，所以页面底色是一层固定的彩色光斑，而不是近乎纯色。 */
+body { margin: 0; min-width: 1000px; min-height: 100vh; background-attachment: fixed; background-image:
+  radial-gradient(38vw 34vw at 8% 12%, rgb(92 190 150 / 62%) 0%, transparent 62%),
+  radial-gradient(30vw 30vw at 88% 8%, rgb(250 196 108 / 60%) 0%, transparent 60%),
+  radial-gradient(34vw 30vw at 70% 58%, rgb(96 170 214 / 46%) 0%, transparent 62%),
+  radial-gradient(30vw 28vw at 22% 78%, rgb(236 150 132 / 44%) 0%, transparent 60%),
+  radial-gradient(26vw 22vw at 96% 96%, rgb(120 200 170 / 50%) 0%, transparent 60%),
+  linear-gradient(135deg, #e3efe6 0%, #f1ead9 100%); }
 .brand-mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: #244d40; color: #eff8ee; font-size: 17px; }
 
 /* 滤镜仅作用于装饰层，正文和交互保持清晰，切换时不重挂载内容。 */
-.glass-surface { position: relative; border: 1px solid rgb(255 255 255 / 70%); }
+.glass-surface { position: relative; border: 1px solid transparent; }
 .glass-content { position: relative; }
 .glass-effect { position: absolute; inset: 0; border-radius: inherit; pointer-events: none; }
+/* 库默认把自己居中并随鼠标位移；这里让各装饰层贴合容器，其余外观（折射、高光描边、投影）保持库的原样。 */
 .glass-effect > div, .glass-effect > span { transform: none !important; }
-.glass-library > .glass { width: 100%; height: 100%; box-shadow: none !important; }
+.glass-library > .glass { width: 100%; height: 100%; box-shadow: 0 10px 32px rgb(20 40 34 / 16%) !important; }
+/* 嵌在玻璃容器里的小块（列表项、按钮）投影收小，避免几十个投影叠在一起把容器压灰。 */
+.glass-surface .glass-surface .glass-library > .glass { box-shadow: 0 2px 8px rgb(20 40 34 / 10%) !important; }
 .glass-library > .glass > div { display: none; }
-.glass-library .glass__warp { -webkit-backdrop-filter: blur(6px) saturate(125%); }
-.glass-surface[data-glass-renderer="svg"] { background: rgb(255 255 255 / 15%); }
-.glass-surface[data-glass-renderer="css"] { background: rgb(255 255 255 / 30%); backdrop-filter: blur(16px) saturate(125%); -webkit-backdrop-filter: blur(16px) saturate(125%); }
+.glass-surface[data-glass-renderer="svg"] { background: rgb(255 255 255 / 10%); }
+.glass-surface[data-glass-renderer="none"] { border-color: rgb(255 255 255 / 70%); }
+.glass-surface[data-glass-renderer="css"] { border-color: rgb(255 255 255 / 70%); background: rgb(255 255 255 / 30%); backdrop-filter: blur(16px) saturate(125%); -webkit-backdrop-filter: blur(16px) saturate(125%); }
 .glass-surface[data-glass-renderer="none"] { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
 .glass-button > .glass-surface > .glass-content { display: block; }
 .field { width: 100%; border: 1px solid rgb(255 255 255 / 85%); border-radius: 14px; background: rgb(255 255 255 / 50%); padding: 12px 14px; outline-color: #36765c; }

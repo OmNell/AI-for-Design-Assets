@@ -232,7 +232,7 @@ it('被驳回的批次预留顶部横幅；非责任人只读', async () => {
   expect(button('移除这张图')).toBeUndefined()
 })
 
-it('60 张主图的列表项在 lite 模式不挂玻璃滤镜，full 模式才使用', async () => {
+it('60 张主图的列表项在 lite 模式不挂任何滤镜，full 模式只用背景模糊', async () => {
   const many = Array.from({ length: 60 }, (_, index) => product(index + 1, `单品${index + 1}`))
   serve(review(many)); mount(); await ready()
   const rows = () => [...host.querySelectorAll('[data-testid="product-list"] li')]
@@ -240,7 +240,7 @@ it('60 张主图的列表项在 lite 模式不挂玻璃滤镜，full 模式才�
   expect(rows().every(row => row.querySelector('[data-list-item="lite"]') && !row.querySelector('.glass-surface, .glass-effect, [data-glass-renderer]'))).toBe(true)
   localStorage.setItem(MODE_KEY, 'full')
   remount(); await ready()
-  expect(rows().every(row => row.querySelector('.glass-surface[data-visual-mode="full"]'))).toBe(true)
+  expect(rows().every(row => row.querySelector('[data-list-item="full"].backdrop-blur-md') && !row.querySelector('.glass-effect'))).toBe(true)
 })
 
 it('草稿合并保留最新文字，界面预览把人工修改标成已改', () => {

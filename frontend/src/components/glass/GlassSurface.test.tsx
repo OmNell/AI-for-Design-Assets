@@ -125,3 +125,8 @@ describe('React 18 下的真实玻璃库集成', () => {
     expect(host.querySelectorAll('filter')).toHaveLength(1)
   })
 })
+
+it('位移贴图按屏幕缩放向上取整放大，避免高分屏下出现错位条带', async () => {
+  const { mapScale } = await import('./GlassSurface')
+  expect([0.8, 1, 1.1, 1.25, 1.5, 2, 2.5, 3].map(mapScale)).toEqual([1, 1, 2, 2, 2, 2, 3, 3])
+})
