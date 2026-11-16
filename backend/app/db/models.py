@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, Index
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -306,3 +306,35 @@ class InspectionFinding(Record, Base):
     file_id: Mapped[int | None] = mapped_column(ForeignKey("files.id"), index=True)
     auto_fixed: Mapped[bool] = mapped_column(Boolean, default=False)
     detail: Mapped[str | None] = mapped_column(Text)
+
+
+class ProductEmbedding(Record, Base):
+    __tablename__ = "product_embeddings"
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), unique=True)
+    text_hash: Mapped[str] = mapped_column(String)
+    model: Mapped[str] = mapped_column(String)
+    dim: Mapped[int] = mapped_column(Integer)
+    embedding: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+class SearchLog(Record, Base):
+    __tablename__ = "search_logs"
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    query: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String)
+    conditions: Mapped[object | None] = mapped_column(JSON)
+    result_count: Mapped[int] = mapped_column(Integer)
+    elapsed_ms: Mapped[int] = mapped_column(Integer)
+    local_ms: Mapped[int] = mapped_column(Integer)
+    model_calls: Mapped[int] = mapped_column(Integer)
+    degraded: Mapped[bool] = mapped_column(Boolean, default=False)
+    clicks: Mapped[list[int]] = mapped_column(JSON, default=list)
+
+
+class QueryCache(Record, Base):
+    __tablename__ = "query_cache"
+    __table_args__ = (UniqueConstraint("query_hash", "fields_version"),)
+    query_hash: Mapped[str] = mapped_column(String)
+    fields_version: Mapped[int] = mapped_column(Integer)
+    query: Mapped[str] = mapped_column(Text)
+    result: Mapped[object] = mapped_column(JSON)

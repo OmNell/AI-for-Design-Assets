@@ -5,6 +5,7 @@ import { Link } from 'react-router'
 import { getAiAlerts, getAiSettings, saveAiSettings, testAiModels, type AiSettings, type AiSettingsInput, type ModelTest } from '../api/ai'
 import { GlassPanel } from '../components/glass/GlassPanel'
 import { GlassButton } from '../components/glass/GlassButton'
+import { VectorIndexPanel } from '../components/VectorIndexPanel'
 
 const editable = (value: AiSettings): AiSettingsInput => ({ base_url: value.base_url, model_vision: value.model_vision, model_text: value.model_text, model_embed: value.model_embed, concurrency: value.concurrency, timeout_s: value.timeout_s, retries: value.retries, stall_alert_min: value.stall_alert_min, api_key: '' })
 
@@ -57,5 +58,5 @@ export function AiSettingsPage() {
   const alerts = useQuery({ queryKey: ['ai-alerts'], queryFn: getAiAlerts, retry: false, refetchInterval: 30000 })
   return <div className="space-y-6"><GlassPanel><h1 className="text-2xl font-semibold">AI 设置</h1><p className="mt-3 text-sm text-slate-500">配置百炼兼容接口与三个模型。密钥保存后只显示是否已设置。</p>
     {settings.isPending ? <p className="mt-6">正在加载设置…</p> : settings.isError ? <p role="alert" className="mt-6 text-red-800">{settings.error.message}</p> : <SettingsForm initial={settings.data} />}
-  </GlassPanel><GlassPanel><h2 className="text-xl font-semibold">AI 停滞异常</h2><div className="mt-5 space-y-3">{alerts.isPending ? <p className="text-sm text-slate-500">正在加载异常记录…</p> : alerts.isError ? <p role="alert" className="text-sm text-red-800">{alerts.error.message}</p> : alerts.data.length ? alerts.data.map(alert => <div key={alert.id} className="rounded-xl bg-amber-100/40 p-4 text-sm"><Link to={`/batches/${alert.batch_id}`} className="font-medium text-emerald-800 underline underline-offset-4">查看批次</Link><p className="mt-2">{alert.reason}</p><p className="mt-2 text-xs text-slate-500">{new Date(alert.detected_at).toLocaleString('zh-CN')}</p></div>) : <p className="text-sm text-slate-500">暂无停滞异常</p>}</div></GlassPanel></div>
+  </GlassPanel><GlassPanel><h2 className="text-xl font-semibold">AI 停滞异常</h2><div className="mt-5 space-y-3">{alerts.isPending ? <p className="text-sm text-slate-500">正在加载异常记录…</p> : alerts.isError ? <p role="alert" className="text-sm text-red-800">{alerts.error.message}</p> : alerts.data.length ? alerts.data.map(alert => <div key={alert.id} className="rounded-xl bg-amber-100/40 p-4 text-sm"><Link to={`/batches/${alert.batch_id}`} className="font-medium text-emerald-800 underline underline-offset-4">查看批次</Link><p className="mt-2">{alert.reason}</p><p className="mt-2 text-xs text-slate-500">{new Date(alert.detected_at).toLocaleString('zh-CN')}</p></div>) : <p className="text-sm text-slate-500">暂无停滞异常</p>}</div></GlassPanel><VectorIndexPanel /></div>
 }

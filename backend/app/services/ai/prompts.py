@@ -30,3 +30,16 @@ def build_prompt(fields: list[FieldDefinition], items: list[dict[str, object]] |
     name = "set_tagging.txt" if items is not None else "item_tagging.txt"
     template = Template((PROMPT_DIRECTORY / name).read_text(encoding="utf-8"))
     return template.substitute(fields=field_text, items=json.dumps(candidates, ensure_ascii=False))
+
+
+def build_query_prompt(query: str, fields: list[FieldDefinition]) -> str:
+    field_text = "\n".join(f'- {field["key"]}（{field["label"]}）：{field["hint"]}' for field in fields)
+    template = Template((PROMPT_DIRECTORY / "query_understanding.txt").read_text(encoding="utf-8"))
+    return template.substitute(fields=field_text, query=query)
+
+
+def build_ranking_prompt(query: str, candidates: list[dict[str, object]], limit: int = 10) -> str:
+    """候选只有临时序号和文字描述；调用方保证描述里没有路径、编号和企业名。"""
+    lines = "\n".join(f'{item["index"]}. {str(item["text"]).replace(chr(10), "；")}' for item in candidates)
+    template = Template((PROMPT_DIRECTORY / "ranking.txt").read_text(encoding="utf-8"))
+    return template.substitute(query=query, candidates=lines, limit=limit)

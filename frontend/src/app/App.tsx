@@ -26,6 +26,7 @@ import { ProjectsPage } from '../pages/ProjectsPage'
 import { ProjectPage } from '../pages/ProjectPage'
 import { ProductPage } from '../pages/ProductPage'
 import { LinkPage } from '../pages/LinkPage'
+import { SearchPage } from '../pages/SearchPage'
 import { canAccess, navigation, type NavigationItem } from './navigation'
 
 
@@ -41,6 +42,11 @@ function RoleGuard({ item, children }: { item: NavigationItem; children: React.R
 function DevComponents() {
   const health = useQuery({ queryKey: ['health'], queryFn: () => getHealth() })
   return health.isPending ? <p>正在加载…</p> : health.data?.mode === 'dev' ? <ComponentsPage /> : <Navigate to="/" replace />
+}
+/** 登录后的默认页：有上传或审核工作的人到首页看待办；没有任何工作角色、只来查找的人直接到搜索页。 */
+function Landing() {
+  const user = useAuthStore(state => state.user)!
+  return user.roles.length ? <HomePage /> : <Navigate to="/search" replace />
 }
 function Shell() {
   const user = useAuthStore(state => state.user)!
@@ -79,9 +85,9 @@ function AuthBootstrap() {
   if (!initialized) return <p className="p-12 text-slate-600" role="status">正在确认登录状态…</p>
   return <Routes><Route path="/login" element={<LoginPage />} />
     <Route element={<Guard />}><Route element={<Shell />}>
-      <Route index element={<HomePage />} />
+      <Route index element={<Landing />} />
       {navigation.filter(item => item.path !== '/').map(item => <Route key={item.path} path={item.path} element={<RoleGuard item={item}>
-        {item.path === '/admin/roles' ? <RolesPage /> : item.path === '/upload' ? <UploadPage /> : item.path === '/settings' ? <AiSettingsPage /> : item.path === '/projects' ? <ProjectsPage /> : item.path === '/first-review' ? <QueuePage stage="first" /> : item.path === '/final-review' ? <QueuePage stage="final" /> : <PlaceholderPage title={item.label} />}
+        {item.path === '/admin/roles' ? <RolesPage /> : item.path === '/upload' ? <UploadPage /> : item.path === '/settings' ? <AiSettingsPage /> : item.path === '/projects' ? <ProjectsPage /> : item.path === '/search' ? <SearchPage /> : item.path === '/first-review' ? <QueuePage stage="first" /> : item.path === '/final-review' ? <QueuePage stage="final" /> : <PlaceholderPage title={item.label} />}
       </RoleGuard>} />)}
       <Route path="/admin/tag-fields" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><TagFieldsPage /></RoleGuard>} />
       <Route path="/batches/:id" element={<BatchDetailPage />} />

@@ -1,6 +1,6 @@
 # NAS 设计资产工作台
 
-公司内网设计资产工作台。当前完成 WP00～WP10：NAS 接入、登录/角色、预检与分片上传、后台队列与缩略图、AI 打标与自由文本字段管理、套装关系推荐、上传人核对页、初审/终审两级审核、对照表与站内待办、入库执行（正式目录、商品编号、三层档案、卡片柜、永久链接），以及项目页、商品页、文件下载和永久链接跳转。语义搜索、入库后操作与巡检尚未开放。
+公司内网设计资产工作台。当前完成 WP00～WP11：NAS 接入、登录/角色、预检与分片上传、后台队列与缩略图、AI 打标与自由文本字段管理、套装关系推荐、上传人核对页、两级审核、对照表与站内待办、入库执行与三层档案、项目页与下载，以及检索（编号直达、查询理解与同义扩展、字段关键词与向量两路海选、模型排序、搜索页、考卷）。入库后操作与巡检尚未开放。
 
 ## 开发环境
 
@@ -46,6 +46,7 @@ npm --prefix frontend run build
 - 首次启动自动生成 `data/secret.key`、通过 Alembic 创建 `data/app.db`。SQLite 启用 WAL、`busy_timeout=5000` 和外键检查。每次启动执行 `upgrade head`，重复启动不会重建已有表或密钥。
 - 首个迁移包含 `users`、`sessions`、`settings`、`oplog`、`jobs`，WP04 的 `0002_upload` 增加 `projects`、`batches`、`batch_files`、`preflight_acks`。`projects` 本包仅查重，不在上传时创建正式项目。`oplog` 数据库触发器禁止 UPDATE/DELETE。
 - WP05 的 `0003_thumbnails` 增加 batch_files.thumb_status/thumb_error 和 jobs 状态/调度时间索引；启动自动迁移。
+- WP11 的 `0009_search` 增加 product_embeddings、search_logs、query_cache；配置新增 `search` 一节（向量实现、候选数量、放宽阈值）。
 - WP10 的 `0008_findings` 增加 inspection_findings（下载找不到文件时登记，巡检沿用）。
 - WP09 的 `0007_catalog` 增加 files、history_versions、products、product_relations、product_tags、links。
 - WP08 的 `0006_audit` 增加 review_rounds、review_pins、industries。
@@ -462,4 +463,26 @@ python -m pytest backend/tests/bailian -m bailian -q -s --tb=short
 | GET | /api/l/{link_id} | 永久链接：重定向；`?format=json` 返回解析结果 |
 
 下载用当前登录人本人的 NAS 会话读取，NAS 拒绝即 403「NAS 无权限」。文件不在记录位置时按四层查找（记录路径 → 立项编号定位项目文件夹 → 文件名+大小+修改时间 → 指纹），找到就更新卡片柜，找不到返回「文件已不存在」并登记待巡检。对外分享的永久链接是 `http://工作台地址/l/{短ID}`。手动验收步骤见 `docs/PROGRESS.md` 的 WP10 一节。
+
+## WP11 · 检索
+
+新增依赖 `sqlite-vec` 与 `numpy`，更新代码后重新执行 `python -m pip install -e './backend[test]'`；启动自动迁移至 `0009_search`。
+
+- 向量实现由 `search.vector_backend` 决定：`auto`（默认，优先 sqlite-vec，加载失败自动用 numpy 后备并写日志）、`sqlite-vec`、`numpy`。用后备实现跑全部测试：
+
+```bash
+NASWB_SEARCH__VECTOR_BACKEND=numpy python -m pytest -q
+```
+
+- 接口：`POST /api/search`（`{query, filters?, conditions?, page?}`）、`POST /api/search/click`、`GET /api/admin/search-index`、`POST /api/admin/search-index/rebuild`。
+- 流程：像编号 → 精确查、置顶、不调用模型；否则查询理解（带同义说法，按查询文本和字段版本缓存）→ 字段关键词匹配与向量两路海选 → 合并最多 60 条 → 模型排序前 10。任一模型环节失败都会降级返回并在结果里标注。
+- 发给外部模型的只有用户的话和候选的文字描述，并先去掉已知的企业名、别名和立项编号；不发路径、商品编号和链接。
+- 更换向量模型或维度后，在「设置」页点「重建全部向量」。
+- 考卷：编辑 `backend/tests/search_exam.yaml` 后运行
+
+```bash
+python scripts/run_exam.py --base-url http://localhost:8080 --username 你的账号
+```
+
+手动验收步骤见 `docs/PROGRESS.md` 的 WP11 一节。
 

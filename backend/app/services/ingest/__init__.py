@@ -330,12 +330,6 @@ class IngestService:
             # 通知上传人、初审、终审。
             self.notify.emit(session, "ingested", batch)
 
-    # ---- embed 占位 ----
-    @staticmethod
-    def handle_embed(context: JobContext) -> None:
-        """向量生成在 WP11 接入；本包只负责在入库完成时为每个商品派发任务。"""
-        return None
-
     @staticmethod
     def product_thumb(data_dir: Path, product_id: int, size: int) -> Path:
         return data_dir / "thumbs" / "product" / str(product_id) / f"{size}.jpg"

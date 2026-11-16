@@ -21,7 +21,7 @@ from app.db.database import Database
 from app.db.models import AiCall
 from app.services.crypto import CryptoError, SecretCipher
 from .parsing import FieldDefinition
-from .prompts import build_prompt
+from .prompts import build_prompt, build_query_prompt, build_ranking_prompt
 
 logger = logging.getLogger("nas_workbench")
 
@@ -259,6 +259,33 @@ class AiClient:
         payload: dict[str, object] = {"model": model, "messages": [{"role": "user", "content": content}]}
         return self._run(model, "set" if items is not None else "item", lambda: self._chat(model, payload), batch_id, product_id)
 
+    # ---- 检索用：向量、查询理解、候选排序 ----
+    def embed_model(self) -> str:
+        return self.config.model_embed
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        model = self.config.model_embed
+        payload: dict[str, object] = {"model": model, "input": texts}
+
+        def action() -> _Result:
+            body = self._post("/embeddings", model, payload)
+            data = body.get("data") if isinstance(body, dict) else None
+            vectors = [item.get("embedding") for item in data] if isinstance(data, list) and all(isinstance(item, dict) for item in data) else []
+            if len(vectors) != len(texts) or not all(isinstance(vector, list) and vector and all(type(value) in (int, float) for value in vector) for vector in vectors):
+                raise _AttemptError("向量模型未返回有效结果", retryable=True, usage=_usage(body))
+            return _Result(json.dumps(vectors), _usage(body))
+        return json.loads(self._run(model, "embed", action))
+
+    def understand(self, query: str, fields: list[FieldDefinition]) -> str:
+        model = self.config.model_text
+        payload: dict[str, object] = {"model": model, "messages": [{"role": "user", "content": build_query_prompt(query, fields)}]}
+        return self._run(model, "query", lambda: self._chat(model, payload))
+
+    def rank(self, query: str, candidates: list[dict[str, object]], limit: int = 10) -> str:
+        model = self.config.model_text
+        payload: dict[str, object] = {"model": model, "messages": [{"role": "user", "content": build_ranking_prompt(query, candidates, limit)}]}
+        return self._run(model, "rank", lambda: self._chat(model, payload))
+
     def test_models(self) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
         for kind, model in (("vision", self.config.model_vision), ("text", self.config.model_text), ("embed", self.config.model_embed)):
@@ -309,6 +336,73 @@ class FakeAiClient(AiClient):
                 "multi_object": "一图多品" in name or "multi" in name, "relation_items": relations}
             return _Result(json.dumps(result, ensure_ascii=False), {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})
         return self._run(self.config.model_vision or "fake-vision", "set" if items is not None else "item", action, batch_id, product_id)
+
+    # 假模型的同义说法表：每组第一项以外都是同义说法。只用于 dev 与自动化测试。
+    SYNONYMS: dict[str, list[list[str]]] = {
+        "festival": [["春节", "过年", "新年"], ["中秋", "中秋节", "月圆"], ["圣诞", "圣诞节"], ["通用", "不限节日"]],
+        "audience": [["领导", "企业客户", "上级"], ["员工", "同事", "职工"], ["长辈", "老人", "父母"], ["儿童", "孩子", "小朋友"]],
+        "category": [["摆件", "桌面摆设", "小摆件"], ["保温杯", "杯子", "水杯"], ["雨伞", "伞", "折叠伞"], ["茶具", "茶具套装", "茶杯"]],
+        "size": [["小", "小巧", "掌心"], ["大", "大号", "大件"]],
+        "material": [["陶瓷", "瓷器", "瓷"], ["不锈钢", "金属", "钢"], ["胡桃木", "木质", "木"], ["玻璃", "水晶玻璃"]],
+        "color": [["红", "中国红", "红色"], ["黑", "哑光黑", "黑色"]],
+        "style": [["国潮", "中国风", "新中式"], ["极简", "简约", "简洁"]],
+        "usage_scene": [["商务", "商务社交", "商务馈赠"], ["居家", "日常居家", "家用"]],
+        "craft": [["烫金", "烫印"], ["雕刻", "激光雕刻", "镭雕"]],
+    }
+
+    def embed_model(self) -> str:
+        return self.config.model_embed or "fake-embed"
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """确定性的假向量：按单字和相邻两字做哈希计数，文字越接近余弦相似度越高。"""
+        def action() -> _Result:
+            if any("向量失败" in text for text in texts):
+                raise _AttemptError("假向量模型调用失败")
+            vectors = []
+            for text in texts:
+                vector = [0.0] * 64
+                cleaned = "".join(text.split())
+                for token in [*cleaned, *(cleaned[index:index + 2] for index in range(len(cleaned) - 1))]:
+                    vector[int(hashlib.sha256(token.encode()).hexdigest()[:8], 16) % 64] += 1.0
+                vectors.append(vector)
+            return _Result(json.dumps(vectors), {"prompt_tokens": 1, "total_tokens": 1})
+        return json.loads(self._run(self.embed_model(), "embed", action))
+
+    def understand(self, query: str, fields: list[FieldDefinition]) -> str:
+        def action() -> _Result:
+            if "理解失败" in query:
+                raise _AttemptError("假文本模型调用失败")
+            text = query
+            exclude = re.findall(r"(?:不要|不含|排除)([\u4e00-\u9fffA-Za-z0-9]{1,8})", text)
+            for word in exclude:
+                text = re.sub(rf"(?:不要|不含|排除){re.escape(word)}", " ", text)
+            enabled = {field["key"] for field in fields}
+            result: dict[str, list[dict[str, object]]] = {}
+            covered = text
+            for key, groups in self.SYNONYMS.items():
+                if key not in enabled:
+                    continue
+                for group in groups:
+                    hit = next((word for word in sorted(group, key=len, reverse=True) if word in text), None)
+                    if hit is not None:
+                        result.setdefault(key, []).append({"keyword": hit, "synonyms": [word for word in group if word != hit]})
+                        covered = covered.replace(hit, " ")
+            other = [token for token in re.split(r"[\s，,、。的送给]+", covered) if len(token) >= 2]
+            body = {"fields": result, "exclude": exclude, "other": other}
+            return _Result(json.dumps(body, ensure_ascii=False), {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})
+        return self._run(self.config.model_text or "fake-text", "query", action)
+
+    def rank(self, query: str, candidates: list[dict[str, object]], limit: int = 10) -> str:
+        def action() -> _Result:
+            if "排序失败" in query:
+                raise _AttemptError("假文本模型调用失败")
+            wanted = set("".join(query.split()))
+            scored = sorted(candidates, key=lambda item: (-len(wanted & set(str(item["text"]))), int(item["index"])))
+            ranking = [{"index": item["index"], "reason": f"假模型：与「{query[:12]}」有 {len(wanted & set(str(item['text'])))} 个字相符"} for item in scored[:limit]]
+            if "越界序号" in query:
+                ranking = [{"index": 999, "reason": "不存在的序号"}, {"index": "1", "reason": "字符串序号"}, *ranking, *ranking[:1]]
+            return _Result(json.dumps({"ranking": ranking}, ensure_ascii=False), {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})
+        return self._run(self.config.model_text or "fake-text", "rank", action)
 
     def test_models(self) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []

@@ -42,6 +42,11 @@ purge:
 schedule:
   inspection: "0 2 * * *"
   backup: "0 3 * * *"
+search:
+  vector_backend: auto  # auto / sqlite-vec / numpy（后备：向量存 BLOB，用 numpy 算余弦相似度）
+  vector_top_k: 50
+  max_candidates: 60
+  relax_below: 10
 paths:
   data_dir: ./data
   dev_nas_dir: ./devdata/nas

@@ -40,6 +40,9 @@ from app.services.notify import NotifyService
 from app.services.ingest import IngestService
 from app.services.catalog import CatalogService
 from app.api.catalog import router as catalog_router
+from app.api.search import router as search_router
+from app.services.search import SearchService
+from app.services.search.vectors import create_vector_store
 from app.services.admin.company_map import CompanyMapService
 from app.db.models import Job
 from sqlalchemy.orm import Session
@@ -87,7 +90,8 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             # 入库一次只跑一个；需要终审本人会话，重启后不自动恢复，等终审点「继续」。
             jobs.register("ingest", lambda context: application.state.ingest.handle(context), concurrency=1, retries=0, recoverable=False,
                           state_callback=lambda session, job: application.state.ingest.job_changed(session, job))
-            jobs.register("embed", IngestService.handle_embed, concurrency=1, retries=0, recoverable=True)
+            # 向量模型的网络重试由共享客户端负责，任务本身不再重试。
+            jobs.register("embed", lambda context: application.state.search.handle_embed(context), concurrency=2, retries=0, recoverable=True)
             application.state.auth.on_login = thumbs.resume_for_user
             upload = UploadService(application.state.auth, thumbs, ai)
             application.state.upload = upload
@@ -97,6 +101,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             ingest = IngestService(application.state.auth, jobs, application.state.notify, application.state.ai_settings)
             application.state.ingest = ingest
             application.state.catalog = CatalogService(application.state.auth)
+            application.state.search = SearchService(application.state.auth, jobs, ai, create_vector_store(database, config.search.vector_backend))
             application.state.audit = AuditService(application.state.auth, application.state.review, application.state.notify, ingest)
             jobs.start()
             ai.start()
@@ -140,6 +145,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
     application.include_router(review_router)
     application.include_router(audit_router)
     application.include_router(catalog_router)
+    application.include_router(search_router)
     static_root = static_dir.resolve()
 
     @application.get("/{path:path}", include_in_schema=False)

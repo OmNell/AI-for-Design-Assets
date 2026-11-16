@@ -35,6 +35,30 @@ class Database:
         finally:
             cursor.close()
 
+    def load_vector_extension(self) -> bool:
+        """尝试为之后的每个连接加载 sqlite-vec；任何一步失败都返回 False，由调用方改用后备实现。"""
+        try:
+            import sqlite_vec
+
+            def load(connection: sqlite3.Connection, record: object) -> None:
+                connection.enable_load_extension(True)
+                try:
+                    sqlite_vec.load(connection)
+                finally:
+                    connection.enable_load_extension(False)
+
+            probe = sqlite3.connect(":memory:")
+            try:
+                load(probe, None)
+                probe.execute("SELECT vec_version()").fetchone()
+            finally:
+                probe.close()
+            event.listen(self.engine, "connect", load)
+            self.engine.dispose()
+            return True
+        except Exception:
+            return False
+
     def migrate(self) -> None:
         config = Config(str(BACKEND_DIR / "alembic.ini"))
         config.set_main_option("script_location", str(BACKEND_DIR / "alembic"))

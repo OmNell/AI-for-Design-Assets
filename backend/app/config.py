@@ -70,6 +70,14 @@ class ScheduleConfig(Section):
     backup: str = "0 3 * * *"
 
 
+class SearchConfig(Section):
+    # auto：优先 sqlite-vec，加载失败自动改用 numpy 后备；也可强制指定其中一种。
+    vector_backend: Literal["auto", "sqlite-vec", "numpy"] = "auto"
+    vector_top_k: int = Field(default=50, gt=0)
+    max_candidates: int = Field(default=60, gt=0)
+    relax_below: int = Field(default=10, ge=0)
+
+
 class PathsConfig(Section):
     data_dir: Path = Path("./data")
     dev_nas_dir: Path = Path("./devdata/nas")
@@ -97,6 +105,7 @@ class Settings(BaseSettings):
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     purge: PurgeConfig = Field(default_factory=PurgeConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
+    search: SearchConfig = Field(default_factory=SearchConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
 
     @model_validator(mode="after")
