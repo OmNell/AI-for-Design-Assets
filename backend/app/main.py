@@ -1,4 +1,4 @@
-"""应用工厂与前端静态托管，认证和角色界面框架。"""
+"""应用工厂、前端静态托管及服务生命周期。"""
 from __future__ import annotations
 
 import logging
@@ -15,6 +15,8 @@ from app import __version__
 from app.api.health import router
 from app.api.auth import router as auth_router
 from app.api.admin import router as admin_router
+from app.api.upload import router as upload_router
+from app.services.upload.service import UploadService
 from app.services.auth.service import AuthService
 from app.services.admin import RoleService
 from app.services.nas.factory import create_auth_backend, create_session_pool
@@ -37,6 +39,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
         logger = logging.getLogger("nas_workbench")
         database: Database | None = None
         pool = None
+        upload = None
         try:
             database = Database(config.paths.data_dir)
             application.state.settings = config
@@ -46,12 +49,18 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             pool = create_session_pool(config)
             application.state.auth = AuthService(database, pool, create_auth_backend(config), config)
             application.state.roles = RoleService(application.state.auth)
+            upload = UploadService(application.state.auth)
+            application.state.upload = upload
             logger.info("工作台启动完成，模式：%s", config.mode)
             yield
         finally:
             try:
-                if pool is not None:
-                    pool.shutdown()
+                try:
+                    if upload is not None:
+                        upload.shutdown()
+                finally:
+                    if pool is not None:
+                        pool.shutdown()
             finally:
                 if database is not None:
                     database.close()
@@ -64,6 +73,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
     application.include_router(router)
     application.include_router(auth_router)
     application.include_router(admin_router)
+    application.include_router(upload_router)
     static_root = static_dir.resolve()
 
     @application.get("/{path:path}", include_in_schema=False)

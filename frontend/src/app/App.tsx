@@ -11,6 +11,7 @@ import { GlassButton } from '../components/glass/GlassButton'
 import { ModeSwitch } from '../components/glass/ModeSwitch'
 import { LoginPage } from '../pages/LoginPage'
 import { HomePage } from '../pages/HomePage'
+import { UploadPage } from '../pages/UploadPage'
 import { RolesPage } from '../pages/RolesPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
 import { ComponentsPage } from '../pages/ComponentsPage'
@@ -68,7 +69,7 @@ function AuthBootstrap() {
     <Route element={<Guard />}><Route element={<Shell />}>
       <Route index element={<HomePage />} />
       {navigation.filter(item => item.path !== '/').map(item => <Route key={item.path} path={item.path} element={<RoleGuard item={item}>
-        {item.path === '/admin/roles' ? <RolesPage /> : <PlaceholderPage title={item.label} />}
+        {item.path === '/admin/roles' ? <RolesPage /> : item.path === '/upload' ? <UploadPage /> : <PlaceholderPage title={item.label} />}
       </RoleGuard>} />)}
       <Route path="/components" element={<DevComponents />} /><Route path="*" element={<PlaceholderPage title="页面不存在" />} />
     </Route></Route></Routes>

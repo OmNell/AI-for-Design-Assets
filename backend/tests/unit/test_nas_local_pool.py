@@ -151,3 +151,28 @@ def test_pool_failed_reauthentication_keeps_previous(tmp_path: Path) -> None:
         with pytest.raises(NasPermissionDenied):
             pool.open(1, "user", "wrong")
         assert pool.get(1) is old
+
+
+def test_upload_pins_keep_connection_until_last_batch_and_allow_forced_disable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = [0.0]
+    monkeypatch.setattr("app.services.nas.fs.time.monotonic", lambda: clock[0])
+    with SessionPool(lambda u, p: LocalFs(tmp_path, {Region.TEMP: Access.WRITE}),
+                     lambda: LocalFs(tmp_path, {}), idle_minutes=1) as pool:
+        original = pool.open(1, "user", "dummy")
+        assert pool.pin(1) is original
+        assert pool.pin(1) is original
+        clock[0] = 120
+        pool.close(1)
+        pool.expire_idle()
+        assert pool.get(1) is original
+        pool.unpin(1)
+        assert pool.get(1) is original
+        pool.unpin(1)
+        with pytest.raises(NasSessionExpired):
+            pool.get(1)
+        replacement = pool.open(1, "user", "dummy")
+        pool.pin(1)
+        assert pool.open(1, "user", "dummy") is replacement
+        pool.close(1, force=True)
+        with pytest.raises(NasSessionExpired):
+            pool.get(1)

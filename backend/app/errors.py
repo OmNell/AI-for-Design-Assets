@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException
 
-from app.services.nas.errors import NasSessionExpired
+from app.services.nas.errors import NasSessionExpired, NasPermissionDenied, NasUnavailable, NasNotFound
 
 logger = logging.getLogger("nas_workbench")
 
@@ -21,7 +21,8 @@ class ErrorResponse(BaseModel):
 
 
 class AppError(Exception):
-    def __init__(self, code: str, message: str, status_code: int = 400) -> None:
+    def __init__(self, code: str, message: str, status_code: int = 400, detail: object | None = None) -> None:
+        self.detail = detail
         self.code = code
         self.message = message
         self.status_code = status_code
@@ -34,7 +35,7 @@ def error_response(status: int, code: str, message: str, detail: object | None =
 def register_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def application_error(request: Request, error: AppError) -> JSONResponse:
-        response = error_response(error.status_code, error.code, error.message)
+        response = error_response(error.status_code, error.code, error.message, error.detail)
         if error.status_code == 401:
             response.delete_cookie("nas_workbench_session", path="/", httponly=True, samesite="lax")
         return response
@@ -44,6 +45,18 @@ def register_handlers(app: FastAPI) -> None:
         response = error_response(401, "nas_session_expired", "NAS 连接已超时，请重新登录")
         response.delete_cookie("nas_workbench_session", path="/", httponly=True, samesite="lax")
         return response
+
+    @app.exception_handler(NasPermissionDenied)
+    async def nas_denied(request: Request, error: NasPermissionDenied) -> JSONResponse:
+        return error_response(403, "nas_permission_denied", "NAS 无权限")
+
+    @app.exception_handler(NasUnavailable)
+    async def nas_unavailable(request: Request, error: NasUnavailable) -> JSONResponse:
+        return error_response(503, "nas_unavailable", "NAS 暂时不可用，请重试或继续上传")
+
+    @app.exception_handler(NasNotFound)
+    async def nas_not_found(request: Request, error: NasNotFound) -> JSONResponse:
+        return error_response(404, "nas_not_found", "NAS 文件或目录不存在")
 
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, error: HTTPException) -> JSONResponse:

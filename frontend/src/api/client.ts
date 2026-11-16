@@ -1,7 +1,7 @@
 import { useAuthStore } from '../stores/auth'
 
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, message: string) { super(message) }
+  constructor(public status: number, public code: string, message: string, public detail: unknown = null) { super(message) }
 }
 export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   let response: Response
@@ -18,7 +18,7 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
     const message = code === 'nas_session_expired' ? 'NAS 连接已超时，请重新登录' :
       'message' in body && typeof body.message === 'string' ? body.message : '请求未能完成，请稍后重试'
     if (response.status === 401) useAuthStore.getState().clear(path === '/api/auth/login' ? '' : message)
-    throw new ApiError(response.status, code, message)
+    throw new ApiError(response.status, code, message, 'detail' in body ? body.detail : null)
   }
   if (data === null) throw new ApiError(response.status, 'invalid_response', '工作台响应格式不正确，请稍后重试')
   return data as T

@@ -52,6 +52,9 @@ class NasStream(io.BufferedIOBase):
     def seek(self, offset: int, whence: int = 0) -> int:
         return self.owner._run(lambda: self.stream.seek(offset, whence))
 
+    def truncate(self, size: int | None = None) -> int:
+        return self.owner._run(lambda: self.stream.truncate(size))
+
     def tell(self) -> int:
         return self.owner._run(self.stream.tell)
 

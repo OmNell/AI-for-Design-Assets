@@ -37,5 +37,5 @@ class RoleService:
                 OplogService(session).write(current.id, "admin", "修改角色", "user", str(user.id), before,
                                            {"roles": user.roles, "enabled": user.enabled}, "成功", host)
             if not user.enabled:
-                self.auth.pool.close(user.id)
+                self.auth.pool.close(user.id, force=True)
             return user

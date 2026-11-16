@@ -18,6 +18,8 @@ class SessionPool:
         self._idle_seconds = idle_minutes * 60
         self._sessions: dict[int, BaseFs] = {}
         self._system: BaseFs | None = None
+        self._pins: dict[int, int] = {}
+        self._pending_close: set[int] = set()
         self._lock = threading.RLock()
         self._stopped = threading.Event()
         self._thread = threading.Thread(target=self._sweep, args=(sweep_seconds,), daemon=True, name="nas-session-sweeper")
@@ -30,6 +32,10 @@ class SessionPool:
     def open(self, user_id: int, username: str, password: str) -> BaseFs:
         with self._lock:
             self._ensure_open()
+            if self._pins.get(user_id) and user_id in self._sessions:
+                self._pending_close.discard(user_id)
+                self._sessions[user_id].touch()
+                return self._sessions[user_id]
             # 先建立新连接；认证失败不替换旧会话，也不回退到其他身份。
             current = self._factory(username, password)
             old = self._sessions.pop(user_id, None)
@@ -49,7 +55,7 @@ class SessionPool:
             if current is None:
                 raise NasSessionExpired("NAS 会话已过期，请重新登录")
             try:
-                expired = current.expire(self._idle_seconds)
+                expired = False if self._pins.get(user_id) else current.expire(self._idle_seconds)
             except NasUnavailable:
                 expired = True
             if expired:
@@ -58,8 +64,30 @@ class SessionPool:
             current.touch()
             return current
 
-    def close(self, user_id: int) -> None:
+    def pin(self, user_id: int) -> BaseFs:
         with self._lock:
+            current = self.get(user_id)
+            self._pins[user_id] = self._pins.get(user_id, 0) + 1
+            return current
+
+    def unpin(self, user_id: int) -> None:
+        with self._lock:
+            count = self._pins.get(user_id, 0)
+            if count <= 1:
+                self._pins.pop(user_id, None)
+                if user_id in self._pending_close:
+                    self._pending_close.discard(user_id)
+                    self.close(user_id)
+            else:
+                self._pins[user_id] = count - 1
+
+    def close(self, user_id: int, force: bool = False) -> None:
+        with self._lock:
+            if self._pins.get(user_id) and not force:
+                self._pending_close.add(user_id)
+                return
+            self._pins.pop(user_id, None)
+            self._pending_close.discard(user_id)
             current = self._sessions.pop(user_id, None)
             if current is not None:
                 current.close()
@@ -81,6 +109,8 @@ class SessionPool:
     def expire_idle(self) -> None:
         with self._lock:
             for user_id, current in tuple(self._sessions.items()):
+                if self._pins.get(user_id):
+                    continue
                 try:
                     expired = current.expire(self._idle_seconds)
                 except NasUnavailable:
@@ -107,6 +137,8 @@ class SessionPool:
             if self._system is not None:
                 sessions.append(self._system)
             self._sessions.clear()
+            self._pins.clear()
+            self._pending_close.clear()
             self._system = None
             failed = False
             for current in sessions:

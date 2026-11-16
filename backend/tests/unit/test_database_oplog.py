@@ -10,7 +10,7 @@ from app.services.oplog import OplogService
 
 
 def test_schema_and_sqlite_pragmas(database: Database) -> None:
-    assert set(inspect(database.engine).get_table_names()) == {"users", "sessions", "settings", "oplog", "jobs", "alembic_version"}
+    assert set(inspect(database.engine).get_table_names()) == {"users", "sessions", "settings", "oplog", "jobs", "projects", "batches", "batch_files", "preflight_acks", "alembic_version"}
     with database.engine.connect() as connection:
         assert connection.scalar(text("PRAGMA journal_mode")) == "wal"
         assert connection.scalar(text("PRAGMA busy_timeout")) == 5000

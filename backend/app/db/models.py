@@ -1,9 +1,9 @@
-"""首个迁移范围内的五张表，时间统一使用 UTC。"""
+"""工作台已落地的业务表，时间统一使用 UTC。"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -70,3 +70,62 @@ class Job(Record, Base):
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Project(Record, Base):
+    __tablename__ = "projects"
+    project_code: Mapped[str] = mapped_column(String, unique=True)
+    code_source: Mapped[str] = mapped_column(String, default="company")
+    company_name: Mapped[str] = mapped_column(String)
+    company_id: Mapped[int | None] = mapped_column(Integer)
+    industry_id: Mapped[int | None] = mapped_column(Integer)
+    won: Mapped[bool] = mapped_column(Boolean)
+    project_name: Mapped[str] = mapped_column(String)
+    folder_name: Mapped[str] = mapped_column(String)
+    current_path: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="active")
+    ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Batch(Record, Base):
+    __tablename__ = "batches"
+    batch_no: Mapped[str] = mapped_column(String, unique=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    project_code: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    uploader_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    first_reviewer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    final_reviewer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    round: Mapped[int] = mapped_column(Integer, default=1)
+    temp_path: Mapped[str] = mapped_column(String)
+    won: Mapped[bool] = mapped_column(Boolean)
+    recommended_path: Mapped[str | None] = mapped_column(String)
+    final_path: Mapped[str | None] = mapped_column(String)
+    note_to_reviewer: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    ingest_step: Mapped[int] = mapped_column(Integer, default=0)
+    ingest_error: Mapped[str | None] = mapped_column(Text)
+
+
+class BatchFile(Record, Base):
+    __tablename__ = "batch_files"
+    __table_args__ = (UniqueConstraint("batch_id", "rel_path"),)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), index=True)
+    rel_path: Mapped[str] = mapped_column(String)
+    size: Mapped[int] = mapped_column(Integer)
+    mtime: Mapped[int] = mapped_column(Integer)
+    upload_status: Mapped[str] = mapped_column(String, default="pending")
+    bytes_received: Mapped[int] = mapped_column(Integer, default=0)
+    fingerprint: Mapped[str | None] = mapped_column(String)
+    conflict: Mapped[str | None] = mapped_column(String)
+    conflict_choice: Mapped[str | None] = mapped_column(String)
+    removed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class PreflightAck(Record, Base):
+    __tablename__ = "preflight_acks"
+    __table_args__ = (UniqueConstraint("batch_id", "rule_code"),)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"))
+    rule_code: Mapped[str] = mapped_column(String)
