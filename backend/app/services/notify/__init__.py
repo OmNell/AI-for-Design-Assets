@@ -59,7 +59,7 @@ class NotifyService:
                 raise AppError("forbidden", "当前账号没有此操作权限", 403)
             roles = set(user.roles)
             batches = list(session.scalars(select(Batch).where(Batch.status.in_(
-                ["待核对", "已驳回", "待初审", "待终审", "AI 处理失败"])).order_by(Batch.id)))
+                ["待核对", "已驳回", "待初审", "待终审", "AI 处理失败", "入库异常"])).order_by(Batch.id)))
             items: list[TodoItem] = []
 
             def add(key: str, label: str, rows: list[Batch], link: str) -> None:
@@ -81,7 +81,11 @@ class NotifyService:
                 add("final_review", "待终审", [row for row in batches if row.status == "待终审"], "/final-review")
             failed = [row for row in batches if row.status == "AI 处理失败" and ("admin" in roles or row.owner_id == user.id)]
             add("ai_failed", "AI 处理失败", failed, single(failed, "/batches/{id}") if failed else "/")
+            broken = [row for row in batches if row.status == "入库异常" and row.final_reviewer_id == user.id and "final_reviewer" in roles]
+            add("ingest_broken", "有批次入库未完成", broken, single(broken, "/review/{id}") if broken else "/")
             if "admin" in roles:
+                failed_ingest = [row for row in batches if row.status == "入库异常"]
+                add("ingest_alert", "入库异常（等终审继续）", failed_ingest, single(failed_ingest, "/review/{id}") if failed_ingest else "/")
                 waiting = [row for row in batches if row.status in ("待初审", "待终审") and not (row.final_path or row.recommended_path)
                            and match_company(session, batch_company(row)) is None]
                 add("path_pending", "位置待定，等待对照表录入", waiting, "/admin/company-map")

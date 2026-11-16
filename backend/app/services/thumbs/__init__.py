@@ -11,7 +11,7 @@ import tempfile
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.db.models import Batch, BatchFile, Job, User
+from app.db.models import Batch, BatchFile, BatchProduct, Job, Product, User
 from app.errors import AppError
 from app.services.auth.service import AuthService
 from app.services.jobs import JobContext, JobFailure, JobQueue
@@ -129,6 +129,12 @@ class ThumbService:
             if file.thumb_status == "failed":
                 raise AppError("thumbnail_failed", "缩略图生成失败", 404, {"retryable": False, "reason": file.thumb_error})
             target = self._directory(batch_id, file_id) / f"{size}.jpg"
+            if not target.is_file() and batch.status == "已入库":
+                # 入库完成后缓存已迁到商品目录。
+                product_id = session.scalar(select(Product.id).join(BatchProduct, BatchProduct.product_code == Product.product_code)
+                                            .where(BatchProduct.batch_id == batch.id, BatchProduct.batch_file_id == file_id))
+                if product_id is not None:
+                    target = self.root.parent / "product" / str(product_id) / f"{size}.jpg"
             if file.upload_status != "done" or file.thumb_status != "done" or not target.is_file():
                 raise AppError("thumbnail_pending", "缩略图尚未生成，请稍后重试", 404, {"retryable": True})
             return target.read_bytes()

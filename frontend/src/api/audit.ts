@@ -13,6 +13,7 @@ export interface AuditData {
   review: ReviewData; stage: 'first' | 'final' | null; claimed_by: Person | null; claimed_by_me: boolean; can_claim: boolean; blocked: boolean; can_edit_path: boolean
   path: PathInfo; acks: string[]; stats: { manual_edits: number; ai_confirmed: number; manual_filled: number; appended: number; removed: number }
   relations: { set_id: number; set_name: string; items: string[]; ai_count: number; manual_count: number; confirmed: boolean }[]
+  ingest?: { step: number; total: number; current: string | null; error: string | null; can_resume: boolean } | null
   note: string | null; folder_counts: { name: string; count: number }[]; history: RoundView[]; pins: PinView[]; checklist: Record<string, string>
 }
 export interface PinInput { batch_product_id: number; x: number; y: number; text: string }
@@ -32,3 +33,4 @@ export const savePins = (id: number, pins: PinInput[]): Promise<AuditData> => re
 export const changePath = (id: number, won: boolean, company_id: number): Promise<AuditData> => request(`/api/review/${id}/path`, json('PUT', { won, company_id }))
 export const passAudit = (id: number, checklist: Record<string, boolean>): Promise<AuditData> => request(`/api/review/${id}/pass`, json('POST', { checklist }))
 export const rejectAudit = (id: number, comment: string): Promise<AuditData> => request(`/api/review/${id}/reject`, json('POST', { comment }))
+export const resumeIngest = (id: number): Promise<AuditData> => request(`/api/review/${id}/resume-ingest`, json('POST'))

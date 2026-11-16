@@ -31,6 +31,8 @@ def client(settings: Settings, tmp_path: Path) -> Iterator[TestClient]:
         with client.app.state.database.session() as session:
             for user in session.scalars(select(User)):
                 user.roles = ROLES[user.username]
+        # 本文件只验证审核状态机；入库执行在 test_ingest.py，单独关闭派发后批次停在「入库中」。
+        client.app.state.audit.ingest = None
         login(client, "one")
         yield client
 

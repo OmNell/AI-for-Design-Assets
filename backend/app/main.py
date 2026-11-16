@@ -37,6 +37,7 @@ from app.services.review import ReviewService
 from app.api.audit import router as audit_router
 from app.services.audit import AuditService
 from app.services.notify import NotifyService
+from app.services.ingest import IngestService
 from app.services.admin.company_map import CompanyMapService
 from app.db.models import Job
 from sqlalchemy.orm import Session
@@ -81,13 +82,19 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             jobs.register("ai_tag_batch", ai.handle_batch, concurrency=1, retries=3, recoverable=True, state_callback=ai.job_changed)
             # 网络调用的总并发和重试由共享客户端控制，避免两层重试相乘。
             jobs.register("ai_tag_product", ai.handle_product, concurrency=config.jobs.workers, retries=0, recoverable=True, state_callback=ai.job_changed)
+            # 入库一次只跑一个；需要终审本人会话，重启后不自动恢复，等终审点「继续」。
+            jobs.register("ingest", lambda context: application.state.ingest.handle(context), concurrency=1, retries=0, recoverable=False,
+                          state_callback=lambda session, job: application.state.ingest.job_changed(session, job))
+            jobs.register("embed", IngestService.handle_embed, concurrency=1, retries=0, recoverable=True)
             application.state.auth.on_login = thumbs.resume_for_user
             upload = UploadService(application.state.auth, thumbs, ai)
             application.state.upload = upload
             application.state.review = ReviewService(application.state.auth, thumbs, ai)
             application.state.notify = NotifyService(application.state.auth)
             application.state.company_map = CompanyMapService(application.state.auth)
-            application.state.audit = AuditService(application.state.auth, application.state.review, application.state.notify)
+            ingest = IngestService(application.state.auth, jobs, application.state.notify, application.state.ai_settings)
+            application.state.ingest = ingest
+            application.state.audit = AuditService(application.state.auth, application.state.review, application.state.notify, ingest)
             jobs.start()
             ai.start()
             logger.info("工作台启动完成，模式：%s", config.mode)

@@ -1,6 +1,6 @@
 # NAS 设计资产工作台
 
-公司内网设计资产工作台。当前完成 WP00～WP08：NAS 接入、登录/角色、预检与分片上传、后台队列与缩略图、AI 打标与自由文本字段管理、套装关系推荐、上传人核对页，以及初审/终审两级审核、企业→行业对照表和站内待办。终审通过后批次停在「入库中」，入库执行、补充流程与向量检索尚未开放。
+公司内网设计资产工作台。当前完成 WP00～WP09：NAS 接入、登录/角色、预检与分片上传、后台队列与缩略图、AI 打标与自由文本字段管理、套装关系推荐、上传人核对页、初审/终审两级审核、对照表与站内待办，以及终审通过后的入库执行（移入正式目录、发放商品编号、三层档案、卡片柜、永久链接）。项目页、下载、搜索、补充流程与向量检索尚未开放。
 
 ## 开发环境
 
@@ -46,6 +46,7 @@ npm --prefix frontend run build
 - 首次启动自动生成 `data/secret.key`、通过 Alembic 创建 `data/app.db`。SQLite 启用 WAL、`busy_timeout=5000` 和外键检查。每次启动执行 `upgrade head`，重复启动不会重建已有表或密钥。
 - 首个迁移包含 `users`、`sessions`、`settings`、`oplog`、`jobs`，WP04 的 `0002_upload` 增加 `projects`、`batches`、`batch_files`、`preflight_acks`。`projects` 本包仅查重，不在上传时创建正式项目。`oplog` 数据库触发器禁止 UPDATE/DELETE。
 - WP05 的 `0003_thumbnails` 增加 batch_files.thumb_status/thumb_error 和 jobs 状态/调度时间索引；启动自动迁移。
+- WP09 的 `0007_catalog` 增加 files、history_versions、products、product_relations、product_tags、links。
 - WP08 的 `0006_audit` 增加 review_rounds、review_pins、industries。
 - WP07 的 `0005_review` 给 batch_products 增加 free_text_source、ai_free_text；配置新增 `upload.append_max_mb`（核对页追加主图上限，默认 50）。
 - WP06 的 `0004_ai` 增加 tag_fields、batch_products、company_industry_map、ai_calls、ai_alerts，并初始化业务文档9.5的11个自由文本字段。
@@ -427,4 +428,20 @@ python -m pytest backend/tests/bailian -m bailian -q -s --tb=short
 | GET | /api/todos | 当前用户待办 |
 
 状态迁移：待初审 —初审通过→ 待终审 —终审通过→ 入库中；任一级驳回 → 已驳回 —重新提交→ 待初审（轮次 +1，清空两级审核人）。同一批次同一轮的初审人不能做终审。手动验收步骤见 `docs/PROGRESS.md` 的 WP08 一节。
+
+## WP09 · 入库执行器与档案
+
+没有新依赖。启动自动迁移至 `0007_catalog`。终审通过后自动派发 `ingest` 任务，以终审本人的 NAS 会话执行 9 步；中断后批次为「入库异常」，由本批次终审调用 `POST /api/review/{id}/resume-ingest`（审核页的「继续」按钮）从断点继续。
+
+入库后的项目文件夹：
+
+```
+设计资产/01已中标项目/01酒业/07泸州老窖/P2026-0012_泸州老窖_中秋礼盒/
+├── 01定稿文件/ … 05 详情页/ 套装/ 单品/     原有内容
+├── 单品档案/展示名.json   套装档案/展示名.json
+├── _历史版本/
+└── _项目档案.txt
+```
+
+档案由 `services/archive` 生成，是卡片柜的投影：`verify` 只读比对，`rebuild` 按卡片柜重写，`parse_product` / `parse_project` 把档案解析回结构化数据。永久链接由 `services/links` 生成与解析，页面跳转在后续工作包接入。手动验收步骤见 `docs/PROGRESS.md` 的 WP09 一节。
 

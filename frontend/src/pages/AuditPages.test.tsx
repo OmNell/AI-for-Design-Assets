@@ -221,3 +221,27 @@ it('核对页的驳回横幅显示总体意见，被钉的图有标记并可撤�
   await until(() => host.textContent === '首页')
   expect(calls.find(call => call.url.endsWith('/cancel'))!.url).toBe('/api/batches/1/cancel')
 })
+
+it('终审通过后显示入库进度；异常时显示原因并可点「继续」', async () => {
+  login(['final_reviewer'])
+  const page = (status: string, ingest: AuditData['ingest']) => auditData({ review: reviewData(status), stage: null, claimed_by: null, claimed_by_me: false, ingest })
+  let state = page('入库异常', { step: 3, total: 9, current: '发放商品编号', error: '第 4 步（发放商品编号）：操作人会话已失效', can_resume: true })
+  serve((url) => { if (url.endsWith('/resume-ingest')) state = page('已入库', { step: 9, total: 9, current: null, error: null, can_resume: false }); return state }); audit()
+  await until(() => !!host.querySelector('[data-testid="ingest"]'))
+  const panel = () => host.querySelector('[data-testid="ingest"]')!.textContent!
+  expect(panel()).toContain('入库中断'); expect(panel()).toContain('3 / 9 步'); expect(panel()).toContain('停在：发放商品编号')
+  expect(panel()).toContain('原因：第 4 步（发放商品编号）：操作人会话已失效')
+  act(() => button('继续').click())
+  await until(() => panel().includes('入库完成'))
+  expect(panel()).toContain('9 / 9 步')
+  expect(button('继续')).toBeUndefined()
+  expect(calls.map(call => call.url)).toEqual(['/api/review/1/resume-ingest'])
+})
+
+it('不是本批次终审时看不到「继续」，只提示等待终审', async () => {
+  login(['admin'])
+  serve(() => auditData({ review: reviewData('入库异常'), stage: null, claimed_by: null, claimed_by_me: false, ingest: { step: 2, total: 9, current: '移动项目文件夹', error: '第 3 步（移动项目文件夹）：NAS 无权限', can_resume: false } })); audit()
+  await until(() => !!host.querySelector('[data-testid="ingest"]'))
+  expect(host.querySelector('[data-testid="ingest"]')!.textContent).toContain('需要本批次的终审重新登录后点「继续」。')
+  expect(button('继续')).toBeUndefined()
+})

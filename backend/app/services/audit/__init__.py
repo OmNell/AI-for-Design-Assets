@@ -7,12 +7,13 @@ from sqlalchemy.orm import Session
 from app.db.models import (Batch, BatchFile, BatchProduct, CompanyIndustryMap, Oplog, PreflightAck, ReviewPin, ReviewRound,
                            User, utcnow)
 from app.errors import AppError
-from app.schemas.audit import (CHECKLIST, CHECKLIST_LABELS, AuditResponse, AuditStats, FolderCount, PathInfo, PersonView,
+from app.schemas.audit import (CHECKLIST, CHECKLIST_LABELS, AuditResponse, AuditStats, FolderCount, IngestInfo, PathInfo, PersonView,
                                PinInput, QueueItem, RelationSummary)
 from app.services.admin.company_map import batch_company, company_path, match_company
 from app.services.ai.orchestrator import active_products
 from app.services.auth.service import AuthService
 from app.services.notify import NotifyService, stage_since
+from app.services.ingest import STEPS as INGEST_STEPS, IngestService
 from app.services.oplog import OplogService
 from app.services.preflight import REQUIRED
 from app.services.review import ReviewService
@@ -30,8 +31,8 @@ def _name(user: User | None) -> str:
 
 
 class AuditService:
-    def __init__(self, auth: AuthService, review: ReviewService, notify: NotifyService) -> None:
-        self.auth, self.review, self.notify = auth, review, notify
+    def __init__(self, auth: AuthService, review: ReviewService, notify: NotifyService, ingest: IngestService | None = None) -> None:
+        self.auth, self.review, self.notify, self.ingest = auth, review, notify, ingest
 
     # ---- 取数与权限 ----
     @staticmethod
@@ -197,7 +198,11 @@ class AuditService:
             relations=relations, note=batch.note_to_reviewer,
             folder_counts=[FolderCount(name=folder.name, count=len(folder.files)) for folder in review.folders],
             history=round_history(session, batch.id),
-            pins=pin_views(session, draft.id) if draft is not None and mine else [], checklist=dict(CHECKLIST_LABELS))
+            pins=pin_views(session, draft.id) if draft is not None and mine else [], checklist=dict(CHECKLIST_LABELS),
+            ingest=IngestInfo(step=batch.ingest_step, total=len(INGEST_STEPS), error=batch.ingest_error,
+                current=INGEST_STEPS.get(batch.ingest_step + 1) if batch.status in ("入库中", "入库异常") else None,
+                can_resume=batch.status == "入库异常" and batch.final_reviewer_id == user.id and "final_reviewer" in user.roles)
+                if batch.status in ("入库中", "入库异常", "已入库") else None)
 
     def read(self, batch_id: int, actor: User) -> AuditResponse:
         with self.auth.lock, self.auth.database.session() as session:
@@ -242,8 +247,15 @@ class AuditService:
             return self._response(session, batch, user)
 
     def dispatch_ingest(self, session: Session, batch: Batch, reviewer: User) -> None:
-        """终审通过后的入库任务派发点。WP09 在这里以终审本人身份入队 ingest 任务；本包只停在「入库中」。"""
-        return None
+        """终审通过后与状态变更同一事务入队 ingest 任务，以终审本人身份执行。"""
+        if self.ingest is not None:
+            self.ingest.enqueue(session, batch, reviewer)
+
+    def resume_ingest(self, batch_id: int, actor: User, host: str) -> AuditResponse:
+        if self.ingest is None:
+            raise AppError("ingest_unavailable", "入库执行器未启用", 503)
+        self.ingest.resume(batch_id, actor, host)
+        return self.read(batch_id, actor)
 
     def approve(self, batch_id: int, checklist: dict[str, bool], actor: User, host: str) -> AuditResponse:
         with self.auth.lock, self.auth.database.session() as session:

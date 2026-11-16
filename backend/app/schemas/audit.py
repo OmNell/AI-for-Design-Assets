@@ -119,7 +119,16 @@ class PinsRequest(BaseModel):
     pins: list[PinInput] = Field(max_length=200)
 
 
+class IngestInfo(BaseModel):
+    step: int
+    total: int
+    current: str | None
+    error: str | None
+    can_resume: bool
+
+
 class AuditResponse(BaseModel):
+    ingest: IngestInfo | None = None
     review: ReviewResponse
     stage: Literal["first", "final"] | None
     claimed_by: PersonView | None

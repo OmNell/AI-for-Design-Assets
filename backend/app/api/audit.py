@@ -70,3 +70,8 @@ def approve(batch_id: int, body: PassRequest, request: Request, user: User = Dep
 @router.post("/review/{batch_id}/reject", response_model=AuditResponse)
 def reject(batch_id: int, body: RejectRequest, request: Request, user: User = Depends(require_login)) -> AuditResponse:
     return request.app.state.audit.reject(batch_id, body.comment, user, client_host(request))
+
+
+@router.post("/review/{batch_id}/resume-ingest", response_model=AuditResponse)
+def resume_ingest(batch_id: int, request: Request, user: User = Depends(require_login)) -> AuditResponse:
+    return request.app.state.audit.resume_ingest(batch_id, user, client_host(request))

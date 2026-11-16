@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { changePath, claimAudit, getAudit, passAudit, rejectAudit, releaseAudit, savePins, type AuditData, type PinInput } from '../api/audit'
+import { changePath, claimAudit, getAudit, passAudit, rejectAudit, releaseAudit, resumeIngest, savePins, type AuditData, type PinInput } from '../api/audit'
 import { useAuthStore } from '../stores/auth'
 import { GlassSurface } from '../components/glass/GlassSurface'
 import { GlassPanel } from '../components/glass/GlassPanel'
@@ -23,7 +23,9 @@ export function AuditPage() {
   const user = useAuthStore(state => state.user)
   const client = useQueryClient()
   const key = useMemo(() => ['audit', id], [id])
-  const audit = useQuery({ queryKey: key, queryFn: () => getAudit(id), enabled: valid, retry: false })
+  // 入库执行期间每秒刷新一次进度，结束（已入库或入库异常）后停止。
+  const audit = useQuery({ queryKey: key, queryFn: () => getAudit(id), enabled: valid, retry: false,
+    refetchInterval: result => result.state.data?.review.batch.status === '入库中' ? 1000 : false })
   const [current, setCurrent] = useState<number | null>(null)
   const [tab, setTab] = useState<'info' | 'tags'>('info')
   const [sideBySide, setSideBySide] = useState(false)
@@ -73,6 +75,14 @@ export function AuditPage() {
         <p data-testid="claim-state" className="mt-2 text-sm">{!stage ? `批次当前为「${batch.status}」，不在待审状态，仅供查看。` : mine ? '你已领取本批次，可以审核。' :
           data.blocked ? '你是本批次本轮的初审人，不能再担任终审。' : data.claimed_by ? `已由 ${data.claimed_by.name} 领取。` : data.can_claim ? '尚未领取。领取后才能钉意见、通过或驳回。' : '当前账号没有这一级的审核权限，仅供查看。'}</p>
         {done && <p role="status" className="mt-1 text-sm text-emerald-800">{done}</p>}
+        {data.ingest && <div data-testid="ingest" className={`mt-3 rounded-xl p-3 text-sm ${batch.status === '入库异常' ? 'bg-red-100/75 text-red-900' : 'bg-white/40'}`}>
+          <div className="flex items-center gap-3"><span className="font-medium">{batch.status === '已入库' ? '入库完成' : batch.status === '入库异常' ? '入库中断' : '正在入库'}</span>
+            <span className="h-2 w-48 overflow-hidden rounded-full bg-white/60"><span className={`block h-full ${batch.status === '入库异常' ? 'bg-red-600' : 'bg-emerald-700'}`} style={{ width: `${data.ingest.step / data.ingest.total * 100}%` }} /></span>
+            <span className="tabular-nums">{data.ingest.step} / {data.ingest.total} 步</span>
+            {data.ingest.current && <span className="text-xs">{batch.status === '入库异常' ? '停在' : '当前'}：{data.ingest.current}</span>}</div>
+          {data.ingest.error && <p className="mt-2">原因：{data.ingest.error}</p>}
+          {batch.status === '入库异常' && (data.ingest.can_resume ? <div className="mt-2"><GlassButton disabled={busy} onClick={() => void run(() => resumeIngest(id))}>继续</GlassButton></div> :
+            <p className="mt-2 text-xs">需要本批次的终审重新登录后点「继续」。</p>)}</div>}
         {error && !rejecting && <p role="alert" className="mt-1 text-sm text-red-800">{error}</p>}</div>
       <div className="flex shrink-0 gap-2">{data.can_claim && <GlassButton disabled={busy} onClick={() => void run(() => claimAudit(id))}>领取</GlassButton>}
         {stage && data.claimed_by && (mine || user?.roles.includes('admin')) && <GlassButton primary={false} disabled={busy} onClick={() => void run(() => releaseAudit(id))}>释放领取</GlassButton>}</div>
@@ -126,7 +136,7 @@ export function AuditPage() {
               <input type="checkbox" checked={!!checks[item]} onChange={event => setChecks({ ...checks, [item]: event.target.checked })} />{label}</label>)}</div>
             {pathBlocked && <p data-testid="path-blocked" className="mt-3 text-xs text-amber-900">{path.company_in_tree ? '位置待定：请先点上方「修改」从目录树选择存放位置。' : '位置待定：等待管理员在对照表中录入该企业。'}</p>}
             <div className="mt-3 flex gap-3"><GlassButton disabled={busy || !allChecked || pathBlocked} title={!allChecked ? '审核清单未全部勾选' : undefined}
-              onClick={() => void run(() => passAudit(id, checks), () => { setChecks({}); setDone(stage === 'final' ? '终审已通过，批次进入「入库中」。' : '初审已通过，批次进入「待终审」。') })}>通过</GlassButton>
+              onClick={() => void run(() => passAudit(id, checks), () => { setChecks({}); setDone(stage === 'final' ? '终审已通过，开始入库。' : '初审已通过，批次进入「待终审」。') })}>通过</GlassButton>
               <GlassButton primary={false} disabled={busy} onClick={() => { setError(''); setRejecting(true) }}>驳回</GlassButton></div></section>}
           </div>}</div>
       </div></GlassSurface>

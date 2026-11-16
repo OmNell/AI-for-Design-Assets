@@ -86,6 +86,7 @@ class Project(Record, Base):
     current_path: Mapped[str] = mapped_column(String, default="")
     status: Mapped[str] = mapped_column(String, default="active")
     ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archive_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Batch(Record, Base):
@@ -160,6 +161,7 @@ class BatchProduct(Record, Base):
     relation_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     flags: Mapped[list[str]] = mapped_column(JSON, default=list)
     free_text_source: Mapped[str] = mapped_column(String, default="ai")
+    product_code: Mapped[str | None] = mapped_column(String)
     ai_free_text: Mapped[str] = mapped_column(Text, default="")
 
 
@@ -222,3 +224,73 @@ class ReviewPin(Record, Base):
     x: Mapped[float] = mapped_column(Float)
     y: Mapped[float] = mapped_column(Float)
     text: Mapped[str] = mapped_column(Text)
+
+
+class CatalogFile(Record, Base):
+    __tablename__ = "files"
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    rel_path: Mapped[str] = mapped_column(String)
+    size: Mapped[int] = mapped_column(Integer)
+    mtime: Mapped[int] = mapped_column(Integer)
+    fingerprint: Mapped[str] = mapped_column(String)
+    fingerprint_kind: Mapped[str] = mapped_column(String, default="full")
+    category: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="active")
+    first_batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"))
+
+
+class Product(Record, Base):
+    __tablename__ = "products"
+    product_code: Mapped[str] = mapped_column(String, unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    kind: Mapped[str] = mapped_column(String)
+    display_name: Mapped[str] = mapped_column(String)
+    file_id: Mapped[int] = mapped_column(ForeignKey("files.id"))
+    archive_rel_path: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="active")
+    free_text: Mapped[str] = mapped_column(Text, default="")
+    vision_model: Mapped[str] = mapped_column(String, default="")
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ProductRelation(Record, Base):
+    __tablename__ = "product_relations"
+    __table_args__ = (UniqueConstraint("set_product_id", "item_product_id"),)
+    set_product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    item_product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    source: Mapped[str] = mapped_column(String)
+    confirmed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ProductTag(Record, Base):
+    __tablename__ = "product_tags"
+    __table_args__ = (UniqueConstraint("product_id", "field_key"),)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    field_key: Mapped[str] = mapped_column(String, index=True)
+    value: Mapped[str] = mapped_column(Text)
+    terms: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source: Mapped[str] = mapped_column(String)
+    ai_value: Mapped[str] = mapped_column(Text, default="")
+    flag: Mapped[str | None] = mapped_column(String)
+
+
+class HistoryVersion(Record, Base):
+    __tablename__ = "history_versions"
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    file_id: Mapped[int] = mapped_column(ForeignKey("files.id"))
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"))
+    old_fingerprint: Mapped[str] = mapped_column(String)
+    old_rel_path: Mapped[str] = mapped_column(String)
+    new_rel_path: Mapped[str] = mapped_column(String)
+    reason: Mapped[str] = mapped_column(String)
+    batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"))
+    expected_missing: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class Link(Record, Base):
+    __tablename__ = "links"
+    __table_args__ = (UniqueConstraint("kind", "target_id"),)
+    link_id: Mapped[str] = mapped_column(String, unique=True)
+    kind: Mapped[str] = mapped_column(String)
+    target_id: Mapped[int] = mapped_column(Integer)
