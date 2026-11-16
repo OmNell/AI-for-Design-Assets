@@ -3,6 +3,7 @@ import { useLayoutEffect, useRef, useState, type PropsWithChildren } from 'react
 import { useGlass } from './GlassProvider'
 
 interface GlassSurfaceProps extends PropsWithChildren {
+  as?: 'div' | 'span'
   className?: string
   radius?: number
   priority?: 'primary' | 'secondary'
@@ -15,9 +16,9 @@ function supportsRefraction(): boolean {
   return !partial && typeof CSS !== 'undefined' && CSS.supports('backdrop-filter', 'blur(1px)')
 }
 
-export function GlassSurface({ children, className = '', radius = 24, priority = 'primary' }: GlassSurfaceProps) {
+export function GlassSurface({ children, className = '', radius = 24, priority = 'primary', as: Element = 'div' }: GlassSurfaceProps) {
   const { mode } = useGlass()
-  const container = useRef<HTMLDivElement>(null)
+  const container = useRef<HTMLElement | null>(null)
   const [sizeKey, setSizeKey] = useState('initial')
   useLayoutEffect(() => {
     const element = container.current
@@ -34,7 +35,8 @@ export function GlassSurface({ children, className = '', radius = 24, priority =
   const active = mode === 'full' || priority === 'primary'
   const renderer = active ? supportsRefraction() ? 'svg' : 'css' : 'none'
 
-  return <div ref={container} className={`glass-surface ${active ? '' : 'bg-white/25'} ${className}`} style={{ borderRadius: radius }}
+  const Content = Element
+  return <Element ref={node => { container.current = node }} className={`glass-surface ${active ? '' : 'bg-white/25'} ${className}`} style={{ borderRadius: radius }}
     data-visual-mode={mode} data-glass-renderer={renderer}>
     {renderer === 'svg' && <div className="glass-effect" aria-hidden="true">
       <LiquidGlass key={sizeKey} className="glass-library" mode="standard" cornerRadius={radius}
@@ -44,6 +46,6 @@ export function GlassSurface({ children, className = '', radius = 24, priority =
         <span />
       </LiquidGlass>
     </div>}
-    <div className="glass-content">{children}</div>
-  </div>
+    <Content className="glass-content">{children}</Content>
+  </Element>
 }

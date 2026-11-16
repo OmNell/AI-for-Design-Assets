@@ -16,3 +16,6 @@ body { margin: 0; min-width: 1000px; background: radial-gradient(ellipse at 10% 
 .glass-library .glass__warp { -webkit-backdrop-filter: blur(6px) saturate(125%); }
 .glass-surface[data-glass-renderer="svg"] { background: rgb(255 255 255 / 15%); }
 .glass-surface[data-glass-renderer="css"] { background: rgb(255 255 255 / 30%); backdrop-filter: blur(16px) saturate(125%); -webkit-backdrop-filter: blur(16px) saturate(125%); }
+.glass-surface[data-glass-renderer="none"] { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.glass-button > .glass-surface > .glass-content { display: block; }
+.field { width: 100%; border: 1px solid rgb(255 255 255 / 85%); border-radius: 14px; background: rgb(255 255 255 / 50%); padding: 12px 14px; outline-color: #36765c; }

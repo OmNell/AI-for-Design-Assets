@@ -1,4 +1,4 @@
-"""应用工厂与前端静态托管，不包含登录或 NAS 业务。"""
+"""应用工厂与前端静态托管，认证和角色界面框架。"""
 from __future__ import annotations
 
 import logging
@@ -13,6 +13,11 @@ from starlette.exceptions import HTTPException
 
 from app import __version__
 from app.api.health import router
+from app.api.auth import router as auth_router
+from app.api.admin import router as admin_router
+from app.services.auth.service import AuthService
+from app.services.admin import RoleService
+from app.services.nas.factory import create_auth_backend, create_session_pool
 from app.config import Settings, load_settings
 from app.db.database import Database
 from app.errors import register_handlers
@@ -31,24 +36,34 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
         handler = configure_logging(directory)
         logger = logging.getLogger("nas_workbench")
         database: Database | None = None
+        pool = None
         try:
             database = Database(config.paths.data_dir)
             application.state.settings = config
             application.state.cipher = SecretCipher(config.paths.data_dir)
             database.migrate()
             application.state.database = database
+            pool = create_session_pool(config)
+            application.state.auth = AuthService(database, pool, create_auth_backend(config), config)
+            application.state.roles = RoleService(application.state.auth)
             logger.info("工作台启动完成，模式：%s", config.mode)
             yield
         finally:
-            if database is not None:
-                database.close()
-            logger.info("工作台已停止")
-            logger.removeHandler(handler)
-            handler.close()
+            try:
+                if pool is not None:
+                    pool.shutdown()
+            finally:
+                if database is not None:
+                    database.close()
+                logger.info("工作台已停止")
+                logger.removeHandler(handler)
+                handler.close()
 
     application = FastAPI(title="NAS 设计资产工作台", version=__version__, lifespan=lifespan)
     register_handlers(application)
     application.include_router(router)
+    application.include_router(auth_router)
+    application.include_router(admin_router)
     static_root = static_dir.resolve()
 
     @application.get("/{path:path}", include_in_schema=False)

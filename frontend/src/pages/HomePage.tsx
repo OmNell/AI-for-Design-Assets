@@ -1,43 +1,23 @@
-import { useEffect, useState } from 'react'
-import { getHealth, type Health } from '../api/health'
+import { useQuery } from '@tanstack/react-query'
+import { Link } from 'react-router'
+import { getHealth } from '../api/health'
+import { useAuthStore } from '../stores/auth'
 import { GlassPanel } from '../components/glass/GlassPanel'
-import { GlassSurface } from '../components/glass/GlassSurface'
-import { useGlass } from '../components/glass/GlassProvider'
+import { GlassCard } from '../components/glass/GlassCard'
+import { canAccess, navigation } from '../app/navigation'
 
 export function HomePage() {
-  const [health, setHealth] = useState<Health | null>(null)
-  const [error, setError] = useState('')
-  const { mode, toggle } = useGlass()
-  useEffect(() => {
-    const controller = new AbortController()
-    getHealth(controller.signal).then(setHealth).catch((reason: unknown) => {
-      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '服务暂时不可用。')
-    })
-    return () => controller.abort()
-  }, [])
-  return <div className="mx-auto min-h-screen max-w-6xl px-12 py-10">
-    <header><GlassSurface className="px-5 py-4"><div className="flex items-center justify-between">
-      <div className="flex items-center gap-3"><span className="brand-mark">档</span><span className="text-sm font-semibold tracking-widest">设计资产工作台</span></div>
-      <button type="button" onClick={toggle} className="rounded-full text-sm text-slate-600 hover:text-emerald-900 focus-visible:outline-2 focus-visible:outline-emerald-700" aria-label="切换视觉模式">
-        <GlassSurface radius={999} className="px-5 py-2">视觉模式 · {mode === 'full' ? '完整' : '轻量'}</GlassSurface>
-      </button>
-    </div></GlassSurface></header>
-    <main className="py-20">
-      <p className="mb-5 text-xs tracking-[0.3em] text-emerald-800">公司内网 · 设计资产</p>
-      <h1 className="text-5xl font-medium tracking-tight text-slate-800">让每一份设计，有处可寻。</h1>
-      <p className="mb-12 mt-5 text-base leading-8 text-slate-500">设计资产工作台正在搭建中，先确认服务已准备就绪。</p>
-      <GlassPanel>
-        <div className="flex items-start justify-between"><div><h2 className="text-xl font-semibold">工作台运行状态</h2><p className="mt-2 text-sm text-slate-500">当前为基础骨架，业务功能将在后续开放。</p></div>
-          <span role="status" className="rounded-full bg-emerald-900/5 px-4 py-2 text-sm text-emerald-800">{error ? '连接异常' : health ? '已连接' : '正在连接…'}</span></div>
-        {error ? <p role="alert" className="mt-8 text-red-800">{error}</p> :
-          <div className="mt-10 grid grid-cols-3 gap-8 border-t border-slate-500/10 pt-7">
-            <div><GlassSurface priority="secondary" radius={16} className="p-4"><dl><dt className="text-xs text-slate-500">服务版本</dt><dd className="mt-3 text-2xl">{health ? `v${health.version}` : '—'}</dd></dl></GlassSurface></div>
-            <div><GlassSurface priority="secondary" radius={16} className="p-4"><dl><dt className="text-xs text-slate-500">运行模式</dt><dd className="mt-3 text-2xl">{health ? health.mode === 'dev' ? '开发模式' : '生产模式' : '—'}</dd></dl></GlassSurface></div>
-            <div><GlassSurface priority="secondary" radius={16} className="p-4"><dl><dt className="text-xs text-slate-500">数据库</dt><dd className="mt-3 text-2xl">{health ? health.database_available ? '连接正常' : '连接异常' : '—'}</dd></dl></GlassSurface></div>
-          </div>}
-      </GlassPanel>
-      <p className="mt-6 text-xs text-slate-400">项目骨架 · WP01</p>
-    </main>
-    <footer className="border-t border-slate-700/10 pt-5 text-xs text-slate-400">设计资产工作台<span className="float-right">内部使用</span></footer>
+  const user = useAuthStore(state => state.user)!
+  const health = useQuery({ queryKey: ['health'], queryFn: () => getHealth(), retry: false })
+  const upload = canAccess(user.roles, navigation.find(item => item.path === '/upload')!)
+  return <div className="space-y-7"><div><p className="mb-4 text-xs tracking-widest text-emerald-800">公司内网 · 设计资产</p>
+    <h1 className="text-4xl font-semibold">你好，{user.display_name || user.username}</h1><p className="mt-4 text-slate-500">从这里开始整理与查找团队的设计资产。</p></div>
+    <GlassPanel><h2 className="text-xl font-semibold">我的工作台</h2><p className="mt-4 text-slate-500">批次与待办功能建设中，当前尚无可展示的数据。</p>
+      <div className="mt-6 flex gap-6 text-sm text-emerald-800">{upload && <Link to="/upload" className="underline underline-offset-4">上传新项目</Link>}<Link to="/projects" className="underline underline-offset-4">对已入库项目操作</Link></div>
+    </GlassPanel>
+    <div className="grid grid-cols-3 gap-5"><GlassCard><p className="text-sm text-slate-500">服务版本</p><p className="mt-4 text-2xl">{health.data ? `v${health.data.version}` : '—'}</p></GlassCard>
+      <GlassCard><p className="text-sm text-slate-500">运行模式</p><p className="mt-4 text-2xl">{health.data ? health.data.mode === 'dev' ? '开发模式' : '生产模式' : '—'}</p></GlassCard>
+      <GlassCard><p className="text-sm text-slate-500">数据库</p><p className="mt-4 text-2xl">{health.data?.database_available ? '连接正常' : '正在检查'}</p></GlassCard></div>
+    {health.isError && <p role="alert" className="text-red-800">{health.error.message}</p>}
   </div>
 }

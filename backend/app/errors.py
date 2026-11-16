@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException
 
+from app.services.nas.errors import NasSessionExpired
+
 logger = logging.getLogger("nas_workbench")
 
 
@@ -32,7 +34,16 @@ def error_response(status: int, code: str, message: str, detail: object | None =
 def register_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def application_error(request: Request, error: AppError) -> JSONResponse:
-        return error_response(error.status_code, error.code, error.message)
+        response = error_response(error.status_code, error.code, error.message)
+        if error.status_code == 401:
+            response.delete_cookie("nas_workbench_session", path="/", httponly=True, samesite="lax")
+        return response
+
+    @app.exception_handler(NasSessionExpired)
+    async def nas_expired(request: Request, error: NasSessionExpired) -> JSONResponse:
+        response = error_response(401, "nas_session_expired", "NAS 连接已超时，请重新登录")
+        response.delete_cookie("nas_workbench_session", path="/", httponly=True, samesite="lax")
+        return response
 
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, error: HTTPException) -> JSONResponse:

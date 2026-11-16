@@ -1,6 +1,6 @@
 # NAS 设计资产工作台
 
-公司内网设计资产工作台。当前完成 WP00 探路、WP01 可运行骨架和 WP02 NAS/认证基础模块；尚无登录或上传接口。
+公司内网设计资产工作台。当前完成 WP00 探路、WP01 骨架、WP02 NAS 基础模块和 WP03 登录/角色/界面框架；上传与批次仍为占位。
 
 ## 开发环境
 
@@ -33,7 +33,7 @@ npm --prefix frontend run build
 .venv/bin/python -m app
 ```
 
-已有 `config.yaml` 时保留现有文件，不重复复制。浏览器访问 <http://localhost:8080>，应看到中文占位页及服务版本、开发/生产模式、数据库状态。启动命令读取配置中的 `server.host` 和 `server.port`。默认监听 `0.0.0.0:8080`，仅本机开发时可改成 `127.0.0.1`。
+已有 `config.yaml` 时保留现有文件，不重复复制。浏览器访问 <http://localhost:8080>，未登录时应进入中文登录页；使用下方示例假账号登录后，可看到角色导航、服务版本和运行状态。启动命令读取配置中的 `server.host` 和 `server.port`。默认监听 `0.0.0.0:8080`，仅本机开发时可改成 `127.0.0.1`。
 
 可单独热更新前端：另开终端执行 `npm --prefix frontend run dev`，访问终端输出的 Vite 地址（默认 5173）；Vite 将 `/api` 请求代理给本机 8080 后端。
 
@@ -41,13 +41,13 @@ npm --prefix frontend run build
 
 - 默认读取当前工作目录的 `config.yaml`；`NASWB_CONFIG` 可指定其他文件。
 - 优先级：环境变量 > YAML > 默认值。例如 `NASWB_MODE=dev`、`NASWB_SERVER__PORT=8081`；嵌套字段使用双下划线。
-- 结构按架构 §12.1，增加 `mode: dev|prod` 与 `bootstrap_admin`；本包只加载管理员名称，不创建账号。缺失文件、未知字段或非法值会阻止启动。
+- 结构按架构 §12.1，增加 `mode: dev|prod` 与 `bootstrap_admin`；bootstrap_admin 在该账号首次成功登录并创建影子用户时追加 admin；不会反复覆盖管理员后来调整的角色。缺失文件、未知字段或非法值会阻止启动。
 - `paths.data_dir` 默认 `./data`；相对路径以配置文件所在目录为准。日志也位于该目录下的 `logs/`，每天滚动，保留 30 个归档。
 - 首次启动自动生成 `data/secret.key`、通过 Alembic 创建 `data/app.db`。SQLite 启用 WAL、`busy_timeout=5000` 和外键检查。每次启动执行 `upgrade head`，重复启动不会重建已有表或密钥。
 - 首个迁移仅包含 `users`、`sessions`、`settings`、`oplog`、`jobs` 及 Alembic 自身的版本表。`oplog` 数据库触发器禁止 UPDATE/DELETE。
 - 密钥 POSIX 权限为 `0600`；Windows 使用受保护 DACL，仅当前服务身份、管理员组及 SYSTEM 可访问。应部署在支持权限控制的本地文件系统，权限设置失败会中止启动。Windows ACL 分支尚待在实际 Windows 环境验证。
 - 密钥与数据库应一并备份；已有密钥无效时会报错，不自动覆盖。删除 `data/` 并重新启动会创建全新数据库与密钥，旧密钥加密的内容无法用新密钥解密。
-- 普通 NAS 密码不写配置；`nas.system_password_enc` 和 `ai.api_key_enc` 只放密文。骨架仅加载这些字段，不连接 NAS 或百炼。
+- 普通 NAS 密码不写配置；`nas.system_password_enc` 和 `ai.api_key_enc` 只放密文。prod 登录时使用真实 DSM 和本人 SMB；只有显式使用系统会话才解密系统账号密码，不连接百炼。
 
 加密工具的使用（Python 代码，不要把真实凭据写入源码、命令历史或日志）：
 
@@ -60,7 +60,7 @@ cipher = SecretCipher(load_settings().paths.data_dir)
 # cipher.decrypt(密文字符串) -> 内存中的明文
 ```
 
-业务服务可用 `with database.session() as session:` 获取事务，再调用 `OplogService(session).write(...)`。`user` 为用户 ID 或 `None`，`object_id` 为字符串或 `None`，`before/after` 为可 JSON 序列化对象。日志写入只 flush，由调用方事务统一提交/回滚；本包无改变业务状态的 API。
+业务服务可用 `with database.session() as session:` 获取事务，再调用 `OplogService(session).write(...)`。`user` 为用户 ID 或 `None`，`object_id` 为字符串或 `None`，`before/after` 为可 JSON 序列化对象。日志写入只 flush，由调用方事务统一提交/回滚；登录、注销和角色变更会追加操作日志，不记录密码或原始令牌。
 
 ## 测试与构建
 
@@ -113,7 +113,7 @@ curl http://localhost:8080/api/health
 
 ## WP02 · NAS 文件接口与会话池
 
-当前提供可复用模块，不新增登录或上传接口；应用启动不会自动登录 NAS。已有开发环境先执行 `python -m pip install -e "./backend[test]"` 更新依赖。首次复制示例配置可直接使用假账号；已有配置请补充下面的新字段，不覆盖真实配置。
+本节介绍 WP02 文件模块；WP03 登录接口见下方，应用启动仍不会自动登录 NAS。已有开发环境先执行 `python -m pip install -e "./backend[test]"` 更新依赖。首次复制示例配置可直接使用假账号；已有配置请补充下面的新字段，不覆盖真实配置。
 
 ```yaml
 nas:
@@ -224,3 +224,42 @@ unset NAS_TEST_PASSWORD_A NAS_TEST_PASSWORD_B
 现场验收需确认：全部 nas 用例通过；A/B 同时连接时 ACL 分别生效；A 不能把文件移入正式测试区、B 能用本人会话完成移动。也请继续填写 WP00 的 `scripts/probe/RESULT.md`（20MiB 与 rename <1 秒的性能验收属于探路脚本）。本次开发未连接真实 NAS，不能用本地测试结果替代内网验收。
 
 实现参考：[smbprotocol 1.16.1 官方连接缓存实现](https://github.com/jborean93/smbprotocol/blob/v1.16.1/src/smbclient/_pool.py)、[DSM 官方登录 API 指南](https://global.download.synology.com/download/Document/Software/DeveloperGuide/Os/DSM/All/enu/DSM_Login_Web_API_Guide_enu.pdf)。
+
+## WP03 · 登录、角色与界面框架
+
+更新依赖后重新构建、重启后端：
+
+```sh
+python -m pip install -e './backend[test]'
+npm --prefix frontend ci
+npm --prefix frontend run check
+python -m app
+```
+
+首次使用复制最新 `backend/config.example.yaml`。已有配置请仅合并 dev_users 和 bootstrap_admin，不覆盖真实 NAS 配置；切勿在 dev_users 填写真实密码。示例为：
+
+| 假账号 | 假密码 | 首次登录的工作台角色 |
+|---|---|---|
+| demo-admin | demo-admin-only | 上传人 + 管理员（示例 bootstrap_admin） |
+| demo-uploader | demo-uploader-only | 上传人 |
+| demo-final | demo-final-only | 上传人；其模拟 NAS 正式区可写，但仍需管理员授予终审角色 |
+
+默认所有新 NAS 账号为 uploader。bootstrap_admin 必须与用户名精确匹配，仅在首次创建影子用户时追加 admin；后续登录不会自动恢复被撤销的管理员角色。prod 部署前将示例 bootstrap_admin 改为真实项目负责人的 NAS 账号。角色表仅列出已成功登录过的用户，不从 NAS 拉取整个公司目录。
+
+- `/api/auth/login`：POST JSON `{username,password}`，验证后建立本人 NAS 会话、创建/读取用户并签发 256 位随机令牌；响应只有用户信息。数据库仅保存令牌 SHA-256，浏览器使用 HttpOnly、SameSite=Lax、Path=/ Cookie，有效期来自 `server.session_hours`；HTTPS 请求启用 Secure，架构中的内网 HTTP 保持可用。
+- `/api/auth/me`：GET，返回 `id/username/display_name/roles/enabled`；所有已登录接口检查有效令牌、启用状态及 NAS 会话。未知/过期令牌返回 401；NAS 会话失效返回 `nas_session_expired`，页面提示“NAS 连接已超时，请重新登录”。过期 NAS 会话对应的旧令牌被作废，重新登录不能让这些旧令牌恢复有效。
+- `/api/auth/logout`：POST，仅作废本浏览器令牌；同账号多台电脑的令牌相互独立，共享按用户维护的 NAS 连接，最后一个有效令牌退出时关闭连接。应用进程重启后，旧 Cookie 因 NAS 会话不存在而要求重新登录。
+- `/api/admin/roles`：GET 全部已登记用户，PUT JSON `{user_id,roles,enabled}` 更新一人；仅 admin 可用。角色仅四种、可多选：uploader、first_reviewer、final_reviewer、admin。初审/终审继承上传能力，admin 不自动继承审核权限。停用用户即撤销其全部令牌并关闭 NAS 会话；已登录请求每次重新检查数据库角色，授予角色后重新登录即可刷新导航。
+- 管理员允许编辑自己的角色/启用状态，未增加文档没有规定的“最后一个管理员”业务限制；操作前请保留另一位可用管理员。bootstrap_admin 不会在每次登录时重新加权，重新启用需由其他管理员操作。
+- 工作台角色不能授予 NAS ACL。dev 模式从 dev_users 模拟权限，prod 仍由本人 SMB 连接和群晖 ACL 实际执行文件权限。
+- 上传、待初审、待终审、项目、搜索、设置为建设中占位；首页不伪造批次和待办数据。管理页可维护角色。组件样例 `/components` 仅 dev 模式显示，prod 直接访问跳回首页。
+- 五种玻璃组件统一位于 `src/components/glass/`：Card、Button、Panel、Modal、Nav；GlassProvider/useGlassMode 提供全局两档。full 全部实时，lite 主要壳保留玻璃、卡片/次要按钮使用半透明和模糊。60 卡片网格仅供开发比较流畅度，没有宣称达到某个 FPS 指标。
+- 退出或任一 API 返回 401 时清除内存用户及角色缓存，守卫跳转登录；令牌、用户名密码不写 localStorage（只保存视觉偏好）。表单提交后清空密码字段；活动 SMB 内存凭据生命周期仍沿用 WP02，不落盘或写日志。
+
+手动验证：
+
+1. 浏览器打开 <http://localhost:8080>，使用 demo-uploader 登录一次再退出；用错误密码重试应提示失败。退出后访问 `/projects` 或 `/admin/roles` 应进入登录页。
+2. 用 demo-admin 登录，管理 → 角色表，给 demo-uploader 勾选初审并保存；对方重新登录后应出现“待初审”。普通账号直接请求 GET/PUT `/api/admin/roles` 返回 403。
+3. 在组件样例页打开弹窗（Escape/关闭按钮可关闭）、切换 full/lite、滚动 60 张卡片并刷新，检查偏好保持与文字/按钮清晰可用。
+4. 测试令牌和 NAS 超时的自动化用例位于 `backend/tests/integration/test_auth_roles.py`；默认测试无真实 NAS 依赖。
+5. 内网 prod 验证：配置真实 NAS 主机、共享及区域根、受信 CA 与 bootstrap_admin，`mode: prod` 后重启；在登录页输入本人真实 NAS 凭据，应完成 DSM 验证和本人 SMB 建连。本包未在真实 NAS 上执行此项，不能把 dev 测试视作通过。

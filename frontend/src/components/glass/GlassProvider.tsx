@@ -3,7 +3,8 @@ import { initialMode, MODE_KEY, type VisualMode } from './visualMode'
 
 interface GlassContextValue { mode: VisualMode; toggle: () => void }
 const GlassContext = createContext<GlassContextValue>({ mode: 'lite', toggle: () => undefined })
-export const useGlass = (): GlassContextValue => useContext(GlassContext)
+export const useGlassMode = (): GlassContextValue => useContext(GlassContext)
+export const useGlass = useGlassMode
 
 export function GlassProvider({ children }: PropsWithChildren) {
   const [mode, setMode] = useState<VisualMode>(() => {

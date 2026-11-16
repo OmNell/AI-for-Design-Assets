@@ -137,3 +137,44 @@
 3. 按 README 用环境变量提供 NAS_TEST_HOST/SHARE/FORMAL/TEMP/BACKUP、USER_A/B、PASSWORD_A/B；DSM 端口/HTTPS 与 CA 按现场设置，密码隐藏输入且不写文件。
 4. 在公司内网执行 `python -m pytest backend/tests/nas -m nas -q --tb=short`，全部 14 项应通过。验证两账号同时存在、A 拒绝写正式测试区而 B 本人可移动；DSM 验证后立即注销。
 5. 检查本次 UUID 子目录已清理；若网络/权限导致残留，确认后人工清理。记录真实结果并更新探路 RESULT.md；20MiB 与 rename <1 秒性能验收仍按 WP00 脚本执行。
+
+## WP03 · 登录、角色与界面框架
+
+- 日期：2026-11-16。开发、本地自动化与 Chrome 验收完成；真实 NAS 的 prod 登录仍待公司内网手动验证。
+
+### 已完成
+
+- POST `/api/auth/login/logout`、GET `/api/auth/me`，使用 WP02 验证后端与本人 SessionPool。新账号默认 uploader，bootstrap_admin 仅首次创建影子用户时获得 admin；disabled 账号禁止登录。
+- 256 位随机工作台令牌，数据库只存 SHA-256；HttpOnly + SameSite=Lax Cookie，时长来自配置，HTTPS 启用 Secure；密码不入数据库、日志、浏览器存储，响应不包含令牌。NAS 活动内存凭据沿用业务 §2.1 与 WP02，见 Q013。
+- require_login/require_role，令牌过期、账号启用状态及 NAS 会话检查；NAS 过期统一 401/nas_session_expired，并作废该用户所有旧令牌；每次请求读取最新角色。
+- GET/PUT `/api/admin/roles`，仅管理员访问，四种角色可多选并支持启用/停用；停用撤销用户全部令牌并关闭 NAS 会话。登录成功/失败、注销、会话失效、角色修改都追加 oplog，角色变更含前后值；无 oplog 更新删除。
+- 同账号多个浏览器使用独立令牌，按用户共享 NAS 连接，最后一个有效令牌退出时关闭；防止一台注销影响其他电脑。应用生命周期创建/关闭池；重启后旧 Cookie 需重新登录。
+- 五种 glass 封装齐全：GlassCard/Button/Panel/Modal/Nav；提供 GlassProvider/useGlassMode，兼容已有 useGlass 调用。full 使用真实 SVG 滤镜，lite 非壳条目/次按钮退化半透明和模糊；右上角切换、localStorage 持久化，Safari/Firefox 默认 lite 与 CSS 回退不变。
+- 中文登录页、角色导航外壳、当前用户/退出、角色表页面、dev 独有组件样例和 60 卡片网格；原生 dialog 支持焦点约束和 Escape 关闭。API 401 清内存认证与角色缓存并跳转登录，NAS 超时展示指定提示。
+- 首页不伪造批次/待办数据；上传、初审、终审、项目、搜索、设置均为建设中；未实现上传或批次业务。
+- 示例增加 demo-admin 假账号与 bootstrap，README 补运行、角色表与 prod 手动验收。本机旧 dev 配置在缺少账号时已补齐示例假账号，保留其他配置；真实配置及运行数据均未提交。
+
+### 依赖与验证
+
+- 新增既定栈内 `react-router`（7.x，支持 React 18）、TanStack Query（5.x）、zustand（5.x）、react-hook-form（7.x），分别用于路由/守卫、请求缓存、内存认证状态和表单。无其他 UI 库或数据库。
+- 全部 Python：102 项通过、14 项真实 NAS 用例默认排除；WP03 新增 10 项集成与 2 项服务单元测试。覆盖每个 API 的成功/失败、错误密码、Cookie/令牌哈希、过期、角色继承/拒绝、bootstrap 不反复提权、停用撤销、NAS 过期码、旧令牌不复活、多人注销和失败回滚。
+- 前端 23 项测试通过（新增 10 项），覆盖导航权限、401 清理与超时提示、403 保留认证、网络中文提示、路由守卫、退出、dev/prod 样例可见性、60 卡片与弹窗。已有真实玻璃库集成测试保留。
+- npm ci --strict-peer-deps 成功，npm audit 0；TypeScript 与生产构建成功。Python 编译检查通过。仍有已知 Starlette/httpx TestClient 弃用提示。
+- Chrome 实测：demo-admin 登录成功，出现管理导航；角色表显示角色复选框；完整模式 60 卡片网格显示正常；切至轻量打开弹窗，Escape 关闭，刷新仍为轻量；退出回登录。角色授予与对方重新登录的导航变化由自动化覆盖。未使用真实 NAS 凭据，未实测 prod 登录。
+
+### 已知限制与取舍
+
+- 多浏览器共用每用户 NAS 连接，注销语义及文档差异见 Q010；角色、引导、巡检权限冲突见 Q011～Q014。角色表不更改 NAS ACL。
+- 管理员可撤销自身权限或停用自己，本包未自行增加“最后一个管理员”限制；bootstrap 仅首次创建时生效，部署需保留可用管理员。
+- 页面导航基于已获取角色；服务器每次检查最新角色，界面重新登录后更新，API 401 即清状态。未增加账号目录同步或显示名编辑功能。
+- 同账号重新登录会重建共享 NAS 连接；本包无上传任务，因此不处理长任务跨登录恢复。上传不中断/任务续传需后续工作包结合活动句柄处理。
+- 全部新逻辑为单进程部署设计，登录/角色修改使用进程锁和数据库事务；NAS 与数据库无法组成分布式事务，异常会作废/清理已打开连接。
+- 组件网格供人工观察流畅度，未提供或宣称 FPS 性能基准。Edge/Safari/Firefox 现场视觉与 Windows 仍待验证。
+
+### 手动验收
+
+1. 安装更新依赖、构建、重启；从示例合并 dev_users 和 bootstrap_admin。dev 登录 demo-uploader/demo-uploader-only，错密码应失败，退出后打开任意受保护路径回登录。
+2. demo-admin/demo-admin-only 首次登录获得管理角色；让另一账号先登录一次，在角色表给其勾选初审或终审并保存，对方重新登录后检查菜单。非管理员调用 GET/PUT roles 均应 403。
+3. 角色停用后旧登录立即不可用，重新登录被拒绝；用仍有效的管理员恢复启用。
+4. 打开 dev 组件样例，检查全部组件、弹窗与 60 张卡片；切换/刷新确认 full/lite 持久化；prod 下入口隐藏且直接访问跳首页。
+5. 运行 `python -m pytest -q` 与 `npm --prefix frontend run check`。公司内网再配置 mode=prod、真实 NAS/CA 与负责人账号，通过浏览器使用本人 NAS 凭据验证 DSM + SMB 登录，不将真实密码写入示例或报告。

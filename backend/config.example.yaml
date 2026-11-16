@@ -1,6 +1,6 @@
 # 复制到仓库根目录 config.yaml；本文件不含真实凭据。
 mode: dev
-bootstrap_admin: ""  # 留给后续登录工作包处理，本包不创建账号。
+bootstrap_admin: demo-admin  # dev 演示管理员；prod 请改为真实项目负责人 NAS 账号。
 server:
   host: 0.0.0.0
   port: 8080
@@ -50,3 +50,6 @@ dev_users:
   - username: demo-final
     password: demo-final-only
     permissions: {formal: write, temp: write, backup: none}
+  - username: demo-admin
+    password: demo-admin-only
+    permissions: {formal: read, temp: write, backup: none}
