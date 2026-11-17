@@ -12,7 +12,7 @@ from collections.abc import Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import AiAlert, Batch, BatchFile, BatchProduct, CompanyIndustryMap, Job, TagField, User, utcnow
+from app.db.models import AiAlert, Batch, BatchFile, BatchProduct, CatalogFile, CompanyIndustryMap, Job, Product, Project, TagField, User, utcnow
 from app.errors import AppError
 from app.services.auth.service import AuthService
 from app.services.crypto import SecretCipher
@@ -118,9 +118,19 @@ class AiService:
                 fields = [{"key": row.key, "label": row.label, "hint": row.hint} for row in session.scalars(
                     select(TagField).where(TagField.enabled.is_(True)).order_by(TagField.sort_order, TagField.id))]
                 batch.payload = {**batch.payload, "ai_fields": fields, "ai_initialized": True}
-                batch.recommended_path = self._recommend(session, batch)
+                replaced: dict[str, int] = {}
+                if batch.kind == "supplement":
+                    # 补充批次进入原项目所在位置；被替换的主图沿用原商品。
+                    project = session.get(Project, batch.project_id)
+                    batch.recommended_path = project.current_path.rsplit("/", 1)[0]
+                    replaced = {path.casefold(): product_id for path, product_id in session.execute(
+                        select(CatalogFile.rel_path, Product.id).join(Product, Product.file_id == CatalogFile.id).where(
+                            Product.project_id == project.id, Product.status == "active"))}
+                else:
+                    batch.recommended_path = self._recommend(session, batch)
                 for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id).order_by(BatchFile.id)):
-                    if not is_main_image(file) or file.removed:
+                    # 只处理新增的主图和被替换的主图；与库里完全相同的重复文件跳过。
+                    if not is_main_image(file) or file.removed or file.conflict == "duplicate":
                         continue
                     product = session.scalar(select(BatchProduct).where(BatchProduct.batch_id == batch.id, BatchProduct.batch_file_id == file.id))
                     if product is None:
@@ -128,7 +138,9 @@ class AiService:
                             kind="set" if file.rel_path.startswith("套装/") else "item", display_name=Path(file.rel_path).stem)
                         session.add(product)
                     product.ai_status, product.ai_error = "pending", None
-                    product.flags, product.relation_items, product.relation_confirmed = [], [], False
+                    product.existing_product_id = replaced.get(file.rel_path.casefold()) if file.conflict == "conflict" and file.conflict_choice == "replace" else None
+                    # 被替换的套装图保留原有包含关系，不需要重新确认。
+                    product.flags, product.relation_items, product.relation_confirmed = [], [], product.existing_product_id is not None
                 self._log(session, batch, "建立 AI 商品清单及位置建议")
             session.flush()
             self._advance(session, batch)
@@ -157,7 +169,8 @@ class AiService:
             self._advance(session, batch)
             return
         if all(product.ai_status != "pending" for product in products):
-            batch.status = REVIEW if any(product.ai_status == "done" for product in products) else FAILED
+            # 补充包可以只有资料文件、没有主图，这时直接进入核对。
+            batch.status = REVIEW if any(product.ai_status == "done" for product in products) or (batch.kind == "supplement" and not products) else FAILED
             self._log(session, batch, "AI 打标结束")
 
     def thumb_changed(self, session: Session, job: Job) -> None:
@@ -311,7 +324,11 @@ class AiService:
             flags = list(result["flags"])
             keep_relations = single and product.kind == "set" and (product.relation_confirmed or any(
                 isinstance(item, dict) and item.get("source") == "manual" for item in product.relation_items))
-            if keep_relations:
+            if product.existing_product_id is not None:
+                # 替换主图：只更新标签和描述，原商品的套装关系不动。
+                flags = [flag for flag in flags if flag != "empty_relation"]
+                product.relation_items, product.relation_confirmed = [], True
+            elif keep_relations:
                 flags = [flag for flag in flags if flag != "empty_relation"]
             else:
                 product.relation_items, product.relation_confirmed = result["relation_items"], False

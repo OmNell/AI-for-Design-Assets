@@ -5,19 +5,22 @@ NAS 文件操作一律使用当前操作人本人的会话；所有修改写字�
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Callable
 import hashlib
 import time
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Batch, BatchFile, BatchProduct, TagField, User, utcnow
+from app.db.models import Batch, BatchFile, BatchProduct, CatalogFile, Product, TagField, User, utcnow
 from app.errors import AppError
-from app.schemas.review import (BulkRequest, FolderFile, FolderGroup, OwnerResponse, Pending, ProductPatch, ProductUpdate,
+from app.schemas.review import (BulkRequest, CompareItem, FileVersion, FolderFile, SupplementSummary, FolderGroup, OwnerResponse, Pending, ProductPatch, ProductUpdate,
                                 RelationView, ReviewBatch, ReviewField, ReviewProduct, ReviewResponse, TagValue, TagView)
 from app.services.ai.orchestrator import RELATION_FLAGS, REVIEWING, AiService, active_products
 from app.services.ai.parsing import split_terms
 from .history import round_history
+from app.services.batch import LIGHT_KINDS, kind_label
+from app.services.upload import supplement
 from app.services.auth.service import AuthService
 from app.services.nas import NasPermissionDenied, Region, safe_join
 from app.services.nas.factory import create_paths
@@ -49,6 +52,8 @@ def _brief(tag: dict[str, object] | None) -> dict[str, object] | None:
 class ReviewService:
     def __init__(self, auth: AuthService, thumbs: ThumbService, ai: AiService) -> None:
         self.auth, self.thumbs, self.ai = auth, thumbs, ai
+        # 由入库后操作模块注入：计算「修改标签」批次相对卡片柜的改动。
+        self.changes: Callable[[Session, Batch], list[object]] | None = None
         self.paths = create_paths(auth.config)
 
     # ---- 权限与读取 ----
@@ -121,7 +126,38 @@ class ReviewService:
             free_text_source=product.free_text_source, ai_free_text=product.ai_free_text, flags=list(product.flags),
             relation_items=[RelationView(batch_product_id=item["batch_product_id"], source=str(item.get("source", "ai")))
                             for item in product.relation_items if isinstance(item, dict) and isinstance(item.get("batch_product_id"), int)],
-            relation_confirmed=product.relation_confirmed)
+            relation_confirmed=product.relation_confirmed, existing_product_id=product.existing_product_id,
+            existing_code=session.scalar(select(Product.product_code).where(Product.id == product.existing_product_id)) if product.existing_product_id else None)
+
+    @staticmethod
+    def _supplement(session: Session, batch: Batch) -> SupplementSummary | None:
+        if batch.kind != "supplement":
+            return None
+        files = [file for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id).order_by(BatchFile.rel_path)) if not file.removed]
+        existing = supplement.catalog_files(session, batch.project_id)
+        originals = batch.payload.get("conflict_originals", {})
+        owners = dict(session.execute(select(Product.file_id, Product.id).where(Product.project_id == batch.project_id)).all())
+        compare = []
+        for file in files:
+            if file.conflict != "conflict":
+                continue
+            original = str(originals.get(str(file.id), file.rel_path))
+            old = existing.get(original.casefold())
+            if old is None:
+                continue
+            compare.append(CompareItem(rel_path=original, choice=file.conflict_choice, is_image=is_main_image(old), old_file_id=old.id,
+                old_product_id=owners.get(old.id), old=FileVersion(size=old.size, mtime=old.mtime, fingerprint=old.fingerprint),
+                batch_file_id=file.id, new=FileVersion(size=file.size, mtime=file.mtime, fingerprint=file.fingerprint)))
+        notices = []
+        new_items = [file.rel_path for file in files if file.conflict in ("new", "conflict") and file.conflict_choice != "replace" and file.rel_path.startswith("单品/")]
+        if new_items:
+            sets = list(session.scalars(select(Product.display_name).where(Product.project_id == batch.project_id, Product.kind == "set", Product.status == "active")))
+            if sets:
+                notices.append(f"本次新增了 {len(new_items)} 个单品。原有套装（{'、'.join(sets)}）的包含关系不会自动改变，请复核；需要调整时在入库后发起「修改标签」。")
+        return SupplementSummary(new=sum(file.conflict == "new" for file in files), replaced=sum(file.conflict_choice == "replace" for file in files),
+            kept_both=sum(file.conflict_choice == "keep_both" for file in files), skipped=sum(file.conflict == "duplicate" for file in files),
+            unresolved=len(supplement.unresolved(session, batch)), compare=compare,
+            skipped_files=[file.rel_path for file in files if file.conflict == "duplicate"], notices=notices)
 
     def _update(self, session: Session, batch: Batch, product: BatchProduct) -> ProductUpdate:
         session.flush()
@@ -136,19 +172,21 @@ class ReviewService:
         products = active_products(session, batch.id)
         groups: dict[str, list[FolderFile]] = {name: [] for name in REQUIRED}
         for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id).order_by(BatchFile.rel_path)):
-            if file.removed or is_main_image(file):
+            # 修改标签的批次没有上传任何文件；补充包里的重复文件不会入库。
+            if file.removed or is_main_image(file) or batch.kind == "retag" or file.conflict == "duplicate":
                 continue
             head, _, rest = file.rel_path.partition("/")
             groups.setdefault(head if rest else "项目根目录", []).append(FolderFile(name=rest or head, size=file.size))
         owner = session.get(User, batch.owner_id)
         parts = str(batch.payload["folder_name"]).split("_")
-        return ReviewResponse(history=round_history(session, batch.id),
+        return ReviewResponse(history=round_history(session, batch.id), supplement=self._supplement(session, batch),
             batch=ReviewBatch(id=batch.id, batch_no=batch.batch_no, project_code=batch.project_code,
                 folder_name=str(batch.payload["folder_name"]), company_name=parts[1] if len(parts) == 3 else "",
                 project_name=parts[2] if len(parts) == 3 else "", status=batch.status, won=batch.won, round=batch.round,
                 owner_id=batch.owner_id, owner_name=(owner.display_name or owner.username) if owner else "",
                 uploader_id=batch.uploader_id, recommended_path=batch.recommended_path, note_to_reviewer=batch.note_to_reviewer,
-                editable=batch.status in REVIEWING and ("admin" in user.roles or user.id == batch.owner_id)),
+                editable=batch.status in REVIEWING and ("admin" in user.roles or user.id == batch.owner_id),
+                kind=batch.kind, kind_label=kind_label(batch), project_id=batch.project_id),
             fields=[ReviewField(key=field.key, label=field.label, hint=field.hint) for field in fields],
             products=[self._view(session, product, keys) for product in products],
             pending=self._pending(products, keys),
@@ -260,6 +298,8 @@ class ReviewService:
         with self.auth.lock, self.auth.database.session() as session:
             batch, user = self._writable(session, batch_id, actor)
             product, _ = self._product(session, batch, product_id)
+            if batch.kind == "retag":
+                raise AppError("not_supported", "修改标签的批次不重新打标，请直接修改文字", 409)
             if product.ai_status == "pending":
                 raise AppError("ai_in_progress", "这张图正在打标，请稍候", 409)
             before = {"ai_status": product.ai_status, "ai_error": product.ai_error}
@@ -273,6 +313,8 @@ class ReviewService:
             product, _ = self._product(session, batch, product_id)
             if product.kind != "set":
                 raise AppError("not_a_set", "只有套装图可以设置包含的单品", 422)
+            if batch.kind == "supplement" and product.existing_product_id is not None:
+                raise AppError("not_supported", "替换主图沿用原商品的包含关系；需要调整请在入库后发起「修改标签」", 409)
             valid = {item.id for item in active_products(session, batch.id, "item")}
             unknown = [item_id for item_id in item_ids if item_id not in valid]
             if unknown:
@@ -298,6 +340,8 @@ class ReviewService:
     def append(self, batch_id: int, kind: str, filename: str, data: bytes, mtime: int | None, actor: User, host: str) -> ReviewResponse:
         with self.auth.lock, self.auth.database.session() as session:
             batch, user = self._writable(session, batch_id, actor)
+            if batch.kind == "retag":
+                raise AppError("not_supported", "修改标签的批次不能追加主图；新增主图请走补充", 409)
             if kind not in KIND_DIRS:
                 raise AppError("invalid_kind", "请选择放入套装或单品", 422)
             name = filename.strip()
@@ -317,6 +361,8 @@ class ReviewService:
             prefix = len(f"\\\\{nas.host}\\{nas.share}\\{self.paths.root(Region.TEMP)}\\B00000000-000000\\")
             if prefix + len(self._folder(batch) + "/" + rel_path) > 200:
                 raise AppError("path_too_long", "项目内完整路径超过 200 字符", 422)
+            if batch.kind == "supplement" and rel_path.casefold() in supplement.catalog_files(session, batch.project_id):
+                raise AppError("file_exists", "项目里已有同名主图；要替换它请重新上传补充包，或改名后再追加", 409)
             reuse: BatchFile | None = None
             for other in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id)):
                 if other.rel_path == rel_path and other.removed:
@@ -344,6 +390,8 @@ class ReviewService:
             file = reuse or BatchFile(batch_id=batch.id, rel_path=rel_path, size=0, mtime=0)
             file.size, file.mtime, file.bytes_received, file.fingerprint = len(data), stamp, len(data), digest
             file.upload_status, file.removed, file.thumb_status, file.thumb_error = "done", False, None, None
+            if batch.kind == "supplement":
+                file.conflict, file.conflict_choice = "new", None
             session.add(file)
             session.flush()
             self.thumbs.invalidate(batch.id, file.id)
@@ -354,13 +402,13 @@ class ReviewService:
                 session.add(product)
             product.kind, product.display_name = kind, name.rsplit(".", 1)[0]
             product.tags, product.free_text, product.free_text_source, product.ai_free_text = {}, "", "ai", ""
-            product.flags, product.relation_items, product.relation_confirmed = [], [], False
+            product.flags, product.relation_items, product.relation_confirmed, product.existing_product_id = [], [], False, None
             session.flush()
             rechecked: list[int] = []
             if kind == "item":
-                # 已确认的关系不自动改变，但要求责任人重新复核。
+                # 已确认的关系不自动改变，但要求责任人重新复核。被替换的套装图沿用原关系，不在此列。
                 for other in active_products(session, batch.id, "set"):
-                    if other.id == product.id:
+                    if other.id == product.id or other.existing_product_id is not None:
                         continue
                     other.relation_confirmed = False
                     if RECHECK not in other.flags:
@@ -375,6 +423,8 @@ class ReviewService:
     def remove(self, batch_id: int, product_id: int, actor: User, host: str) -> ReviewResponse:
         with self.auth.lock, self.auth.database.session() as session:
             batch, user = self._writable(session, batch_id, actor)
+            if batch.kind == "retag":
+                raise AppError("not_supported", "修改标签的批次不能移除主图；要下架商品请发起「作废」", 409)
             product, file = self._product(session, batch, product_id)
             fs = self.auth.pool.get(user.id)
             source = self.paths.join(Region.TEMP, batch.batch_no, self._folder(batch), file.rel_path)
@@ -417,12 +467,15 @@ class ReviewService:
             pending = self._pending(active_products(session, batch.id), keys)
             if not pending.can_submit:
                 raise AppError("submit_blocked", "还有未处理的项，暂不能提交审核", 409, pending.model_dump())
+            if batch.kind == "retag" and self.changes is not None and not self.changes(session, batch):
+                raise AppError("no_changes", "还没有任何修改，无需提交审核", 409)
             before = {"status": batch.status, "round": batch.round, "note_to_reviewer": batch.note_to_reviewer}
+            target = "待终审" if batch.kind in LIGHT_KINDS and self.auth.config.review.light_ops_single_review else SUBMITTED
             if batch.status == REJECTED:
                 # 重新提交从初审重新开始：轮次 +1，清空两级审核人。
                 batch.round += 1
             batch.first_reviewer_id = batch.final_reviewer_id = None
-            batch.status, batch.note_to_reviewer = SUBMITTED, note or None
+            batch.status, batch.note_to_reviewer = target, note or None
             batch.payload = {**batch.payload, "stage_since": utcnow().isoformat()}
             self._log(session, user, "提交审核", "batch", batch.id, before,
                       {"status": batch.status, "round": batch.round, "note_to_reviewer": batch.note_to_reviewer}, host)

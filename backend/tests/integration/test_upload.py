@@ -100,8 +100,19 @@ def test_precheck_acks_existing_code_and_tampered_path(upload_client: TestClient
     assert client.post('/api/batches', json=body(name="套装档案/file.png")).status_code == 422
     with client.app.state.database.session() as session:
         session.add(Project(project_code="P001", company_name="企业", project_name="项目", won=True, folder_name="P001_企业_项目"))
+    # 编号已在库中：不再拦截，转入补充流程；补充包不提醒缺少资料夹。
     result = client.post('/api/batches/precheck', json=body()).json()
-    assert result["code_status"] == "exists" and "补充功能尚未开放" in result["issues"][0]["message"]
+    assert result["code_status"] == "exists" and not [issue for issue in result["issues"] if issue["level"] in ("block", "warn")]
+    renamed = client.post('/api/batches/precheck', json=body(folder="P001_企业_另一个名字")).json()
+    assert [(issue["rule_code"], issue["level"]) for issue in renamed["issues"] if issue["level"] != "ignore"] == [("P02", "warn")]
+    assert "库中为「项目」" in renamed["issues"][0]["message"]
+    payload = body(folder="P001_企业_另一个名字"); payload["acks"] = []
+    assert client.post('/api/batches', json=payload).status_code == 422
+    created = client.post('/api/batches', json={**body(), "acks": []})
+    assert created.status_code == 200 and created.json()["kind"] == "supplement" and created.json()["kind_label"] == "补充"
+    # 同一项目同时只允许一个未完成的操作批次。
+    blocked = client.post('/api/batches/precheck', json=body()).json()
+    assert blocked["issues"][0]["level"] == "block" and "未完成的操作批次" in blocked["issues"][0]["message"]
     assert client.post('/api/batches', json=body()).status_code == 422
 
 

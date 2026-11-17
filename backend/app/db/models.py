@@ -87,6 +87,8 @@ class Project(Record, Base):
     status: Mapped[str] = mapped_column(String, default="active")
     ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     archive_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 作废、恢复、删除的时间与原因；物理删除后记录仍保留。
+    lifecycle: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
 
 
 class Batch(Record, Base):
@@ -237,6 +239,8 @@ class CatalogFile(Record, Base):
     category: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="active")
     first_batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"))
+    # 作废、恢复、删除的时间与原因；物理删除后记录仍保留。
+    lifecycle: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
 
 
 class Product(Record, Base):
@@ -251,6 +255,8 @@ class Product(Record, Base):
     free_text: Mapped[str] = mapped_column(Text, default="")
     vision_model: Mapped[str] = mapped_column(String, default="")
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # 作废、恢复、删除的时间与原因；物理删除后记录仍保留。
+    lifecycle: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
 
 
 class ProductRelation(Record, Base):
@@ -286,6 +292,8 @@ class HistoryVersion(Record, Base):
     reason: Mapped[str] = mapped_column(String)
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"))
     expected_missing: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 被替换或作废时的旧标签、描述与套装关系，供查看和恢复。
+    snapshot: Mapped[object | None] = mapped_column(JSON(none_as_null=True))
 
 
 class Link(Record, Base):

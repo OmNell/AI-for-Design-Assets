@@ -13,7 +13,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import (Batch, BatchFile, BatchProduct, CatalogFile, HistoryVersion, Product, ProductRelation, ProductTag,
+from app.db.models import (Batch, BatchFile, BatchProduct, CatalogFile, HistoryVersion, Industry, Product, ProductRelation, ProductTag,
                            Project, TagField, User)
 from app.services.nas import NasFs, NasNotFound, Region
 from app.services.nas.paths import NasPaths
@@ -291,7 +291,8 @@ def from_catalog(session: Session, project: Project) -> ArchiveSet:
     """按卡片柜生成；verify 与 rebuild 以它为准。"""
     labels = _labels(session)
     files = {row.id: row for row in session.scalars(select(CatalogFile).where(CatalogFile.project_id == project.id))}
-    rows = list(session.scalars(select(Product).where(Product.project_id == project.id).order_by(Product.product_code)))
+    # 物理删除后的商品没有档案，也不再列入项目档案；卡片柜里的记录仍然保留。
+    rows = list(session.scalars(select(Product).where(Product.project_id == project.id, Product.status != "deleted").order_by(Product.product_code)))
     codes = {row.id: row.product_code for row in rows}
     relations = list(session.scalars(select(ProductRelation).where(ProductRelation.set_product_id.in_(codes) if codes else False)))
     products: list[ProductDoc] = []
@@ -299,9 +300,9 @@ def from_catalog(session: Session, project: Project) -> ArchiveSet:
     for row in rows:
         file = files[row.file_id]
         if row.kind == "set":
-            related = tuple(sorted((codes[item.item_product_id], item.source) for item in relations if item.set_product_id == row.id))
+            related = tuple(sorted((codes[item.item_product_id], item.source) for item in relations if item.set_product_id == row.id and item.item_product_id in codes))
         else:
-            related = tuple((code, "") for code in sorted(codes[item.set_product_id] for item in relations if item.item_product_id == row.id))
+            related = tuple((code, "") for code in sorted(codes[item.set_product_id] for item in relations if item.item_product_id == row.id and item.set_product_id in codes))
         tags = tuple((labels.get(tag.field_key, tag.field_key), tag.value, tag.source) for tag in session.scalars(
             select(ProductTag).where(ProductTag.product_id == row.id).order_by(ProductTag.field_key)))
         products.append(ProductDoc(code=row.product_code, kind=row.kind, display_name=row.display_name, project_code=project.project_code,
@@ -310,9 +311,12 @@ def from_catalog(session: Session, project: Project) -> ArchiveSet:
         lines.append(ProductLine(row.product_code, row.kind, file.rel_path, tuple(_serial(code) for code, _ in related)))
     batch = session.scalar(select(Batch).where(Batch.project_id == project.id, Batch.kind == "ingest").order_by(Batch.id))
     history = tuple(HistoryLine(row.old_rel_path, row.new_rel_path, row.old_fingerprint, row.reason) for row in session.scalars(
-        select(HistoryVersion).where(HistoryVersion.project_id == project.id).order_by(HistoryVersion.id)))
+        select(HistoryVersion).where(HistoryVersion.project_id == project.id).order_by(HistoryVersion.id))
+        if row.file_id in files and files[row.file_id].status != "deleted")
+    # 项目被移到「_已作废项目」后路径里没有行业一层，所以优先用卡片柜里的行业。
+    industry = session.get(Industry, project.industry_id) if project.industry_id else None
     doc = ProjectDoc(project_code=project.project_code, code_source=project.code_source, project_name=project.project_name,
-        company=project.company_name, industry=_industry(project.current_path), won=project.won,
+        company=project.company_name, industry=industry.name if industry else _industry(project.current_path), won=project.won,
         uploader=_name(session, batch.uploader_id if batch else None), first_reviewer=_name(session, batch.first_reviewer_id if batch else None),
         final_reviewer=_name(session, batch.final_reviewer_id if batch else None),
         ingested_on=local_date(project.ingested_at) if project.ingested_at else "",
@@ -411,8 +415,11 @@ def verify(session: Session, fs: NasFs, paths: NasPaths, project: Project) -> li
 
 def rebuild(session: Session, fs: NasFs, paths: NasPaths, project: Project) -> int:
     """按卡片柜重写该项目全部档案并清掉多余的档案文件；返回实际改动的文件数。需要正式目录写权限。"""
-    root = project_root(paths, project)
-    expected = documents(from_catalog(session, project))
+    return apply_documents(fs, project_root(paths, project), documents(from_catalog(session, project)))
+
+
+def apply_documents(fs: NasFs, root: str, expected: dict[str, str]) -> int:
+    """把已经算好的档案全文写到 NAS；与取数分开，执行器可以在不占用数据库的情况下写文件。"""
     changed = write_documents(fs, root, expected)
     for directory in ARCHIVE_DIRS.values():
         if fs.exists(f"{root}/{directory}"):

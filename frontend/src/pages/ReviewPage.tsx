@@ -13,6 +13,8 @@ import { Thumb } from '../components/review/Thumb'
 import { ProductList, RoundHistory } from '../components/review/ProductList'
 import { GlassModal } from '../components/glass/GlassModal'
 import { cancelBatch } from '../api/upload'
+import { withdrawOp } from '../api/ops'
+import { thumbUrl } from '../api/catalog'
 import { ImageViewer } from '../components/review/ImageViewer'
 import { TagForm } from '../components/review/TagForm'
 import { AppendModal, BulkModal, OwnerModal, RemoveModal } from '../components/review/ReviewModals'
@@ -134,6 +136,9 @@ export function ReviewPage() {
   const rejectPins = rejection?.pins ?? []
   const pinCounts = rejectPins.reduce<Record<number, number>>((counts, pin) => ({ ...counts, [pin.batch_product_id]: (counts[pin.batch_product_id] ?? 0) + 1 }), {})
   const isUploader = user?.id === batch.uploader_id
+  const kind = batch.kind ?? 'ingest'
+  const retag = kind === 'retag'
+  const supplement = data.supplement
   return <div className="space-y-4">
     {batch.status === '已驳回' && <div data-testid="reject-banner" role="status" className="rounded-2xl border border-red-300/70 bg-red-100/70 px-5 py-3 text-sm text-red-900">
       <div className="flex items-start justify-between gap-4"><div className="min-w-0">
@@ -144,11 +149,13 @@ export function ReviewPage() {
       {history.length > 1 && <details className="mt-2"><summary className="cursor-pointer text-xs">查看历次意见（{history.length}）</summary><div className="mt-2"><RoundHistory history={history} /></div></details>}</div>}
     <GlassSurface radius={24} className="px-6 py-4">
       <div className="flex items-start justify-between gap-6">
-        <div className="min-w-0"><h1 className="truncate text-lg font-semibold">{batch.project_code} {batch.company_name} {batch.project_name}
+        <div className="min-w-0"><h1 className="truncate text-lg font-semibold">{kind !== 'ingest' && <span data-testid="batch-kind" className="mr-2 rounded-full bg-emerald-800/10 px-2.5 py-0.5 text-sm font-medium text-emerald-900">{batch.kind_label}</span>}{batch.project_code} {batch.company_name} {batch.project_name}
           <span className="ml-3 text-sm font-normal text-slate-600">· 位置 {batch.recommended_path || '位置待定'}</span></h1>
           <p className="mt-1.5 text-xs text-slate-500">{batch.batch_no} · {batch.status} · 责任人 {batch.owner_name}
             {user?.roles.includes('admin') && <button type="button" className="ml-2 text-emerald-800 underline underline-offset-4" onClick={() => setModal('owner')}>更换责任人</button>}
-            <Link to={`/batches/${batch.id}`} className="ml-3 text-emerald-800 underline underline-offset-4">批次详情</Link></p>
+            <Link to={retag ? `/ops/${batch.id}` : `/batches/${batch.id}`} className="ml-3 text-emerald-800 underline underline-offset-4">批次详情</Link>
+            {kind !== 'ingest' && editable && batch.status === '待核对' && <button type="button" className="ml-3 text-emerald-800 underline underline-offset-4" onClick={() => setModal('withdraw')}>撤回这次{batch.kind_label}</button>}</p>
+          {retag && <p className="mt-1 text-xs text-slate-500">只修改标签和套装关系，不动图片。至少改动一处才能提交；审核通过后生效。</p>}
           <p data-testid="pending" className={`mt-2 text-sm ${todo.length ? 'text-amber-900' : 'text-emerald-800'}`}>{todo.length ? `待处理：${todo.join(' · ')}` : '待处理项已清零，可以提交审核。'}</p>
           {!editable && <p className="mt-1 text-xs text-slate-500">{['待核对', '已驳回'].includes(batch.status) ? '只有批次责任人和管理员可以修改，当前为只读。' : `批次状态为「${batch.status}」，当前为只读。`}</p>}
         </div>
@@ -164,6 +171,16 @@ export function ReviewPage() {
       {error && !modal && <p role="alert" className="mt-2 text-sm text-red-800">{error}</p>}
     </GlassSurface>
 
+    {supplement && <GlassSurface radius={20} className="px-5 py-3"><details data-testid="supplement"><summary className="cursor-pointer select-none text-sm font-medium">补充内容：新增 {supplement.new} · 替换 {supplement.replaced} · 另存 {supplement.kept_both} · 跳过（内容相同）{supplement.skipped}</summary>
+      {supplement.notices.map(notice => <p key={notice} className="mt-2 rounded-xl bg-amber-100/60 px-3 py-2 text-sm text-amber-900">{notice}</p>)}
+      {!!supplement.compare.length && <div className="mt-3 grid max-h-64 grid-cols-3 gap-3 overflow-y-auto">{supplement.compare.map(item => <div key={item.batch_file_id} data-testid="compare" className="rounded-xl bg-white/35 p-3 text-xs">
+        <p className="break-all text-sm font-medium">{item.rel_path}<span className="ml-2 font-normal text-slate-500">{item.choice === 'replace' ? '替换（旧文件移入历史版本）' : item.choice === 'keep_both' ? '另存为新版本' : '未选择'}</span></p>
+        <div className="mt-2 grid grid-cols-2 gap-3">{([['库中现有', item.old], ['本次上传', item.new]] as const).map(([label, version], index) => <div key={label}><p className="text-slate-500">{label}</p>
+          {item.is_image && (index === 0 ? item.old_product_id !== null && <img src={thumbUrl(item.old_product_id, 300)} alt={`${item.rel_path} 库中现有`} className="mt-1 h-28 w-28 rounded-lg bg-white/40 object-contain" /> :
+            <Thumb batchId={batch.id} fileId={item.batch_file_id} version={version.fingerprint ?? ''} size={300} alt={`${item.rel_path} 本次上传`} className="mt-1 h-28 w-28" />)}
+          <p className="mt-1">{formatBytes(version.size)} · {new Date(version.mtime).toLocaleString('zh-CN')}</p></div>)}</div></div>)}</div>}
+      {!!supplement.skipped_files.length && <p className="mt-3 break-all text-xs text-slate-500">跳过：{supplement.skipped_files.join('、')}</p>}</details></GlassSurface>}
+
     {/* 三栏内部各自滚动：用次级玻璃，lite 模式下不挂实时滤镜，60 张以上主图滚动才流畅。 */}
     <div className="grid h-[calc(100vh-345px)] min-h-[560px] grid-cols-[270px_minmax(0,1fr)_400px] gap-4">
       <GlassSurface radius={24} priority="secondary" className="glass-fill min-h-0 p-3"><div className="flex h-full flex-col">
@@ -173,7 +190,7 @@ export function ReviewPage() {
             <span><button type="button" className="underline underline-offset-4" onClick={() => setChecked(new Set(items.map(item => item.id)))}>全选单品</button>
               <button type="button" className="ml-3 underline underline-offset-4" onClick={() => setChecked(new Set())}>清空</button></span></div>
           <div className="flex gap-2"><GlassButton primary={false} disabled={busy || !selection.length} onClick={() => setModal('bulk')}>批量修改</GlassButton>
-            <GlassButton primary={false} disabled={busy} onClick={() => setModal('append')}>追加主图</GlassButton></div></div>}
+            {!retag && <GlassButton primary={false} disabled={busy} onClick={() => setModal('append')}>追加主图</GlassButton>}</div></div>}
       </div></GlassSurface>
 
       <GlassSurface radius={24} priority="secondary" className="glass-fill min-h-0 p-3">{selected ? <div className="flex h-full flex-col">
@@ -191,7 +208,7 @@ export function ReviewPage() {
 
       <GlassSurface radius={24} priority="secondary" className="glass-fill min-h-0 p-3"><div data-testid="tag-form" className="h-full overflow-y-auto pr-1">{selected ?
         <TagForm batchId={batch.id} product={selected} fields={fields} items={items} editable={editable} busy={busy} onChange={change(selected.id)}
-          onRetry={() => void runProduct(() => retryProductAi(id, selected.id), () => void client.invalidateQueries({ queryKey: key }))} onRemove={() => setModal('remove')}
+          onRetry={() => void runProduct(() => retryProductAi(id, selected.id), () => void client.invalidateQueries({ queryKey: key }))} onRemove={() => setModal('remove')} fixed={retag}
           relationDraft={draft} onRelationDraft={ids => setDrafts(value => ({ ...value, [selected.id]: ids }))}
           onConfirmRelations={() => void runProduct(() => setRelations(id, selected.id, draft), () => setDrafts(value => { const next = { ...value }; delete next[selected.id]; return next }))} /> :
         <p className="p-3 text-sm text-slate-500">选择左侧主图后在这里核对标签。</p>}</div></GlassSurface>
@@ -209,9 +226,9 @@ export function ReviewPage() {
     {modal === 'remove' && selected && <RemoveModal name={selected.display_name} isItem={selected.kind === 'item'} busy={busy} error={error} onClose={close}
       onConfirm={() => void run(() => removeProduct(id, selected.id), () => { setModal(null); setCurrent(null); setDrafts({}); toggle(selected.id, false) })} />}
     {modal === 'withdraw' && <GlassModal open title="撤回批次" onClose={close}>
-      <p className="text-sm">确定撤回吗？临时区里本批次的全部文件会被删除，批次变为「已撤回」，不能恢复。</p>
+      <p className="text-sm">{retag ? '确定撤回吗？这次修改会被放弃，已入库的内容不受影响。' : '确定撤回吗？临时区里本批次的全部文件会被删除，批次变为「已撤回」，不能恢复。'}</p>
       {error && <p role="alert" className="mt-4 text-sm text-red-800">{error}</p>}
-      <div className="mt-5"><GlassButton disabled={busy} onClick={() => { setBusy(true); setError(''); cancelBatch(id).then(() => { void client.invalidateQueries(); navigate('/') }).catch((reason: unknown) => setError(message(reason))).finally(() => setBusy(false)) }}>确认撤回</GlassButton></div>
+      <div className="mt-5"><GlassButton disabled={busy} onClick={() => { setBusy(true); setError(''); (kind === 'ingest' ? cancelBatch(id) : withdrawOp(id)).then(() => { void client.invalidateQueries(); navigate(batch.project_id ? `/projects/${batch.project_id}` : '/') }).catch((reason: unknown) => setError(message(reason))).finally(() => setBusy(false)) }}>确认撤回</GlassButton></div>
     </GlassModal>}
     {modal === 'owner' && <OwnerModal ownerId={batch.owner_id} busy={busy} error={error} onClose={close}
       onSave={userId => { setBusy(true); setError(''); changeOwner(id, userId).then(() => { setModal(null); return client.invalidateQueries({ queryKey: key }) }).catch((reason: unknown) => setError(message(reason))).finally(() => setBusy(false)) }} />}

@@ -19,10 +19,11 @@ from sqlalchemy.orm import Session
 from app.db.models import (Batch, CatalogFile, HistoryVersion, Industry, InspectionFinding, Link, Oplog, Product, ProductRelation,
                            ProductTag, Project, TagField, User)
 from app.errors import AppError
-from app.schemas.catalog import (DownloadItem, FileCheck, FileRow, FolderCount, HistoryRow, LinkTarget, LogRow, ProductBrief,
+from app.schemas.catalog import (DownloadItem, FileCheck, FileRow, FolderCount, HistoryRow, LinkTarget, LogRow, OpenBatch, ProductBrief,
                                  ProductDetail, ProjectDetail, ProjectPage, ProjectRow, TagRow)
 from app.services import archive
 from app.services.auth.service import AuthService
+from app.services.batch import kind_label, open_batch
 from app.services.links import resolve
 from app.services.nas import NasFs, NasNotFound, Region
 from app.services.nas.factory import create_paths
@@ -149,7 +150,7 @@ class CatalogService:
         return project
 
     def _brief(self, session: Session, product: Product, related: list[int]) -> ProductBrief:
-        return ProductBrief(id=product.id, product_code=product.product_code, display_name=product.display_name, kind=product.kind,
+        return ProductBrief(file_id=product.file_id, lifecycle=dict(product.lifecycle), id=product.id, product_code=product.product_code, display_name=product.display_name, kind=product.kind,
                             status=product.status, link_id=self._link(session, "product", product.id), related=related)
 
     def project(self, project_id: int) -> ProjectDetail:
@@ -164,13 +165,20 @@ class CatalogService:
             logs = session.scalars(select(Oplog).where(or_((Oplog.object_type == "project") & (Oplog.object_id == str(project.id)),
                 (Oplog.object_type == "batch") & Oplog.object_id.in_(batch_ids))).order_by(Oplog.id.desc()).limit(200))
             users = {row.id: (row.display_name or row.username) for row in session.scalars(select(User))}
+            pending = open_batch(session, project)
             return ProjectDetail(project=self._row(session, project), folder_name=project.folder_name, code_source=project.code_source,
                 link_id=self._link(session, "project", project.id),
                 products_list=[self._brief(session, row, [item.item_product_id for item in relations if item.set_product_id == row.id] if row.kind == "set"
                                else [item.set_product_id for item in relations if item.item_product_id == row.id]) for row in products],
                 folders=[FolderCount(name=name, count=counts.get(name, 0)) for name in CATEGORIES if name in REQUIRED or counts.get(name)],
-                history=[HistoryRow(id=row.id, file_id=row.file_id, old_rel_path=row.old_rel_path, new_rel_path=row.new_rel_path, reason=row.reason,
-                                    created_at=row.created_at) for row in session.scalars(select(HistoryVersion).where(HistoryVersion.project_id == project.id).order_by(HistoryVersion.id.desc()))],
+                history=[HistoryRow(id=row.id, file_id=row.file_id, product_id=row.product_id,
+                                    product_code=session.scalar(select(Product.product_code).where(Product.id == row.product_id)) if row.product_id else None,
+                                    old_rel_path=row.old_rel_path, new_rel_path=row.new_rel_path, reason=row.reason, created_at=row.created_at,
+                                    file_status=file.status, size=file.size, link_id=self._link(session, "file", file.id))
+                         for row, file in session.execute(select(HistoryVersion, CatalogFile).join(CatalogFile, CatalogFile.id == HistoryVersion.file_id)
+                                                          .where(HistoryVersion.project_id == project.id).order_by(HistoryVersion.id.desc()))],
+                open_batch=OpenBatch(id=pending.id, batch_no=pending.batch_no, kind=pending.kind, kind_label=kind_label(pending), status=pending.status) if pending else None,
+                lifecycle=dict(project.lifecycle),
                 logs=[LogRow(ts=row.ts, user=users.get(row.user_id, "系统") if row.user_id else "系统", action=row.action, result=row.result) for row in logs])
 
     def files(self, project_id: int, category: str | None) -> list[FileRow]:
@@ -383,8 +391,19 @@ class CatalogService:
             else:
                 target, url, name = session.get(Project, target_id), f"/projects/{target_id}", "项目"
             status = target.status if target is not None else "deleted"
+            lifecycle = dict(target.lifecycle) if target is not None else {}
+            if kind != "project" and target is not None and status == "active":
+                # 所属项目整体作废或删除时，商品和文件的链接也给出相应提示。
+                project = session.get(Project, target.project_id)
+                if project is not None and project.status in INACTIVE:
+                    status, lifecycle = project.status, dict(project.lifecycle)
             if status in INACTIVE:
-                return LinkTarget(link_id=link_id, kind=kind, target_id=target_id, status=status, url=None, message=f"该{name}{INACTIVE[status]}")
+                message = f"该{name}{INACTIVE[status]}"
+                if status == "deleted" and lifecycle.get("deleted_at"):
+                    message = f"该{name}已于 {archive.local_date(datetime.fromisoformat(str(lifecycle['deleted_at'])))} 删除，原因：{lifecycle.get('delete_reason', '未填写')}"
+                elif status == "voided" and lifecycle.get("void_reason"):
+                    message = f"该{name}已作废，原因：{lifecycle['void_reason']}"
+                return LinkTarget(link_id=link_id, kind=kind, target_id=target_id, status=status, url=None, message=message)
             return LinkTarget(link_id=link_id, kind=kind, target_id=target_id, status=status, url=url, message=None)
 
 

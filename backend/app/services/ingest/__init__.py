@@ -27,7 +27,13 @@ from app.services.preflight import REQUIRED
 INGESTING, BROKEN, DONE = "入库中", "入库异常", "已入库"
 STEPS = {1: "检查目标位置", 2: "创建行业与企业文件夹", 3: "移动项目文件夹", 4: "发放商品编号", 5: "写单品与套装档案",
          6: "写项目档案", 7: "登记卡片柜", 8: "生成永久链接", 9: "完成入库"}
+POSTOP_STEPS = {1: "生成执行计划", 2: "移动与写入文件", 3: "更新卡片柜", 4: "更新档案", 5: "完成"}
 logger = logging.getLogger("nas_workbench")
+
+
+def steps_of(kind: str) -> dict[int, str]:
+    """首次入库走 9 步；入库后操作统一为 5 步。"""
+    return STEPS if kind == "ingest" else POSTOP_STEPS
 
 
 class IngestError(Exception):
@@ -50,7 +56,7 @@ class IngestService:
     # ---- 派发与继续 ----
     def enqueue(self, session: Session, batch: Batch, reviewer: User) -> Job:
         """终审通过或点「继续」时调用；任务以终审本人的 NAS 会话执行。"""
-        return self.queue.enqueue("ingest", {"batch_id": batch.id}, run_as_user_id=reviewer.id, session=session)
+        return self.queue.enqueue("ingest" if batch.kind == "ingest" else "postop", {"batch_id": batch.id}, run_as_user_id=reviewer.id, session=session)
 
     def resume(self, batch_id: int, actor: User, host: str) -> None:
         with self.auth.lock, self.auth.database.session() as session:
@@ -74,7 +80,7 @@ class IngestService:
             batch = session.get(Batch, batch_id)
             if batch is None or batch.status != INGESTING:
                 return
-            batch.status, batch.ingest_error = BROKEN, f"第 {step} 步（{STEPS.get(step, '')}）：{reason}"
+            batch.status, batch.ingest_error = BROKEN, f"第 {step} 步（{steps_of(batch.kind).get(step, '')}）：{reason}"
             OplogService(session).write(batch.final_reviewer_id, "final_reviewer", "入库中断", "batch", str(batch.id),
                 {"status": INGESTING, "ingest_step": batch.ingest_step}, {"status": BROKEN, "step": step, "reason": reason}, "失败", "入库任务")
             self.notify.emit(session, "ingest_failed", batch)
@@ -86,7 +92,7 @@ class IngestService:
         batch = session.get(Batch, job.payload.get("batch_id"))
         if batch is not None and batch.status == INGESTING:
             step = batch.ingest_step + 1
-            batch.status, batch.ingest_error = BROKEN, f"第 {step} 步（{STEPS.get(step, '')}）：{job.error or '任务未能执行'}"
+            batch.status, batch.ingest_error = BROKEN, f"第 {step} 步（{steps_of(batch.kind).get(step, '')}）：{job.error or '任务未能执行'}"
             OplogService(session).write(batch.final_reviewer_id, "final_reviewer", "入库中断", "batch", str(batch.id),
                 {"status": INGESTING, "ingest_step": batch.ingest_step}, {"status": BROKEN, "step": step, "reason": job.error}, "失败", "入库任务")
             self.notify.emit(session, "ingest_failed", batch)
@@ -95,16 +101,21 @@ class IngestService:
         batch_id = context.job.payload["batch_id"]
         with self.auth.lock, self.auth.database.session() as session:
             batch = session.get(Batch, batch_id)
-            if batch is None or batch.status != INGESTING or batch.final_reviewer_id != context.job.run_as_user_id:
+            if batch is None or batch.kind != "ingest" or batch.status != INGESTING or batch.final_reviewer_id != context.job.run_as_user_id:
                 return
         if context.fs is None:
             raise JobFailure("操作人会话已失效", retryable=False)
-        steps: dict[int, Callable[[int, NasFs], None]] = {1: self._check_target, 2: self._make_parents, 3: self._move, 4: self._assign_codes,
-            5: self._write_product_archives, 6: self._write_project_archive, 7: self._register, 8: self._links, 9: self._finish}
+        self.run_steps(batch_id, context.fs, {1: self._check_target, 2: self._make_parents, 3: self._move, 4: self._assign_codes,
+            5: self._write_product_archives, 6: self._write_project_archive, 7: self._register, 8: self._links, 9: self._finish})
+
+    def run_steps(self, batch_id: int, fs: NasFs, steps: dict[int, Callable[[int, NasFs], None]]) -> None:
+        """按顺序执行各步并记录进度；首次入库和入库后操作共用。任一步失败即把批次标为入库异常。"""
+        with self.auth.lock, self.auth.database.session() as session:
+            names = steps_of(session.get(Batch, batch_id).kind)
         for number, action in steps.items():
             try:
                 # 每一步都重新执行自己的「是否已完成」检查，已完成的直接跳过。
-                action(batch_id, context.fs)
+                action(batch_id, fs)
             except IngestError as error:
                 reason = str(error)
             except NasPermissionDenied:
@@ -126,7 +137,7 @@ class IngestService:
                     if batch.ingest_step < number:
                         batch.ingest_step = number
                         OplogService(session).write(batch.final_reviewer_id, "final_reviewer", "入库步骤完成", "batch", str(batch.id),
-                                                   {"ingest_step": number - 1}, {"ingest_step": number, "name": STEPS[number]}, "成功", "入库任务")
+                                                   {"ingest_step": number - 1}, {"ingest_step": number, "name": names[number]}, "成功", "入库任务")
                 if self.fault_after == number:
                     self.fault_after = None
                     self._fail(batch_id, number + 1, "故障注入：强制中断")

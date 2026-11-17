@@ -13,15 +13,14 @@ def ignored(entry: ManifestEntry) -> bool:
     return not entry.is_dir and (name.lower() in {"thumbs.db", ".ds_store", "desktop.ini"} or name.startswith("~$"))
 
 
-def check(folder: str, files: list[ManifestEntry], exists: bool = False, prefix_length: int = 0) -> list[Issue]:
+def check(folder: str, files: list[ManifestEntry], supplement: bool = False, prefix_length: int = 0) -> list[Issue]:
+    """supplement：编号已在库中，按补充包检查——只放新增或要替换的文件，所以不提醒缺少资料夹或主图。"""
     issues: list[Issue] = []
     def add(code: str, level: str, path: str, message: str) -> None:
         issues.append(Issue(rule_code=code, level=level, path=path, message=message))
     parts = folder.split("_")
     if len(parts) != 3 or any(not value for value in parts):
         add("P01", "block", folder, "项目文件夹名必须为 编号_企业_项目名 三段")
-    if exists:
-        add("P02", "block", folder, "该项目已入库，补充功能尚未开放")
     seen: set[str] = set()
     kinds: dict[str, bool] = {}
     for path, entry in [(folder, None), *((item.rel_path, item) for item in files)]:
@@ -55,11 +54,11 @@ def check(folder: str, files: list[ManifestEntry], exists: bool = False, prefix_
             add("manifest", "block", path, "文件与目录路径发生冲突")
     active = [entry for entry in files if not ignored(entry)]
     images = [item for item in active if not item.is_dir and item.rel_path.split("/")[0] in ("套装", "单品") and len(item.rel_path.split("/")) == 2]
-    if not images:
+    if not images and not supplement:
         add("P07", "warn", "套装/单品", "套装和单品均为空")
     roots = {item.rel_path.split("/")[0] for item in active if item.is_dir or "/" in item.rel_path}
     for name in REQUIRED:
-        if name not in roots:
+        if name not in roots and not supplement:
             add("P08", "warn", name, "缺少资料夹：" + name)
     if len(parts) == 3 and re.search(r"[·—\s\uFF00-\uFFEF\u3000-\u303F]", parts[2]):
         add("P09", "warn", folder, "项目名包含不建议的空格或标点")

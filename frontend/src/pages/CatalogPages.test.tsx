@@ -24,11 +24,11 @@ const response = (value: unknown, status = 200) => new Response(JSON.stringify(v
 const row: ProjectRow = { id: 3, project_code: 'P2026-0012', project_name: '中秋礼盒', company_name: '泸州老窖', industry_name: '酒业', won: true,
   current_path: '01已中标项目/01酒业/07泸州老窖/P2026-0012_泸州老窖_中秋礼盒', status: 'active', ingested_at: '2026-11-10T02:00:00Z', products: 3, files: 6 }
 const detail: ProjectDetail = { project: row, folder_name: 'P2026-0012_泸州老窖_中秋礼盒', code_source: 'company', link_id: 'PRJLINK001',
-  products_list: [{ id: 1, product_code: 'P2026-0012-001', display_name: '酒瓶', kind: 'item', status: 'active', link_id: 'a', related: [3] },
-    { id: 2, product_code: 'P2026-0012-002', display_name: '月饼盒', kind: 'item', status: 'active', link_id: 'b', related: [3] },
-    { id: 3, product_code: 'P2026-0012-003', display_name: '中秋礼盒A', kind: 'set', status: 'active', link_id: 'c', related: [1, 2] }],
+  products_list: [{ id: 1, product_code: 'P2026-0012-001', display_name: '酒瓶', kind: 'item', status: 'active', link_id: 'a', related: [3], file_id: 101, lifecycle: {} },
+    { id: 2, product_code: 'P2026-0012-002', display_name: '月饼盒', kind: 'item', status: 'active', link_id: 'b', related: [3], file_id: 102, lifecycle: {} },
+    { id: 3, product_code: 'P2026-0012-003', display_name: '中秋礼盒A', kind: 'set', status: 'active', link_id: 'c', related: [1, 2], file_id: 103, lifecycle: {} }],
   folders: ['01定稿文件', '02设计方案', '03拍摄照片及视频', '04授权文件', '05 详情页'].map((name, index) => ({ name, count: index === 0 ? 5 : 0 })),
-  history: [], logs: [{ ts: '2026-11-10T02:00:00Z', user: '王五', action: '入库完成', result: '成功' }] }
+  history: [], logs: [{ ts: '2026-11-10T02:00:00Z', user: '王五', action: '入库完成', result: '成功' }], open_batch: null, lifecycle: {} }
 const files = Array.from({ length: 5 }, (_, index) => ({ id: 10 + index, name: `文件${index + 1}.ai`, rel_path: `01定稿文件/文件${index + 1}.ai`, size: 1024 * (index + 1), mtime: 1700000000000, status: 'active', category: '01定稿文件', link_id: `f${index}` }))
 
 function serve(routes: (url: string) => unknown) {
@@ -78,7 +78,7 @@ it('项目列表可按关键字和中标状态查找，并链接到项目页', a
   expect(host.textContent).toContain('共 1 个项目')
 })
 
-it('项目页显示位置、商品网格（套装可展开）、资料夹文件、操作记录，入库后操作为禁用占位', async () => {
+it('项目页显示位置、商品网格（套装可展开）、资料夹文件、操作记录和上传人可发起的入库后操作', async () => {
   serve(url => url.includes('/files?') ? files : detail)
   mount(<Routes><Route path="/projects/:id" element={<ProjectPage />} /></Routes>, '/projects/3')
   await until(() => host.querySelectorAll('tbody input[type="checkbox"]').length === 5)
@@ -91,7 +91,8 @@ it('项目页显示位置、商品网格（套装可展开）、资料夹文件�
   expect([...host.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual(['01定稿文件（5）', '02设计方案（0）', '03拍摄照片及视频（0）', '04授权文件（0）', '05 详情页（0）'])
   const operations = [...host.querySelectorAll<HTMLButtonElement>('[aria-label="入库后操作"] button')]
   expect(operations.map(item => item.textContent)).toEqual(['补充', '改名', '修改标签', '作废'])
-  expect(operations.every(item => item.disabled)).toBe(true)
+  expect(operations.every(item => !item.disabled)).toBe(true)
+  expect(host.querySelector('[aria-label="入库后操作"] a[href="/upload"]')).not.toBeNull()
   expect(host.querySelector('[data-testid="logs"]')!.textContent).toContain('王五入库完成成功')
   expect(requests).toContain(`GET /api/projects/3/files?category=${encodeURIComponent('01定稿文件')}`)
 })

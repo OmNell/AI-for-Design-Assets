@@ -61,6 +61,8 @@ class PersonView(BaseModel):
 
 
 class QueueItem(BaseModel):
+    kind: str = "ingest"
+    kind_label: str = "首次入库"
     id: int
     batch_no: str
     folder_name: str
@@ -119,6 +121,23 @@ class PinsRequest(BaseModel):
     pins: list[PinInput] = Field(max_length=200)
 
 
+class ChangeRow(BaseModel):
+    label: str
+    before: str
+    after: str
+
+
+class ChangePreview(BaseModel):
+    """审核页的「变更预览」：改前与改后、涉及的文件和商品。"""
+    kind: str
+    kind_label: str
+    reason: str | None = None
+    rows: list[ChangeRow] = Field(default_factory=list)
+    products: list[str] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class IngestInfo(BaseModel):
     step: int
     total: int
@@ -129,6 +148,9 @@ class IngestInfo(BaseModel):
 
 class AuditResponse(BaseModel):
     ingest: IngestInfo | None = None
+    kind: str = "ingest"
+    kind_label: str = "首次入库"
+    preview: ChangePreview | None = None
     review: ReviewResponse
     stage: Literal["first", "final"] | None
     claimed_by: PersonView | None

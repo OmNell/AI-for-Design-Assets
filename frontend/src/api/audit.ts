@@ -1,5 +1,6 @@
 import { request } from './client'
 import type { ReviewData, RoundView, PinView } from './review'
+import type { ChangePreview } from './ops'
 
 export interface Industry { id?: number; name: string; seq?: number | null }
 export interface Company { id?: number; name: string; aliases: string[]; industry_id?: number | null; industry_name?: string | null; seq?: number | null }
@@ -7,10 +8,11 @@ export interface CompanyMap { industries: Industry[]; companies: Company[] }
 export interface TreeRoot { won: boolean; folder: string; industries: { id: number; name: string; folder: string; companies: { id: number; name: string; folder: string }[] }[] }
 export interface Person { id: number; name: string }
 export interface QueueItem { id: number; batch_no: string; folder_name: string; round: number; uploader_name: string; products: number; files: number; total_size: number
-  waiting_since: string; waiting_seconds: number; claimed_by: Person | null; claimed_by_me: boolean; blocked: boolean }
+  waiting_since: string; waiting_seconds: number; claimed_by: Person | null; claimed_by_me: boolean; blocked: boolean; kind: string; kind_label: string }
 export interface PathInfo { recommended: string | null; final: string | null; effective: string | null; company_name: string; company_in_tree: boolean }
 export interface AuditData {
   review: ReviewData; stage: 'first' | 'final' | null; claimed_by: Person | null; claimed_by_me: boolean; can_claim: boolean; blocked: boolean; can_edit_path: boolean
+  kind: string; kind_label: string; preview: ChangePreview | null
   path: PathInfo; acks: string[]; stats: { manual_edits: number; ai_confirmed: number; manual_filled: number; appended: number; removed: number }
   relations: { set_id: number; set_name: string; items: string[]; ai_count: number; manual_count: number; confirmed: boolean }[]
   ingest?: { step: number; total: number; current: string | null; error: string | null; can_resume: boolean } | null

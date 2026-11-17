@@ -35,7 +35,8 @@ class PrecheckResponse(BaseModel):
 
 
 class CreateBatchRequest(PrecheckRequest):
-    kind: Literal["ingest"] = "ingest"
+    # 类型由服务端按立项编号是否已入库决定；这里的值只作兼容。
+    kind: Literal["ingest", "supplement"] = "ingest"
     won: bool
     historical_year: int | None = Field(default=None, ge=1, le=9999)
     acks: list[str] = Field(default_factory=list)
@@ -44,6 +45,12 @@ class CreateBatchRequest(PrecheckRequest):
 class ResumeRequest(PrecheckRequest):
     accept_changes: bool = False
     acks: list[str] = Field(default_factory=list)
+
+
+class ConflictChoices(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # 文件编号 → replace（替换）或 keep_both（另存为新文件）
+    choices: dict[int, Literal["replace", "keep_both"]] = Field(min_length=1)
 
 
 class UploadFileResponse(BaseModel):
@@ -57,9 +64,16 @@ class UploadFileResponse(BaseModel):
     fingerprint: str | None
     thumb_status: str | None = None
     thumb_error: str | None = None
+    conflict: str | None = None
+    conflict_choice: str | None = None
+    removed: bool = False
 
 
 class BatchResponse(BaseModel):
+    kind: str = "ingest"
+    kind_label: str = "首次入库"
+    project_id: int | None = None
+    conflict_counts: dict[str, int] | None = None
     id: int
     batch_no: str
     project_code: str

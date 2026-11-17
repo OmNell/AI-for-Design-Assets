@@ -7,6 +7,7 @@ export interface ReviewProduct {
   ai_status: 'pending' | 'done' | 'failed'; ai_error: string | null; manually_filled: boolean
   tags: Record<string, ProductTag>; free_text: string; free_text_source: string; ai_free_text: string
   flags: string[]; relation_items: { batch_product_id: number; source: string }[]; relation_confirmed: boolean
+  existing_product_id?: number | null; existing_code?: string | null
 }
 export interface ReviewField { key: string; label: string; hint: string }
 export interface Pending { yellow: number; relations_unconfirmed: number; failed: number; processing: number; can_submit: boolean }
@@ -15,10 +16,14 @@ export interface ReviewBatch {
   id: number; batch_no: string; project_code: string; folder_name: string; company_name: string; project_name: string
   status: string; won: boolean; round: number; owner_id: number; owner_name: string; uploader_id: number
   recommended_path: string | null; note_to_reviewer: string | null; editable: boolean
+  kind?: string; kind_label?: string; project_id?: number | null
 }
+export interface FileVersion { size: number; mtime: number; fingerprint: string | null }
+export interface CompareItem { rel_path: string; choice: string | null; is_image: boolean; old_file_id: number; old_product_id: number | null; old: FileVersion; batch_file_id: number; new: FileVersion }
+export interface SupplementSummary { new: number; replaced: number; kept_both: number; skipped: number; unresolved: number; compare: CompareItem[]; skipped_files: string[]; notices: string[] }
 export interface PinView { batch_product_id: number; product_name: string; x: number; y: number; text: string }
 export interface RoundView { round: number; stage: string; reviewer_name: string; decision: string; comment: string | null; decided_at: string | null; pins: PinView[] }
-export interface ReviewData { history?: RoundView[]; batch: ReviewBatch; fields: ReviewField[]; products: ReviewProduct[]; pending: Pending; folders: FolderGroup[] }
+export interface ReviewData { history?: RoundView[]; batch: ReviewBatch; fields: ReviewField[]; products: ReviewProduct[]; pending: Pending; folders: FolderGroup[]; supplement?: SupplementSummary | null }
 export interface ProductUpdate { product: ReviewProduct; pending: Pending }
 export interface ProductPatch { tags?: Record<string, string>; free_text?: string; confirm_fields?: string[]; resolve_flags?: string[] }
 export interface TagValue { term: string; count: number }

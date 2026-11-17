@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Batch, BatchFile, BatchProduct, PreflightAck, Project, User, utcnow
 from app.errors import AppError
-from app.schemas.upload import AiProgress, BatchProductResponse, BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, ResumeRequest, UploadFileResponse
+from app.schemas.upload import AiProgress, BatchProductResponse, BatchResponse, ConflictChoices, CreateBatchRequest, Issue, PrecheckRequest, PrecheckResponse, ResumeRequest, UploadFileResponse
 from app.services.auth.service import AuthService, token_hash
 from app.services.nas import NasFs, NasUnavailable, Region
 from app.services.nas.factory import create_paths
@@ -23,6 +23,8 @@ from app.services.preflight import check, ignored
 from .fingerprint import HashState, fingerprint
 from app.services.thumbs import ThumbService
 from app.services.ai.orchestrator import AiService, active_products
+from app.services.batch import kind_label, open_batch
+from . import supplement
 
 UPLOADING = "上传中"
 INTERRUPTED = "上传中断"
@@ -88,21 +90,33 @@ class UploadService:
                 return user
         return self.auth.current(cookie, host)
 
-    def precheck(self, body: PrecheckRequest) -> PrecheckResponse:
+    def precheck(self, body: PrecheckRequest, exclude_batch: int | None = None) -> PrecheckResponse:
         parts = body.folder_name.split("_")
         parts = parts if len(parts) == 3 else ["", "", ""]
-        with self.database.session() as session:
-            exists = session.scalar(select(Project.id).where(Project.project_code == parts[0])) is not None
         root_name = self.paths.root(Region.TEMP)
         # 浏览器只接收前缀字符数，不接收真实 NAS 路径。
         prefix = len(f"\\\\{self.auth.config.nas.host}\\{self.auth.config.nas.share}\\{root_name}\\B00000000-000000\\")
         check_folder = ("H0000-0000" + body.folder_name[1:]) if parts[0] == "H" else body.folder_name
+        with self.database.session() as session:
+            project = session.scalar(select(Project).where(Project.project_code == parts[0])) if parts[0] else None
+            issues = check(check_folder, body.files, project is not None, prefix)
+            if project is not None:
+                # 编号已在库中：转入补充流程，只认编号。
+                pending = open_batch(session, project, exclude_batch)
+                if project.status != "active":
+                    issues.insert(0, Issue(rule_code="P02", level="block", path=body.folder_name, message="该项目已作废或已删除，不能补充"))
+                elif pending is not None:
+                    issues.insert(0, Issue(rule_code="P02", level="block", path=body.folder_name,
+                                           message=f"该项目有未完成的操作批次（{pending.batch_no}，{kind_label(pending)}），请等它结束或撤回后再补充"))
+                elif parts[2] != project.project_name:
+                    issues.insert(0, Issue(rule_code="P02", level="warn", path=body.folder_name,
+                                           message=f"项目名与库中不一致（库中为「{project.project_name}」），将按立项编号补充到原项目"))
         return PrecheckResponse(project_code=parts[0], company_name=parts[1], project_name=parts[2],
-                                code_status="exists" if exists else "need_h_code" if parts[0] == "H" else "new",
-                                issues=check(check_folder, body.files, exists, prefix), path_prefix_length=prefix)
+                                code_status="exists" if project is not None else "need_h_code" if parts[0] == "H" else "new",
+                                issues=issues, path_prefix_length=prefix)
 
-    def _validate(self, body: PrecheckRequest, acks: list[str]) -> PrecheckResponse:
-        result = self.precheck(body)
+    def _validate(self, body: PrecheckRequest, acks: list[str], exclude_batch: int | None = None) -> PrecheckResponse:
+        result = self.precheck(body, exclude_batch)
         blocks = [issue.model_dump() for issue in result.issues if issue.level == "block"]
         if blocks:
             raise AppError("preflight_blocked", "预检未通过，请修改后重新拖入", 422, blocks)
@@ -115,7 +129,13 @@ class UploadService:
                   differences: dict[str, list[str]] | None = None) -> BatchResponse:
         session.flush()
         products = active_products(session, batch.id)
-        return BatchResponse(id=batch.id, batch_no=batch.batch_no, project_code=batch.project_code,
+        counts = None
+        if batch.kind == "supplement":
+            rows = [file for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id)) if file.conflict and not file.removed]
+            counts = {name: sum(file.conflict == name for file in rows) for name in ("new", "duplicate", "conflict")}
+            counts["unresolved"] = len(supplement.unresolved(session, batch))
+        return BatchResponse(kind=batch.kind, kind_label=kind_label(batch), project_id=batch.project_id, conflict_counts=counts,
+            id=batch.id, batch_no=batch.batch_no, project_code=batch.project_code,
             folder_name=str(batch.payload["folder_name"]), original_folder_name=str(batch.payload["original_folder_name"]),
             status=batch.status, queued=bool(batch.payload.get("queued")), won=batch.won, updated_at=batch.updated_at,
             files=[UploadFileResponse.model_validate(file) for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id).order_by(BatchFile.id))],
@@ -204,6 +224,9 @@ class UploadService:
             batch.status = STAGED
             batch.payload = {**batch.payload, "upload_token_hash": None, "queued": False}
             self._log(session, batch, "上传已暂存", "uploader", host)
+            if batch.kind == "supplement":
+                counts = supplement.classify(session, batch)
+                OplogService(session).write(batch.uploader_id, "uploader", "补充包逐文件判定", "batch", str(batch.id), None, counts, "成功", host)
             self._release(batch)
 
     def create(self, body: CreateBatchRequest, user: User, host: str) -> BatchResponse:
@@ -220,11 +243,15 @@ class UploadService:
                         raise AppError("h_code_exhausted", "该年份历史编号已用完", 409)
                     code = f"H{year:04d}-{sequence:04d}"
                 folder = f"{code}_{result.company_name}_{result.project_name}"
-                if any(issue.level == "block" for issue in check(folder, body.files)):
+                project = session.scalar(select(Project).where(Project.project_code == code))
+                if any(issue.level == "block" for issue in check(folder, body.files, project is not None)):
                     raise AppError("preflight_blocked", "新编号后的路径不符合预检要求", 422)
+                if project is not None and (project.status != "active" or open_batch(session, project) is not None):
+                    raise AppError("project_busy", "该项目已作废，或有未完成的操作批次，暂不能补充", 409)
                 token = secrets.token_urlsafe(32)
-                batch = Batch(batch_no=secrets.token_hex(16), project_code=code, kind="ingest", status=UPLOADING,
-                    owner_id=user.id, uploader_id=user.id, temp_path="", won=body.won,
+                batch = Batch(batch_no=secrets.token_hex(16), project_code=code, kind="supplement" if project is not None else "ingest", status=UPLOADING,
+                    project_id=project.id if project is not None else None,
+                    owner_id=user.id, uploader_id=user.id, temp_path="", won=project.won if project is not None else body.won,
                     payload={"folder_name": folder, "original_folder_name": body.folder_name, "queued": False,
                              "directories": [item.rel_path for item in body.files if item.is_dir], "upload_token_hash": token_hash(token)})
                 session.add(batch); session.flush()
@@ -412,10 +439,54 @@ class UploadService:
             batch = self._batch(session, batch_id, user)
             if batch.status != STAGED:
                 raise AppError("invalid_batch_state", "只有已暂存批次可以确认", 409)
+            if batch.kind == "supplement":
+                pending = supplement.unresolved(session, batch)
+                if pending:
+                    raise AppError("conflicts_unresolved", "还有冲突文件没有选择「替换」或「另存为新文件」", 409,
+                                   {"files": [file.rel_path for file in pending]})
             batch.status = AI
             if self.ai is not None:
                 self.ai.start_batch(session, batch, user, host)
             self._log(session, batch, "确认开始 AI 处理", "uploader", host)
+            return self._snapshot(session, batch)
+
+    def set_conflicts(self, batch_id: int, body: ConflictChoices, user: User, host: str) -> BatchResponse:
+        """冲突文件逐个选择替换或另存；另存时立即把临时区里的文件改名为「原名_v2」（已存在则递增）。"""
+        with self.lock, self.database.session() as session:
+            batch = self._batch(session, batch_id, user)
+            if batch.kind != "supplement" or batch.status != STAGED:
+                raise AppError("invalid_batch_state", "只有已暂存的补充批次可以处理冲突文件", 409)
+            fs = self._fs(batch)
+            originals = dict(batch.payload.get("conflict_originals", {}))
+            for file_id, choice in body.choices.items():
+                file = session.get(BatchFile, file_id)
+                if file is None or file.batch_id != batch.id or file.conflict != "conflict":
+                    raise AppError("file_not_found", "该文件不是本批次的冲突文件", 404)
+                if file.conflict_choice == choice:
+                    continue
+                before = {"rel_path": file.rel_path, "choice": file.conflict_choice}
+                original = originals.get(str(file.id), file.rel_path)
+                if choice == "keep_both":
+                    taken = set(supplement.catalog_files(session, batch.project_id)) | {
+                        other.rel_path.casefold() for other in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id)) if other.id != file.id}
+                    target = supplement.versioned_name(original, taken)
+                    originals[str(file.id)] = original
+                else:
+                    target = original
+                    originals.pop(str(file.id), None)
+                if target != file.rel_path:
+                    fs.rename(self._file_path(batch, file), self.paths.join(Region.TEMP, batch.batch_no, str(batch.payload["folder_name"]), target))
+                    file.rel_path = target
+                    # 主图换了名字：旧缩略图作废，按新路径重新生成。
+                    file.thumb_status, file.thumb_error = None, None
+                    if self.thumbs is not None:
+                        self.thumbs.invalidate(batch.id, file.id)
+                        session.flush()
+                        self.thumbs.enqueue(session, batch, file)
+                file.conflict_choice = choice
+                OplogService(session).write(user.id, ",".join(user.roles), "选择冲突文件处理方式", "batch_file", str(file.id), before,
+                                           {"rel_path": file.rel_path, "choice": choice}, "成功", host)
+            batch.payload = {**batch.payload, "conflict_originals": originals}
             return self._snapshot(session, batch)
 
     def resume(self, batch_id: int, body: ResumeRequest, user: User, host: str) -> BatchResponse:
@@ -425,7 +496,7 @@ class UploadService:
                 raise AppError("invalid_batch_state", "该批次不能继续上传", 409)
             if body.folder_name not in (batch.payload["folder_name"], batch.payload["original_folder_name"]):
                 raise AppError("folder_mismatch", "请重新拖入同一个项目文件夹", 422)
-            self._validate(body, body.acks)
+            self._validate(body, body.acks, batch.id)
             old = {file.rel_path: file for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id))}
             new = {file.rel_path: file for file in body.files if not file.is_dir and not ignored(file)}
             differences = {"added": sorted(new.keys() - old.keys()), "missing": sorted(old.keys() - new.keys()),
@@ -474,7 +545,7 @@ class UploadService:
                         self.thumbs.invalidate(batch.id, file.id)
             present_acks = set(session.scalars(select(PreflightAck.rule_code).where(PreflightAck.batch_id == batch.id)))
             for code in set(body.acks) - present_acks:
-                if code in {"P07", "P08", "P09"}:
+                if code in {"P02", "P07", "P08", "P09"}:
                     session.add(PreflightAck(batch_id=batch.id, rule_code=code))
             self._release(batch)
             token = secrets.token_urlsafe(32)

@@ -1,6 +1,6 @@
 # NAS 设计资产工作台
 
-公司内网设计资产工作台。当前完成 WP00～WP11：NAS 接入、登录/角色、预检与分片上传、后台队列与缩略图、AI 打标与自由文本字段管理、套装关系推荐、上传人核对页、两级审核、对照表与站内待办、入库执行与三层档案、项目页与下载，以及检索（编号直达、查询理解与同义扩展、字段关键词与向量两路海选、模型排序、搜索页、考卷）。入库后操作与巡检尚未开放。
+公司内网设计资产工作台。当前完成 WP00～WP12：NAS 接入、登录/角色、预检与分片上传、后台队列与缩略图、AI 打标与自由文本字段管理、套装关系推荐、上传人核对页、两级审核、对照表与站内待办、入库执行与三层档案、项目页与下载，以及检索（编号直达、查询理解与同义扩展、字段关键词与向量两路海选、模型排序、搜索页、考卷），以及入库后操作（补充与替换、改名、修改标签与关系、作废与恢复、移动、物理删除）。巡检与备份尚未开放。
 
 ## 开发环境
 
@@ -46,6 +46,7 @@ npm --prefix frontend run build
 - 首次启动自动生成 `data/secret.key`、通过 Alembic 创建 `data/app.db`。SQLite 启用 WAL、`busy_timeout=5000` 和外键检查。每次启动执行 `upgrade head`，重复启动不会重建已有表或密钥。
 - 首个迁移包含 `users`、`sessions`、`settings`、`oplog`、`jobs`，WP04 的 `0002_upload` 增加 `projects`、`batches`、`batch_files`、`preflight_acks`。`projects` 本包仅查重，不在上传时创建正式项目。`oplog` 数据库触发器禁止 UPDATE/DELETE。
 - WP05 的 `0003_thumbnails` 增加 batch_files.thumb_status/thumb_error 和 jobs 状态/调度时间索引；启动自动迁移。
+- WP12 的 `0010_postops` 给 projects、products、files 增加 lifecycle，给 history_versions 增加 snapshot；配置新增 `review.light_ops_single_review`。
 - WP11 的 `0009_search` 增加 product_embeddings、search_logs、query_cache；配置新增 `search` 一节（向量实现、候选数量、放宽阈值）。
 - WP10 的 `0008_findings` 增加 inspection_findings（下载找不到文件时登记，巡检沿用）。
 - WP09 的 `0007_catalog` 增加 files、history_versions、products、product_relations、product_tags、links。
@@ -486,3 +487,6 @@ python scripts/run_exam.py --base-url http://localhost:8080 --username 你的账
 
 手动验收步骤见 `docs/PROGRESS.md` 的 WP11 一节。
 
+## WP12 · 入库后操作
+
+在项目页发起：补充（重新上传同名文件夹）、改名、修改标签、作废；终审另有移动、整项目作废、恢复、物理删除。除物理删除外都经两级审核（`review.light_ops_single_review: true` 时改名和修改标签只经终审），审核页显示变更预览，通过后由终审人的 NAS 会话执行，中断后可在操作详情页「继续执行」。同一项目同时只能有一个未结束的操作。物理删除只针对已作废内容，受 `purge.cooling_days` 冷静期约束并需手动输入编号确认。手动验收步骤见 `docs/PROGRESS.md` 的 WP12 一节。

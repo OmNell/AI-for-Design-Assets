@@ -37,6 +37,7 @@ ai:
   stall_alert_min: 30
 review:
   overdue_days: 3
+  light_ops_single_review: false  # 改名、修改标签是否只需终审一级
 purge:
   cooling_days: 30
 schedule:

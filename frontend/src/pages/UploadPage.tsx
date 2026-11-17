@@ -58,7 +58,7 @@ export function UploadPage() {
     try {
       const server = await checkUpload({ folder_name: value.folder_name, files })
       setChecked(server)
-      const combined = [...local, ...server.issues]
+      const combined = [...(server.code_status === 'exists' ? preflight({ folder: value.folder_name, entries: files, exists: true }) : local), ...server.issues]
       setIssues(combined.filter((issue, index) => combined.findIndex(item => item.rule_code === issue.rule_code && item.path === issue.path) === index))
     } catch (reason: unknown) { setError(reason instanceof Error ? reason.message : '预检失败') }
     finally { setBusy(false) }
@@ -132,6 +132,7 @@ export function UploadPage() {
       <input type="file" hidden ref={fileInput} {...{ webkitdirectory: '' }} multiple onChange={event => { if (event.target.files?.length) { try { void inspect(readInput(event.target.files)) } catch (reason: unknown) { setError(reason instanceof Error ? reason.message : '目录读取失败') } } event.target.value = '' }} />
     </div>}
     {selection && !selection.preservesEmptyDirectories && <p role="alert" className="mt-4 text-amber-800">该浏览器的普通文件夹选择无法列出空目录。包含空文件夹时，请改用拖入方式，或使用 Chrome / Edge 目录选择。</p>}
+    {selection && checked?.code_status === 'exists' && !batch && <p data-testid="supplement-notice" className="mt-5 rounded-xl bg-white/40 px-4 py-3 text-sm">编号 {checked.project_code} 已入库，本次上传按「补充」处理：只需包含要新增或替换的文件。上传完成后系统逐个比对——新文件直接加入，内容相同的自动跳过，同名但内容不同的由你选择替换或另存。中标状态和存放位置以已入库项目为准。</p>}
     {selection && checked?.code_status === 'need_h_code' && !batch && <label className="mt-5 block text-sm">历史项目年份<input type="number" min={1} max={9999} className="field ml-4 max-w-32" value={year} onChange={event => setYear(Number(event.target.value))} /></label>}
   </GlassPanel>
   {selection && <GlassPanel><h2 className="text-xl font-semibold">预检结果</h2><div className="mt-6 grid grid-cols-2 gap-8">
@@ -153,10 +154,11 @@ export function UploadPage() {
       <span className="break-all">{file.rel_path}</span></div><span className="shrink-0 text-slate-500">{file.upload_status === 'done' ? '已完成' : file.upload_status === 'partial' ? '上传中' : '等待'} · {formatSize(file.bytes_received)} / {formatSize(file.size)}</span></div>)}</div>
     <div className="flex gap-4">{running && <GlassButton onClick={() => void pause()}>暂停</GlassButton>}{['上传中', '上传中断', '已暂存'].includes(batch.status) && <GlassButton disabled={busy} onClick={() => void cancel()}>取消上传</GlassButton>}
       {batch.status === '上传中断' && <GlassButton onClick={() => { setBatch(null); navigate(`/upload?resume=${batch.id}`) }}>重新拖入继续</GlassButton>}
-      {batch.status === '已暂存' && <GlassButton disabled={busy} onClick={() => { setBusy(true); void confirmBatch(batch.id).then(value => { apply(value); navigate(`/batches/${value.id}`) }).catch((reason: Error) => setError(reason.message)).finally(() => setBusy(false)) }}>确认，开始 AI 处理</GlassButton>}</div>
+      {batch.status === '已暂存' && batch.kind === 'supplement' && <GlassButton onClick={() => navigate(`/batches/${batch.id}`)}>查看比对结果</GlassButton>}
+      {batch.status === '已暂存' && batch.kind !== 'supplement' && <GlassButton disabled={busy} onClick={() => { setBusy(true); void confirmBatch(batch.id).then(value => { apply(value); navigate(`/batches/${value.id}`) }).catch((reason: Error) => setError(reason.message)).finally(() => setBusy(false)) }}>确认，开始 AI 处理</GlassButton>}</div>
     {batch.status === '已暂存' && <p className="mt-5 text-emerald-800">{batch.files.length} 个文件已到达临时区，指纹已计算；空目录已保留。</p>}
     {['AI 处理中', 'AI 处理失败', '待核对'].includes(batch.status) && <p className="mt-5 text-emerald-800"><a href={`/batches/${batch.id}`} className="underline underline-offset-4">查看 AI 进度与结果</a></p>}
   </GlassPanel>}
-  <GlassModal open={confirm} title="确认上传" onClose={() => setConfirm(false)}><div className="space-y-3 text-sm"><p>编号：{batch?.project_code ?? (checked?.project_code === 'H' ? `系统将发放 H${year}-四位流水` : checked?.project_code)}</p><p>企业：{checked?.company_name}</p><p>项目：{checked?.project_name}</p><p>{won ? '已中标' : '未中标'} · 位置待定</p><p>{selectionFiles.length} 个文件 · {formatSize(selectionFiles.reduce((sum, file) => sum + (file.file?.size ?? 0), 0))}</p><GlassButton disabled={busy} onClick={() => void createOrResume()}>确认上传</GlassButton></div></GlassModal>
+  <GlassModal open={confirm} title="确认上传" onClose={() => setConfirm(false)}><div className="space-y-3 text-sm"><p>编号：{batch?.project_code ?? (checked?.project_code === 'H' ? `系统将发放 H${year}-四位流水` : checked?.project_code)}</p><p>企业：{checked?.company_name}</p><p>项目：{checked?.project_name}</p><p>{checked?.code_status === 'exists' ? '补充已入库项目 · 位置不变' : `${won ? '已中标' : '未中标'} · 位置待定`}</p><p>{selectionFiles.length} 个文件 · {formatSize(selectionFiles.reduce((sum, file) => sum + (file.file?.size ?? 0), 0))}</p><GlassButton disabled={busy} onClick={() => void createOrResume()}>确认上传</GlassButton></div></GlassModal>
   </div>
 }

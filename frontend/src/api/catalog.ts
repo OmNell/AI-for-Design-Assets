@@ -2,10 +2,12 @@ import { request } from './client'
 
 export interface ProjectRow { id: number; project_code: string; project_name: string; company_name: string; industry_name: string; won: boolean; current_path: string; status: string; ingested_at: string | null; products: number; files: number }
 export interface ProjectList { items: ProjectRow[]; total: number; page: number; page_size: number }
-export interface ProductBrief { id: number; product_code: string; display_name: string; kind: 'set' | 'item'; status: string; link_id: string | null; related: number[] }
+export interface ProductBrief { id: number; product_code: string; display_name: string; kind: 'set' | 'item'; status: string; link_id: string | null; related: number[]; file_id: number | null; lifecycle: Record<string, unknown> }
+export interface HistoryRow { id: number; file_id: number; product_id: number | null; product_code: string | null; old_rel_path: string; new_rel_path: string; reason: string; created_at: string; file_status: string; size: number; link_id: string | null }
+export interface OpenBatch { id: number; batch_no: string; kind: string; kind_label: string; status: string }
 export interface ProjectDetail { project: ProjectRow; folder_name: string; code_source: string; link_id: string | null; products_list: ProductBrief[]
-  folders: { name: string; count: number }[]; history: { id: number; file_id: number; old_rel_path: string; new_rel_path: string; reason: string; created_at: string }[]
-  logs: { ts: string; user: string; action: string; result: string }[] }
+  folders: { name: string; count: number }[]; history: HistoryRow[]
+  logs: { ts: string; user: string; action: string; result: string }[]; open_batch: OpenBatch | null; lifecycle: Record<string, unknown> }
 export interface FileRow { id: number; name: string; rel_path: string; size: number; mtime: number; status: string; category: string; link_id: string | null }
 export interface ProductDetail { id: number; product_code: string; display_name: string; kind: 'set' | 'item'; status: string; free_text: string; file_id: number; image_rel_path: string
   tags: { key: string; label: string; value: string; terms: string[]; source: string }[]; related: ProductBrief[]; project: ProjectRow; product_link: string | null; project_link: string | null; ingested_at: string }

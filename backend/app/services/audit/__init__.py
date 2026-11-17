@@ -1,19 +1,22 @@
 """初审与终审：领取、钉图意见、清单、通过、驳回、终审改位置。审核本身不写 NAS。"""
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db.models import (Batch, BatchFile, BatchProduct, CompanyIndustryMap, Oplog, PreflightAck, ReviewPin, ReviewRound,
                            User, utcnow)
 from app.errors import AppError
-from app.schemas.audit import (CHECKLIST, CHECKLIST_LABELS, AuditResponse, AuditStats, FolderCount, IngestInfo, PathInfo, PersonView,
+from app.schemas.audit import (CHECKLIST, CHECKLIST_LABELS, AuditResponse, ChangePreview, AuditStats, FolderCount, IngestInfo, PathInfo, PersonView,
                                PinInput, QueueItem, RelationSummary)
 from app.services.admin.company_map import batch_company, company_path, match_company
 from app.services.ai.orchestrator import active_products
 from app.services.auth.service import AuthService
 from app.services.notify import NotifyService, stage_since
-from app.services.ingest import STEPS as INGEST_STEPS, IngestService
+from app.services.ingest import IngestService, steps_of
+from app.services.batch import kind_label
 from app.services.oplog import OplogService
 from app.services.preflight import REQUIRED
 from app.services.review import ReviewService
@@ -33,6 +36,8 @@ def _name(user: User | None) -> str:
 class AuditService:
     def __init__(self, auth: AuthService, review: ReviewService, notify: NotifyService, ingest: IngestService | None = None) -> None:
         self.auth, self.review, self.notify, self.ingest = auth, review, notify, ingest
+        # 由入库后操作模块注入：生成「变更预览」。
+        self.preview: Callable[[Session, Batch], ChangePreview | None] | None = None
 
     # ---- 取数与权限 ----
     @staticmethod
@@ -106,7 +111,7 @@ class AuditService:
                 files = [file for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id)) if not file.removed]
                 claimer = session.get(User, getattr(batch, field)) if getattr(batch, field) else None
                 since = stage_since(batch)
-                items.append(QueueItem(id=batch.id, batch_no=batch.batch_no, folder_name=str(batch.payload["folder_name"]),
+                items.append(QueueItem(kind=batch.kind, kind_label=kind_label(batch), id=batch.id, batch_no=batch.batch_no, folder_name=str(batch.payload["folder_name"]),
                     round=batch.round, uploader_name=_name(session.get(User, batch.uploader_id)),
                     products=len(active_products(session, batch.id)), files=len(files), total_size=sum(file.size for file in files),
                     waiting_since=since, waiting_seconds=max(0, int((now - since).total_seconds())),
@@ -189,7 +194,8 @@ class AuditService:
             ReviewRound.stage == stage, ReviewRound.decision.is_(None))) if stage else None
         return AuditResponse(review=review, stage=stage,
             claimed_by=PersonView(id=claimer.id, name=_name(claimer)) if claimer else None, claimed_by_me=mine,
-            can_claim=has_role and claimer is None and not blocked, blocked=blocked, can_edit_path=mine and stage == "final",
+            can_claim=has_role and claimer is None and not blocked, blocked=blocked, can_edit_path=mine and stage == "final" and batch.kind == "ingest",
+            kind=batch.kind, kind_label=kind_label(batch), preview=self.preview(session, batch) if self.preview is not None else None,
             path=self._path(session, batch), acks=acks,
             stats=AuditStats(manual_edits=sum(tag.get("source") == "manual" for tag in tags),
                 ai_confirmed=sum(tag.get("source") == "ai_confirmed" for tag in tags),
@@ -199,8 +205,8 @@ class AuditService:
             folder_counts=[FolderCount(name=folder.name, count=len(folder.files)) for folder in review.folders],
             history=round_history(session, batch.id),
             pins=pin_views(session, draft.id) if draft is not None and mine else [], checklist=dict(CHECKLIST_LABELS),
-            ingest=IngestInfo(step=batch.ingest_step, total=len(INGEST_STEPS), error=batch.ingest_error,
-                current=INGEST_STEPS.get(batch.ingest_step + 1) if batch.status in ("入库中", "入库异常") else None,
+            ingest=IngestInfo(step=batch.ingest_step, total=len(steps_of(batch.kind)), error=batch.ingest_error,
+                current=steps_of(batch.kind).get(batch.ingest_step + 1) if batch.status in ("入库中", "入库异常") else None,
                 can_resume=batch.status == "入库异常" and batch.final_reviewer_id == user.id and "final_reviewer" in user.roles)
                 if batch.status in ("入库中", "入库异常", "已入库") else None)
 
@@ -237,6 +243,8 @@ class AuditService:
             batch = self._batch(session, batch_id)
             if batch.status != FINAL or "final_reviewer" not in user.roles:
                 raise AppError("forbidden", "只有终审在终审阶段可以修改存放位置", 403)
+            if batch.kind != "ingest":
+                raise AppError("not_supported", "只有首次入库可以在终审时修改存放位置；已入库项目请发起「移动」", 409)
             batch, user, _ = self._claimed(session, batch_id, actor)
             company = session.get(CompanyIndustryMap, company_id)
             if company is None:

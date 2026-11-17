@@ -7,7 +7,7 @@ from fastapi.responses import Response
 from app.api.dependencies import client_host, require_role, require_login
 from app.db.models import User
 from app.schemas.auth import Role
-from app.schemas.upload import BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, ResumeRequest
+from app.schemas.upload import BatchResponse, ConflictChoices, CreateBatchRequest, PrecheckRequest, PrecheckResponse, ResumeRequest
 from app.services.auth.service import COOKIE_NAME
 
 router = APIRouter(prefix="/api/batches")
@@ -92,3 +92,8 @@ def confirm(id: int, request: Request, user: User = Depends(require_role(Role.UP
 @router.post("/{id}/resume", response_model=BatchResponse)
 def resume(id: int, body: ResumeRequest, request: Request, user: User = Depends(require_role(Role.UPLOADER))) -> BatchResponse:
     return request.app.state.upload.resume(id, body, user, client_host(request))
+
+
+@router.put("/{id}/conflicts", response_model=BatchResponse)
+def conflicts(id: int, body: ConflictChoices, request: Request, user: User = Depends(require_role(Role.UPLOADER))) -> BatchResponse:
+    return request.app.state.upload.set_conflicts(id, body, user, client_host(request))

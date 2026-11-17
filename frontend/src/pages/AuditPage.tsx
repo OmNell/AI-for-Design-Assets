@@ -12,6 +12,7 @@ import { ProductList, RoundHistory } from '../components/review/ProductList'
 import { TagForm } from '../components/review/TagForm'
 import { Thumb } from '../components/review/Thumb'
 import { PathPicker } from '../components/audit/PathPicker'
+import { ChangePreviewPanel } from '../components/ops/ChangePreviewPanel'
 
 const message = (reason: unknown) => reason instanceof Error ? reason.message : '操作未完成，请重试'
 const stageNames = { first: '初审', final: '终审' }
@@ -47,6 +48,7 @@ export function AuditPage() {
   if (audit.isError || !data) return <GlassPanel><p role="alert" className="text-red-800">{audit.error?.message ?? '审核页加载失败'}</p><Link to="/" className="mt-4 inline-block text-sm text-emerald-800 underline underline-offset-4">返回首页</Link></GlassPanel>
 
   const { review, path, stage } = data
+  const isOp = !!data.kind && data.kind !== 'ingest'
   const { batch, fields, products } = review
   const selected = products.find(product => product.id === current) ?? products[0]
   const items = products.filter(product => product.kind === 'item')
@@ -69,14 +71,14 @@ export function AuditPage() {
 
   return <div className="space-y-4">
     <GlassSurface radius={24} className="px-6 py-4"><div className="flex items-start justify-between gap-6">
-      <div className="min-w-0"><h1 className="truncate text-lg font-semibold">{stage ? stageNames[stage] : '审核记录'} · {batch.project_code} {batch.company_name} {batch.project_name}</h1>
+      <div className="min-w-0"><h1 className="truncate text-lg font-semibold">{stage ? stageNames[stage] : '审核记录'}{isOp ? `（${data.kind_label}）` : ''} · {batch.project_code} {batch.company_name} {batch.project_name}</h1>
         <p className="mt-1.5 text-xs text-slate-500">{batch.batch_no} · {batch.status} · 第 {batch.round} 轮 · 责任人 {batch.owner_name}
           <Link to={stage === 'final' ? '/final-review' : '/first-review'} className="ml-3 text-emerald-800 underline underline-offset-4">返回队列</Link></p>
         <p data-testid="claim-state" className="mt-2 text-sm">{!stage ? `批次当前为「${batch.status}」，不在待审状态，仅供查看。` : mine ? '你已领取本批次，可以审核。' :
           data.blocked ? '你是本批次本轮的初审人，不能再担任终审。' : data.claimed_by ? `已由 ${data.claimed_by.name} 领取。` : data.can_claim ? '尚未领取。领取后才能钉意见、通过或驳回。' : '当前账号没有这一级的审核权限，仅供查看。'}</p>
         {done && <p role="status" className="mt-1 text-sm text-emerald-800">{done}</p>}
         {data.ingest && <div data-testid="ingest" className={`mt-3 rounded-xl p-3 text-sm ${batch.status === '入库异常' ? 'bg-red-100/75 text-red-900' : 'bg-white/40'}`}>
-          <div className="flex items-center gap-3"><span className="font-medium">{batch.status === '已入库' ? '入库完成' : batch.status === '入库异常' ? '入库中断' : '正在入库'}</span>
+          <div className="flex items-center gap-3"><span className="font-medium">{isOp ? batch.status === '已入库' ? '执行完成' : batch.status === '入库异常' ? '执行中断' : '正在执行' : batch.status === '已入库' ? '入库完成' : batch.status === '入库异常' ? '入库中断' : '正在入库'}</span>
             <span className="h-2 w-48 overflow-hidden rounded-full bg-white/60"><span className={`block h-full ${batch.status === '入库异常' ? 'bg-red-600' : 'bg-emerald-700'}`} style={{ width: `${data.ingest.step / data.ingest.total * 100}%` }} /></span>
             <span className="tabular-nums">{data.ingest.step} / {data.ingest.total} 步</span>
             {data.ingest.current && <span className="text-xs">{batch.status === '入库异常' ? '停在' : '当前'}：{data.ingest.current}</span>}</div>
@@ -110,7 +112,7 @@ export function AuditPage() {
         <div className="min-h-0 flex-1 overflow-y-auto pr-1">{tab === 'tags' ? selected ?
           <TagForm batchId={batch.id} product={selected} fields={fields} items={items} editable={false} busy onChange={() => undefined} onRetry={() => undefined} onRemove={() => undefined}
             relationDraft={relationDraft} onRelationDraft={() => undefined} onConfirmRelations={() => undefined} /> : <p className="text-sm text-slate-500">没有主图。</p> :
-          <div data-testid="audit-info"><dl>
+          <div data-testid="audit-info">{data.preview && <div className="mb-3 rounded-xl bg-white/40 p-3"><ChangePreviewPanel preview={data.preview} /></div>}<dl>
             <Row label="存放位置">{path.effective ? <span className="break-all">{path.effective.split('/').join(' / ')}</span> :
               <span className="text-amber-900">位置待定——企业「{path.company_name}」{path.company_in_tree ? '已在对照表中，请终审选择位置' : '不在对照表中'}</span>}
               {path.final && path.recommended && path.final !== path.recommended && <p className="mt-1 text-xs text-slate-500">原推荐位置：{path.recommended.split('/').join(' / ')}</p>}
@@ -136,7 +138,7 @@ export function AuditPage() {
               <input type="checkbox" checked={!!checks[item]} onChange={event => setChecks({ ...checks, [item]: event.target.checked })} />{label}</label>)}</div>
             {pathBlocked && <p data-testid="path-blocked" className="mt-3 text-xs text-amber-900">{path.company_in_tree ? '位置待定：请先点上方「修改」从目录树选择存放位置。' : '位置待定：等待管理员在对照表中录入该企业。'}</p>}
             <div className="mt-3 flex gap-3"><GlassButton disabled={busy || !allChecked || pathBlocked} title={!allChecked ? '审核清单未全部勾选' : undefined}
-              onClick={() => void run(() => passAudit(id, checks), () => { setChecks({}); setDone(stage === 'final' ? '终审已通过，开始入库。' : '初审已通过，批次进入「待终审」。') })}>通过</GlassButton>
+              onClick={() => void run(() => passAudit(id, checks), () => { setChecks({}); setDone(stage === 'final' ? isOp ? '终审已通过，开始执行。' : '终审已通过，开始入库。' : '初审已通过，批次进入「待终审」。') })}>通过</GlassButton>
               <GlassButton primary={false} disabled={busy} onClick={() => { setError(''); setRejecting(true) }}>驳回</GlassButton></div></section>}
           </div>}</div>
       </div></GlassSurface>

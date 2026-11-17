@@ -59,6 +59,8 @@ class AiConfig(Section):
 
 class ReviewConfig(Section):
     overdue_days: int = Field(default=3, gt=0)
+    # 改名、修改标签这类不动文件内容的轻操作是否只需终审一级；默认仍走两级。
+    light_ops_single_review: bool = False
 
 
 class PurgeConfig(Section):

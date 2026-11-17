@@ -129,10 +129,12 @@ class ThumbService:
             if file.thumb_status == "failed":
                 raise AppError("thumbnail_failed", "缩略图生成失败", 404, {"retryable": False, "reason": file.thumb_error})
             target = self._directory(batch_id, file_id) / f"{size}.jpg"
-            if not target.is_file() and batch.status == "已入库":
-                # 入库完成后缓存已迁到商品目录。
-                product_id = session.scalar(select(Product.id).join(BatchProduct, BatchProduct.product_code == Product.product_code)
-                                            .where(BatchProduct.batch_id == batch.id, BatchProduct.batch_file_id == file_id))
+            if not target.is_file():
+                # 入库完成后缓存已迁到商品目录；修改标签的批次直接使用已入库商品的缓存。
+                row = session.scalar(select(BatchProduct).where(BatchProduct.batch_id == batch.id, BatchProduct.batch_file_id == file_id))
+                product_id = row.existing_product_id if row is not None and row.existing_product_id else None
+                if product_id is None and row is not None and row.product_code:
+                    product_id = session.scalar(select(Product.id).where(Product.product_code == row.product_code))
                 if product_id is not None:
                     target = self.root.parent / "product" / str(product_id) / f"{size}.jpg"
             if file.upload_status != "done" or file.thumb_status != "done" or not target.is_file():

@@ -5,15 +5,15 @@ import { getProject, getProjectFiles, thumbUrl, type FileRow, type ProductBrief 
 import { downloadFiles, downloadMessage, triggerDownload, type BatchProgress } from '../lib/download'
 import { checkFile } from '../api/catalog'
 import { formatBytes } from '../lib/terms'
-import { useAuthStore } from '../stores/auth'
 import { GlassPanel } from '../components/glass/GlassPanel'
 import { GlassSurface } from '../components/glass/GlassSurface'
 import { GlassButton } from '../components/glass/GlassButton'
 import { CopyLink } from '../components/CopyLink'
 import { statusNames } from './ProjectsPage'
+import { ProjectOps } from '../components/ops/ProjectOps'
 
-const OPS = ['补充', '改名', '修改标签', '作废']
-const FINAL_OPS = ['移动', '整项目作废', '物理删除']
+const historyReasons: Record<string, string> = { replaced: '被替换', voided: '作废' }
+const fileStatusNames: Record<string, string> = { replaced: '历史版本', voided: '已作废', deleted: '已删除', active: '已恢复' }
 
 function ProductCard({ product, all }: { product: ProductBrief; all: Map<number, ProductBrief> }) {
   const [open, setOpen] = useState(false)
@@ -63,13 +63,15 @@ function Files({ projectId, category }: { projectId: number; category: string })
 
 export function ProjectPage() {
   const id = Number(useParams().id)
-  const user = useAuthStore(state => state.user)
   const detail = useQuery({ queryKey: ['project', id], queryFn: () => getProject(id), enabled: Number.isInteger(id) && id > 0, retry: false })
   const [tab, setTab] = useState('')
   if (!Number.isInteger(id) || id <= 0) return <GlassPanel><p role="alert">项目编号不正确</p></GlassPanel>
   if (detail.isPending) return <GlassPanel><p>正在加载项目…</p></GlassPanel>
   if (detail.isError) return <GlassPanel><p role="alert" className="text-red-800">{detail.error.message}</p><Link to="/projects" className="mt-4 inline-block text-sm text-emerald-800 underline underline-offset-4">返回项目列表</Link></GlassPanel>
-  const { project, products_list: products, folders } = detail.data
+  const { project, folders } = detail.data
+  // 物理删除的商品只保留记录（编号不再使用），不放进商品网格。
+  const products = detail.data.products_list.filter(item => item.status !== 'deleted')
+  const deleted = detail.data.products_list.length - products.length
   const all = new Map(products.map(item => [item.id, item]))
   const active = tab || folders[0]?.name || ''
   const position = project.current_path.split('/').slice(0, -1).join(' / ')
@@ -78,17 +80,21 @@ export function ProjectPage() {
       <div className="flex items-start justify-between gap-6"><div className="min-w-0"><h1 className="break-all text-xl font-semibold">{detail.data.folder_name}</h1>
         <p className="mt-2 text-sm text-slate-600">位置 {position} · 入库 {project.ingested_at ? new Date(project.ingested_at).toLocaleDateString('zh-CN') : '—'} · {project.won ? '已中标' : '未中标'} · {statusNames[project.status] ?? project.status}</p></div>
         <div className="flex shrink-0 items-center gap-3"><CopyLink linkId={detail.data.link_id} label="复制项目链接" /><Link to="/projects" className="text-sm text-emerald-800 underline underline-offset-4">返回列表</Link></div></div>
-      <div className="mt-4 flex flex-wrap items-center gap-2" aria-label="入库后操作">{[...OPS, ...(user?.roles.includes('final_reviewer') ? FINAL_OPS : [])].map(label =>
-        <GlassButton key={label} primary={false} disabled title="入库后操作将在后续版本开放">{label}</GlassButton>)}<span className="text-xs text-slate-500">入库后操作尚未开放</span></div>
+      <ProjectOps detail={detail.data} />
     </GlassSurface>
     <GlassPanel><h2 className="text-lg font-semibold">商品 {products.length} 个</h2>
       <div data-testid="products" className="mt-4 grid grid-cols-6 gap-4">{products.map(item => <ProductCard key={item.id} product={item} all={all} />)}</div>
-      {!products.length && <p className="mt-3 text-sm text-slate-500">这个项目没有商品主图。</p>}</GlassPanel>
+      {!products.length && <p className="mt-3 text-sm text-slate-500">这个项目没有商品主图。</p>}
+      {deleted > 0 && <p data-testid="deleted-products" className="mt-3 text-xs text-slate-500">另有 {deleted} 个商品已被物理删除，仅保留记录，编号不再使用。</p>}</GlassPanel>
     <GlassPanel><h2 className="text-lg font-semibold">资料夹</h2>
       <div role="tablist" className="mt-4 flex flex-wrap gap-2 text-sm">{folders.map(folder => <button key={folder.name} type="button" role="tab" aria-selected={active === folder.name}
         className={`rounded-full px-4 py-1.5 ${active === folder.name ? 'bg-emerald-800 text-white' : 'bg-white/50 text-slate-700 hover:bg-white/80'}`} onClick={() => setTab(folder.name)}>{folder.name === 'other' ? '其他' : folder.name}（{folder.count}）</button>)}</div>
       <div className="mt-5">{active && <Files key={active} projectId={id} category={active} />}</div></GlassPanel>
-    <GlassPanel><h2 className="text-lg font-semibold">历史版本</h2>{detail.data.history.length ? <ul className="mt-3 space-y-1 text-sm">{detail.data.history.map(item => <li key={item.id}>{item.old_rel_path} → {item.new_rel_path}（{item.reason}）</li>)}</ul> : <p className="mt-3 text-sm text-slate-500">（无）</p>}</GlassPanel>
+    <GlassPanel><h2 className="text-lg font-semibold">历史版本</h2>{detail.data.history.length ? <table data-testid="history" className="mt-3 w-full text-left text-sm"><tbody>{detail.data.history.map(item =>
+      <tr key={item.id} className="border-t border-slate-500/10"><td className="w-28 p-2 text-slate-500">{new Date(item.created_at).toLocaleDateString('zh-CN')}</td>
+        <td className="p-2"><p className="break-all">{item.product_code ? `${item.product_code} · ` : ''}{item.old_rel_path} → {item.new_rel_path}</p></td>
+        <td className="w-20 p-2">{historyReasons[item.reason] ?? item.reason}</td><td className="w-24 p-2 text-slate-500">{fileStatusNames[item.file_status] ?? item.file_status}</td>
+        <td className="w-24 p-2 whitespace-nowrap">{item.file_status !== 'deleted' && <button type="button" className="text-emerald-800 underline underline-offset-4" onClick={() => triggerDownload(`/api/files/${item.file_id}/download`)}>下载</button>}</td></tr>)}</tbody></table> : <p className="mt-3 text-sm text-slate-500">（无）</p>}</GlassPanel>
     <GlassPanel><h2 className="text-lg font-semibold">操作记录</h2>
       <table data-testid="logs" className="mt-3 w-full text-left text-sm"><tbody>{detail.data.logs.map((item, index) => <tr key={index} className="border-t border-slate-500/10"><td className="w-48 p-2 text-slate-500">{new Date(item.ts).toLocaleString('zh-CN')}</td><td className="w-40 p-2">{item.user}</td><td className="p-2">{item.action}</td><td className="w-20 p-2">{item.result}</td></tr>)}</tbody></table></GlassPanel>
   </div>

@@ -29,7 +29,7 @@ const reviewData = (status: string, extra: Partial<ReviewData> = {}): ReviewData
     owner_id: 1, owner_name: 'one', uploader_id: 1, recommended_path: null, note_to_reviewer: null, editable: status === '已驳回' },
   fields: [{ key: 'category', label: '品类', hint: '这是什么东西' }], products: [product(1, '礼盒', 'set', { relation_items: [{ batch_product_id: 2, source: 'ai' }] }), product(2, '酒瓶')],
   pending: { yellow: 0, relations_unconfirmed: 0, failed: 0, processing: 0, can_submit: true }, folders: [], history: [], ...extra })
-const auditData = (extra: Partial<AuditData> = {}): AuditData => ({ review: reviewData('待初审'), stage: 'first', claimed_by: { id: 1, name: 'me' }, claimed_by_me: true, can_claim: false, blocked: false, can_edit_path: false,
+const auditData = (extra: Partial<AuditData> = {}): AuditData => ({ review: reviewData('待初审'), stage: 'first', claimed_by: { id: 1, name: 'me' }, claimed_by_me: true, can_claim: false, blocked: false, can_edit_path: false, kind: 'ingest', kind_label: '首次入库', preview: null,
   path: { recommended: '01已中标项目/01酒业/07泸州老窖', final: null, effective: '01已中标项目/01酒业/07泸州老窖', company_name: '泸州老窖', company_in_tree: true },
   acks: ['缺少 04授权文件 · 上传人已知晓'], stats: { manual_edits: 6, ai_confirmed: 3, manual_filled: 1, appended: 1, removed: 0 },
   relations: [{ set_id: 1, set_name: '礼盒', items: ['酒瓶'], ai_count: 1, manual_count: 0, confirmed: true }], note: '请留意位置',
@@ -160,15 +160,23 @@ it('终审可从目录树修改位置；位置待定且企业不在对照表时�
 })
 
 it('队列显示上传人、商品数、文件量、等待时长、轮次与领取状态', async () => {
-  serve(() => [{ id: 7, batch_no: 'B7', folder_name: 'P1_企业_项目', round: 2, uploader_name: 'one', products: 12, files: 40, total_size: 3 * 1024 * 1024, waiting_since: '', waiting_seconds: 90000, claimed_by: { id: 5, name: '张三' }, claimed_by_me: false, blocked: false },
-    { id: 8, batch_no: 'B8', folder_name: 'P2_企业_项目', round: 1, uploader_name: 'two', products: 1, files: 1, total_size: 10, waiting_since: '', waiting_seconds: 120, claimed_by: null, claimed_by_me: false, blocked: true }])
+  serve(() => [{ id: 7, batch_no: 'B7', folder_name: 'P1_企业_项目', round: 2, uploader_name: 'one', products: 12, files: 40, total_size: 3 * 1024 * 1024, waiting_since: '', waiting_seconds: 90000, claimed_by: { id: 5, name: '张三' }, claimed_by_me: false, blocked: false, kind: 'rename', kind_label: '改名' },
+    { id: 8, batch_no: 'B8', folder_name: 'P2_企业_项目', round: 1, uploader_name: 'two', products: 1, files: 1, total_size: 10, waiting_since: '', waiting_seconds: 120, claimed_by: null, claimed_by_me: false, blocked: true, kind: 'ingest', kind_label: '首次入库' }])
   mount(<QueuePage stage="final" />, '/final-review')
   await until(() => host.querySelectorAll('tbody tr').length === 2)
   const rows = [...host.querySelectorAll('tbody tr')].map(row => row.textContent!)
   expect(rows[0]).toContain('one'); expect(rows[0]).toContain('40 个 · 3.0 MB'); expect(rows[0]).toContain('1 天 1 小时'); expect(rows[0]).toContain('第 2 轮'); expect(rows[0]).toContain('张三 已领取')
   expect(rows[1]).toContain('你是本轮初审人')
+  expect(rows[0]).toContain('改名'); expect(rows[1]).toContain('首次入库')
   expect(host.querySelector('a[href="/review/7"]')).not.toBeNull()
   expect([formatWaiting(30), formatWaiting(7200)]).toEqual(['1 分钟', '2 小时'])
+})
+
+it('入库后操作的批次在审核页显示操作类型和变更预览', async () => {
+  serve(() => auditData({ kind: 'rename', kind_label: '改名', preview: { kind: 'rename', kind_label: '改名', reason: null, rows: [{ label: '项目名', before: '中秋礼盒', after: '中秋臻选' }], products: [], files: [], notes: [] } })); audit()
+  await until(() => !!host.querySelector('[data-testid="change-preview"]'))
+  expect(host.querySelector('h1')!.textContent).toContain('初审（改名）')
+  expect(host.querySelector('[data-testid="change-preview"]')!.textContent).toContain('项目名中秋礼盒中秋臻选')
 })
 
 it('对照表页新增行业和企业，别名按顿号拆分后保存', async () => {

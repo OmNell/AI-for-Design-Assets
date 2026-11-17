@@ -39,6 +39,9 @@ class ReviewProduct(BaseModel):
     flags: list[str]
     relation_items: list[RelationView]
     relation_confirmed: bool
+    # 补充时被替换的主图、修改标签时的已入库商品：沿用的商品编号。
+    existing_product_id: int | None = None
+    existing_code: str | None = None
 
 
 class ReviewField(BaseModel):
@@ -81,6 +84,9 @@ class ReviewBatch(BaseModel):
     recommended_path: str | None
     note_to_reviewer: str | None
     editable: bool
+    kind: str = "ingest"
+    kind_label: str = "首次入库"
+    project_id: int | None = None
 
 
 class PinView(BaseModel):
@@ -101,7 +107,37 @@ class RoundView(BaseModel):
     pins: list[PinView]
 
 
+class FileVersion(BaseModel):
+    size: int
+    mtime: int
+    fingerprint: str | None
+
+
+class CompareItem(BaseModel):
+    """补充包里与库中同位置的文件：新旧并排对比。"""
+    rel_path: str
+    choice: str | None
+    is_image: bool
+    old_file_id: int
+    old_product_id: int | None
+    old: FileVersion
+    batch_file_id: int
+    new: FileVersion
+
+
+class SupplementSummary(BaseModel):
+    new: int
+    replaced: int
+    kept_both: int
+    skipped: int
+    unresolved: int
+    compare: list[CompareItem]
+    skipped_files: list[str]
+    notices: list[str]
+
+
 class ReviewResponse(BaseModel):
+    supplement: SupplementSummary | None = None
     history: list[RoundView] = Field(default_factory=list)
     batch: ReviewBatch
     fields: list[ReviewField]

@@ -41,6 +41,8 @@ from app.services.ingest import IngestService
 from app.services.catalog import CatalogService
 from app.api.catalog import router as catalog_router
 from app.api.search import router as search_router
+from app.api.postops import router as postops_router
+from app.services.postops import PostOpsService
 from app.services.search import SearchService
 from app.services.search.vectors import create_vector_store
 from app.services.admin.company_map import CompanyMapService
@@ -91,6 +93,8 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             jobs.register("ingest", lambda context: application.state.ingest.handle(context), concurrency=1, retries=0, recoverable=False,
                           state_callback=lambda session, job: application.state.ingest.job_changed(session, job))
             # 向量模型的网络重试由共享客户端负责，任务本身不再重试。
+            jobs.register("postop", lambda context: application.state.postops.handle(context), concurrency=1, retries=0, recoverable=False,
+                          state_callback=lambda session, job: application.state.ingest.job_changed(session, job))
             jobs.register("embed", lambda context: application.state.search.handle_embed(context), concurrency=2, retries=0, recoverable=True)
             application.state.auth.on_login = thumbs.resume_for_user
             upload = UploadService(application.state.auth, thumbs, ai)
@@ -103,6 +107,8 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             application.state.catalog = CatalogService(application.state.auth)
             application.state.search = SearchService(application.state.auth, jobs, ai, create_vector_store(database, config.search.vector_backend))
             application.state.audit = AuditService(application.state.auth, application.state.review, application.state.notify, ingest)
+            application.state.postops = PostOpsService(application.state.auth, ingest, application.state.review, application.state.audit,
+                                                       application.state.search, thumbs)
             jobs.start()
             ai.start()
             logger.info("工作台启动完成，模式：%s", config.mode)
@@ -146,6 +152,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
     application.include_router(audit_router)
     application.include_router(catalog_router)
     application.include_router(search_router)
+    application.include_router(postops_router)
     static_root = static_dir.resolve()
 
     @application.get("/{path:path}", include_in_schema=False)

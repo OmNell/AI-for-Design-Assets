@@ -28,6 +28,8 @@ class ProjectPage(BaseModel):
 
 
 class ProductBrief(BaseModel):
+    file_id: int | None = None
+    lifecycle: dict[str, object] = Field(default_factory=dict)
     id: int
     product_code: str
     display_name: str
@@ -45,10 +47,24 @@ class FolderCount(BaseModel):
 class HistoryRow(BaseModel):
     id: int
     file_id: int
+    product_id: int | None = None
+    product_code: str | None = None
     old_rel_path: str
     new_rel_path: str
     reason: str
     created_at: datetime
+    # 历史版本文件当前的状态：replaced（被替换）/ voided（已作废）/ deleted（已删除）
+    file_status: str = ""
+    size: int = 0
+    link_id: str | None = None
+
+
+class OpenBatch(BaseModel):
+    id: int
+    batch_no: str
+    kind: str
+    kind_label: str
+    status: str
 
 
 class LogRow(BaseModel):
@@ -67,6 +83,9 @@ class ProjectDetail(BaseModel):
     folders: list[FolderCount]
     history: list[HistoryRow]
     logs: list[LogRow]
+    # 该项目尚未结束的操作批次；存在时不能再发起新的操作。
+    open_batch: OpenBatch | None = None
+    lifecycle: dict[str, object] = Field(default_factory=dict)
 
 
 class FileRow(BaseModel):

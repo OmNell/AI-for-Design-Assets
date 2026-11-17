@@ -20,6 +20,7 @@ import { TagFieldsPage } from '../pages/TagFieldsPage'
 import { BatchDetailPage } from '../pages/BatchDetailPage'
 import { ReviewPage } from '../pages/ReviewPage'
 import { AuditPage } from '../pages/AuditPage'
+import { OpPage } from '../pages/OpPage'
 import { QueuePage } from '../pages/QueuePage'
 import { CompanyMapPage } from '../pages/CompanyMapPage'
 import { ProjectsPage } from '../pages/ProjectsPage'
@@ -92,7 +93,7 @@ function AuthBootstrap() {
       <Route path="/admin/tag-fields" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><TagFieldsPage /></RoleGuard>} />
       <Route path="/batches/:id" element={<BatchDetailPage />} />
       <Route path="/batches/:id/review" element={<ReviewPage />} />
-      <Route path="/review/:id" element={<AuditPage />} />
+      <Route path="/review/:id" element={<AuditPage />} /><Route path="/ops/:id" element={<OpPage />} />
       <Route path="/projects/:id" element={<ProjectPage />} /><Route path="/products/:id" element={<ProductPage />} /><Route path="/l/:linkId" element={<LinkPage />} />
       <Route path="/admin/company-map" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><CompanyMapPage /></RoleGuard>} />
       <Route path="/components" element={<DevComponents />} /><Route path="*" element={<PlaceholderPage title="页面不存在" />} />
