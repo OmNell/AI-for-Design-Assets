@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import os
+import ipaddress
+import re
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Literal
 
@@ -17,6 +20,24 @@ class ServerConfig(Section):
     host: str = "0.0.0.0"
     port: int = Field(default=8080, ge=1, le=65535)
     session_hours: int = Field(default=8, gt=0)
+    public_base_url: str = "http://nas-workbench.company.local:8080"
+
+    @model_validator(mode="after")
+    def validate_public_url(self) -> ServerConfig:
+        url = urlsplit(self.public_base_url)
+        host = url.hostname or ""
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("永久链接必须使用固定域名")
+        if (url.scheme not in ("http", "https") or not re.fullmatch(r"[a-z0-9.-]+", host)
+                or url.username or url.password or url.path not in ("", "/") or url.query or url.fragment):
+            raise ValueError("永久链接地址必须使用无路径的 HTTP 或 HTTPS 域名")
+        if url.port == 0:
+            raise ValueError("永久链接端口不合法")
+        return self
 
 
 class NasConfig(Section):
@@ -53,6 +74,7 @@ class AiConfig(Section):
     model_vision: str = ""
     model_text: str = ""
     model_embed: str = ""
+    model_embed_version: str = ""
     concurrency: int = Field(default=3, gt=0)
     timeout_s: int = Field(default=60, gt=0)
     retries: int = Field(default=3, ge=0)

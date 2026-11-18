@@ -28,6 +28,8 @@ class NasFs(Protocol):
     def open_write(self, path: str, append: bool = False) -> BinaryIO: ...
     def mkdir(self, path: str, recursive: bool = False) -> None: ...
     def rename(self, source: str, target: str) -> None: ...
+    def check_write_directory(self, path: str) -> None: ...
+    def replace(self, source: str, target: str) -> None: ...
     def delete(self, path: str, recursive: bool = False) -> None: ...
     def close(self) -> None: ...
 
@@ -173,6 +175,23 @@ class BaseFs:
             dst = self._check(target, True, True)
             self._call(lambda: self._rename(src, dst))
         self._run(action)
+
+    def check_write_directory(self, path: str) -> None:
+        self._run(lambda: self._call(lambda: self._check_write_directory(self._check(path, True))))
+
+    def replace(self, source: str, target: str) -> None:
+        def action() -> None:
+            src = self._check(source, True, True)
+            dst = self._check(target, True, True)
+            self._call(lambda: self._replace(src, dst))
+        self._run(action)
+
+    def _check_write_directory(self, path: str) -> None:
+        if not self._stat(path).is_dir:
+            raise NasPermissionDenied("正式目录位置不是目录")
+
+    def _replace(self, source: str, target: str) -> None:
+        raise NotImplementedError
 
     def delete(self, path: str, recursive: bool = False) -> None:
         # 删除与 rename 不自动重放；服务端是否已提交可能不确定。

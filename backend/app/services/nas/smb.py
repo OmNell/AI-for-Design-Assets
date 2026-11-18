@@ -9,6 +9,7 @@ from typing import BinaryIO, Callable, Mapping, TypeVar, cast
 import smbclient
 from smbprotocol.exceptions import SMBConnectionClosed
 from smbprotocol.session import Session
+from smbprotocol.open import DirectoryAccessMask
 
 from .errors import NasPermissionDenied, NasSessionExpired, translate
 from .fs import BaseFs, NasStat
@@ -116,6 +117,15 @@ class SmbFs(BaseFs):
 
     def _rename(self, source: str, target: str) -> None:
         smbclient.rename(self._unc(source), self._unc(target), **self._options())
+
+    def _check_write_directory(self, path: str) -> None:
+        rights = DirectoryAccessMask.FILE_ADD_FILE | DirectoryAccessMask.FILE_ADD_SUBDIRECTORY
+        with smbclient.open_file(self._unc(path), mode="rb", buffering=0, desired_access=rights,
+                                 file_type="dir", share_access="rwd", **self._options()):
+            pass
+
+    def _replace(self, source: str, target: str) -> None:
+        smbclient.replace(self._unc(source), self._unc(target), **self._options())
 
     def _delete(self, path: str, recursive: bool) -> None:
         target = self._unc(path)

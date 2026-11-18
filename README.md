@@ -1,6 +1,6 @@
 # NAS 设计资产工作台
 
-公司内网设计资产工作台。当前完成 WP00～WP08。上传人可以分片上传项目文件夹，查看 AI 生成的标签和套装关系，逐项核对后提交初审。两名审核人依次审核，终审通过后等待入库执行。
+公司内网设计资产工作台。当前完成 WP00～WP09。上传人可以分片上传项目文件夹，查看 AI 生成的标签和套装关系，逐项核对后提交初审。两名审核人依次审核，终审通过后启动入库，全部正式商品向量通过校验后发布。
 
 ## 开发环境
 
@@ -420,4 +420,18 @@ python -m pytest backend/tests/bailian -m bailian -q -s --tb=short
 
 审核写请求均携带最近一次读到的 `X-Review-Version`。发生版本冲突返回 409，重新读取后再核对。已有决定的审核记录、钉点与提交快照由 SQLite 触发器保护。
 
-终审通过后批次停在「入库中」。供 WP09 读取的数据包括同轮 `snapshot_id`、文件 SHA-256、终审 `reviewer_id` 和 `execution_session_id`、核定的 `batches.final_path` 及 `review_rounds.path_change.after` 中的企业和中标状态。该路径相对于配置的正式区域根目录。设备会话失效时需要终审本人重新认证。
+终审通过后，入库任务从「入库中」开始。供入库任务读取的数据包括同轮 `snapshot_id`、文件 SHA-256、终审 `reviewer_id` 和 `execution_session_id`、核定的 `batches.final_path` 及 `review_rounds.path_change.after` 中的企业和中标状态。该路径相对于配置的正式区域根目录。设备会话失效时需要终审本人重新认证。
+
+## WP09 正式入库
+
+在 `server.public_base_url` 配置公司 IT 分配的固定内网域名与端口。生产模式使用管理员已配置的百炼向量模型与密钥。供应商若在同一模型名下发布新版本，可用 `ai.model_embed_version` 标记版本。项目在当前正式模型下通过完整向量校验后发布，已有正式模型时改模型须经 WP11 的索引迁移。
+
+终审用本人 NAS 账号核定目录并通过。审核页和批次详情页显示九步进度。入库异常时，原终审重新登录后在审核页点击「继续入库」。系统依照快照、文件 SHA-256、发号记录、正式档案和已有向量继续。若 SMB 拒绝同卷 rename，需由管理员核查 NAS 布局和权限。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/review/{batch_id}/ingest` | 相关提交人、审核人和管理员查看步骤、文件数和向量进度 |
+| `POST /api/review/{batch_id}/resume-ingest` | 原终审使用当前设备的有效 NAS 会话继续入库 |
+| `GET /l/{link_id}` | 以访问者 NAS 权限解析项目、商品或文件的稳定身份，返回 JSON |
+
+升级生产前，应停服务并使用 SQLite 一致性快照备份 `app.db`，另备份现用 `config.yaml` 与 `secret.key`。可先用隔离副本运行应用迁移到 `0016_catalog`，检查原有 ID 和 `PRAGMA foreign_key_check`。如升级后尚未开始新入库，可停服务恢复升级前的备份。已开始新入库时，应一并保留新版 SQLite 和 NAS 档案，避免回滚后丢掉已预分配的永久链接。

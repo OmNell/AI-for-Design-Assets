@@ -1,6 +1,7 @@
 """开发模式的 NAS 替身；权限仅来源于该用户的配置表。"""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import BinaryIO, Mapping
 
@@ -50,6 +51,14 @@ class LocalFs(BaseFs):
         if dst.exists():
             raise NasAlreadyExists("目标文件或目录已存在")
         src.rename(dst)
+
+    def _check_write_directory(self, path: str) -> None:
+        super()._check_write_directory(path)
+        if not os.access(self._path(path), os.W_OK | os.X_OK):
+            raise NasPermissionDenied("本地正式目录不可写")
+
+    def _replace(self, source: str, target: str) -> None:
+        self._path(source).replace(self._path(target))
 
     def _delete(self, path: str, recursive: bool) -> None:
         target = self._path(path)

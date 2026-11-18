@@ -59,7 +59,7 @@ class NotifyService:
                 raise AppError("forbidden", "当前账号没有此操作权限", 403)
             roles = set(user.roles)
             batches = list(session.scalars(select(Batch).where(Batch.status.in_(
-                ["待核对", "已驳回", "待初审", "待终审", "AI 处理失败"])).order_by(Batch.id)))
+                ["待核对", "已驳回", "待初审", "待终审", "AI 处理失败", "入库中", "入库异常"])).order_by(Batch.id)))
             items: list[TodoItem] = []
 
             def add(key: str, label: str, rows: list[Batch], link: str) -> None:
@@ -89,4 +89,7 @@ class NotifyService:
                 overdue = [row for row in batches if row.status in ("待初审", "待终审")
                            and review_overdue(stage_since(row), now, limit)]
                 add("overdue", f"待审超过 {limit} 个工作日", overdue, single(overdue, "/review/{id}") if overdue else "/")
+            unfinished = [row for row in batches if row.status in ("入库中", "入库异常") and (
+                "admin" in roles or ("final_reviewer" in roles and row.final_reviewer_id == user.id))]
+            add("ingest", "入库未完成", unfinished, single(unfinished, "/review/{id}"))
             return items

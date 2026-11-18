@@ -14,7 +14,7 @@ function TodoLink({ item }: { item: Todo }) {
   if (item.link !== '/') return <Link to={item.link} className={style}>{item.label}{count}</Link>
   return <details><summary className={style}>{item.label}{count}</summary>
     <ul className="mt-2 space-y-1">{item.batches.map(batch => {
-      const path = item.key === 'overdue' ? `/review/${batch.id}` : item.key === 'ai_failed' ? `/batches/${batch.id}` : `/batches/${batch.id}/review`
+      const path = (item.key === 'overdue' || item.key === 'ingest') ? `/review/${batch.id}` : item.key === 'ai_failed' ? `/batches/${batch.id}` : `/batches/${batch.id}/review`
       return <li key={batch.id}><Link to={path} className="text-sm text-emerald-800 underline">{batch.label}</Link></li>
     })}</ul></details>
 }
