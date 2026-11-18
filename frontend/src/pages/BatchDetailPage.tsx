@@ -15,6 +15,7 @@ function Product({ product, batch }: { product: BatchProduct; batch: Batch }) {
   const file = batch.files.find(value => value.id === product.batch_file_id)
   const names = new Map(batch.products?.map(value => [value.id, value.display_name]))
   return <GlassCard><div className="flex items-start justify-between gap-5"><div><h3 className="font-semibold">{product.display_name}</h3><p className="mt-2 text-xs text-slate-500">{product.kind === 'item' ? '单品' : '套装'} · {product.ai_status === 'done' ? '打标完成' : product.ai_status === 'failed' ? '打标失败' : '等待处理'}</p></div>{file && <ThumbnailPreview batchId={batch.id} file={file} />}</div>
+    {product.ai_status === 'done' && product.visual_ai_succeeded === false && <p className="mt-4 text-sm text-amber-800">当前主图缺少已验证的视觉识别结果，请重试整批 AI。</p>}
     {product.ai_error && <p className="mt-4 text-sm text-red-800">{product.ai_error}</p>}
     {product.flags.includes('multi_object') && <p className="mt-4 rounded-xl bg-amber-100/65 p-3 text-sm text-amber-900">一图识别到多个商品</p>}
     {product.flags.includes('empty_relation') && <p className="mt-4 rounded-xl bg-amber-100/65 p-3 text-sm text-amber-900">套装推荐清单为空</p>}

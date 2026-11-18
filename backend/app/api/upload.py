@@ -58,8 +58,8 @@ def detail(id: int, request: Request, user: User = Depends(require_login)) -> Ba
 
 
 @router.post("/{id}/retry-ai", response_model=BatchResponse)
-def retry_ai(id: int, request: Request, user: User = Depends(require_login)) -> BatchResponse:
-    return request.app.state.upload.retry_ai(id, user, client_host(request))
+def retry_ai(id: int, request: Request, login: LoginContext = Depends(require_login_context)) -> BatchResponse:
+    return request.app.state.upload.retry_ai(id, login, client_host(request))
 
 
 @router.get("/{id}/upload-state", response_model=BatchResponse)

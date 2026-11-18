@@ -24,6 +24,7 @@ from app.services.preflight import check, ignored
 from .fingerprint import HashState, fingerprint
 from app.services.thumbs import ThumbService, is_main_image
 from app.services.ai.orchestrator import AiService
+from app.services.ai.vision import has_visual_evidence
 
 UPLOADING = "上传中"
 INTERRUPTED = "上传中断"
@@ -124,19 +125,24 @@ class UploadService:
     def _snapshot(self, session: Session, batch: Batch, token: str | None = None,
                   differences: dict[str, list[str]] | None = None) -> BatchResponse:
         session.flush()
+        files = list(session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id).order_by(BatchFile.id)))
+        file_by_id = {file.id: file for file in files}
         products = list(session.scalars(select(BatchProduct).where(BatchProduct.batch_id == batch.id).order_by(BatchProduct.id)))
+        proven = {product.id for product in products if product.batch_file_id in file_by_id
+                  and has_visual_evidence(product, file_by_id[product.batch_file_id])}
         return BatchResponse(id=batch.id, batch_no=batch.batch_no, project_code=batch.project_code,
             folder_name=str(batch.payload["folder_name"]), original_folder_name=str(batch.payload["original_folder_name"]),
             status=batch.status, queued=bool(batch.payload.get("queued")), won=batch.won, updated_at=batch.updated_at,
             terminated_at=batch.terminated_at, termination_reason=batch.termination_reason,
-            files=[UploadFileResponse.model_validate(file) for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id).order_by(BatchFile.id))],
+            files=[UploadFileResponse.model_validate(file) for file in files],
             directories=list(batch.payload.get("directories", [])), chunk_bytes=self.chunk_bytes,
             parallel_files=self.auth.config.upload.parallel_files, upload_token=token, differences=differences,
             owner_id=batch.owner_id, uploader_id=batch.uploader_id, recommended_path=batch.recommended_path,
             tag_labels={field["key"]: field["label"] for field in batch.payload.get("ai_fields", [])},
-            products=[BatchProductResponse.model_validate(product) for product in products],
-            ai_progress=AiProgress(items_total=sum(p.kind == "item" for p in products), items_done=sum(p.kind == "item" and p.ai_status == "done" for p in products),
-                sets_total=sum(p.kind == "set" for p in products), sets_done=sum(p.kind == "set" and p.ai_status == "done" for p in products),
+            products=[BatchProductResponse.model_validate(product).model_copy(update={"visual_ai_succeeded":
+                product.id in proven}) for product in products],
+            ai_progress=AiProgress(items_total=sum(p.kind == "item" for p in products), items_done=sum(p.kind == "item" and p.id in proven for p in products),
+                sets_total=sum(p.kind == "set" for p in products), sets_done=sum(p.kind == "set" and p.id in proven for p in products),
                 failed=sum(p.ai_status == "failed" for p in products)))
 
     def view(self, batch_id: int, actor: User) -> BatchResponse:
@@ -151,16 +157,18 @@ class UploadService:
                 raise AppError("forbidden", "无权查看该批次", 403)
             return self._snapshot(session, batch)
 
-    def retry_ai(self, batch_id: int, actor: User, host: str) -> BatchResponse:
-        with self.lock, self.database.session() as session:
+    def retry_ai(self, batch_id: int, login: LoginContext, host: str) -> BatchResponse:
+        with self._transfer(login, host) as session:
             batch = session.get(Batch, batch_id)
             if batch is None:
                 raise AppError("batch_not_found", "批次不存在", 404)
-            user = session.get(User, actor.id)
+            user = session.get(User, login.user.id)
             if user is None or not user.enabled or not ("admin" in user.roles or user.id == batch.uploader_id and set(user.roles) & {"uploader", "first_reviewer", "final_reviewer"}):
                 raise AppError("forbidden", "只有上传人或管理员可以重试 AI", 403)
             if batch.status not in (AI, "待核对", "AI 处理失败") or self.ai is None:
                 raise AppError("invalid_batch_state", "该批次当前不能重试 AI", 409)
+            self._check_login(session, login)
+            self._verify_for_ai(session, batch, login, host)
             self.ai.start_batch(session, batch, user, host)
             OplogService(session).write(user.id, ",".join(user.roles), "重试整批 AI", "batch", str(batch.id), None, {"status": AI}, "成功", host)
             return self._snapshot(session, batch)
@@ -334,6 +342,7 @@ class UploadService:
                 file.upload_status = "partial" if file.bytes_received else "pending"
                 file.fingerprint = None
                 file.fingerprint_kind = None
+                file.thumb_fingerprint = None
                 file.thumb_status = None
                 file.thumb_error = None
                 if self.thumbs is not None:
@@ -483,9 +492,28 @@ class UploadService:
         old_digest = file.fingerprint
         self._record_fingerprint(batch, file, fingerprint(fs, path, file.size))
         if self.thumbs is not None and old_digest != file.fingerprint:
-            file.thumb_status, file.thumb_error = None, None
+            file.thumb_status, file.thumb_error, file.thumb_fingerprint = None, None, None
             self.thumbs.enqueue(session, batch, file)
         self._log(session, batch, "补算文件完整 SHA-256", "uploader", host)
+
+    def _verify_for_ai(self, session: Session, batch: Batch, login: LoginContext, host: str) -> None:
+        files = list(session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id)))
+        if not any(is_main_image(file) and not file.removed for file in files):
+            raise AppError("main_image_required", "首次入库必须保留至少一张主图", 409)
+        for file in files:
+            if file.removed:
+                continue
+            if file.upload_status != "done":
+                raise AppError("file_not_completed", "须完成所有文件上传后再确认", 409)
+            if file.fingerprint_kind != "full" or not file.fingerprint:
+                if batch.uploader_id != login.user.id:
+                    raise AppError("fingerprint_unverified", "历史批次须由上传人补算完整指纹后才能重试 AI", 409)
+                batch.upload_session_id = login.session_id
+                self._upgrade_fingerprint(session, batch, file, self.auth.pool.get(login.session_id), host)
+            if is_main_image(file) and file.thumb_status == "done" and file.thumb_fingerprint != file.fingerprint:
+                if batch.uploader_id != login.user.id:
+                    raise AppError("thumb_unverified", "旧送审图须由上传人重新核实后才能重试 AI", 409)
+                batch.upload_session_id = login.session_id
 
     def confirm(self, batch_id: int, login: LoginContext, host: str) -> BatchResponse:
         with self._transfer(login, host) as session:
@@ -493,17 +521,7 @@ class UploadService:
             self._check_login(session, login)
             if batch.status != STAGED:
                 raise AppError("invalid_batch_state", "只有已暂存批次可以确认", 409)
-            files = list(session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id)))
-            if not any(is_main_image(file) and not file.removed for file in files):
-                raise AppError("main_image_required", "首次入库必须保留至少一张主图", 409)
-            for file in files:
-                if file.removed:
-                    continue
-                if file.upload_status != "done":
-                    raise AppError("file_not_completed", "须完成所有文件上传后再确认", 409)
-                if file.fingerprint_kind != "full" or not file.fingerprint:
-                    batch.upload_session_id = login.session_id
-                    self._upgrade_fingerprint(session, batch, file, self.auth.pool.get(login.session_id), host)
+            self._verify_for_ai(session, batch, login, host)
             batch.status = AI
             if self.ai is not None:
                 self.ai.start_batch(session, batch, login.user, host)
@@ -546,6 +564,7 @@ class UploadService:
                         old[path].upload_status = "pending"
                         old[path].fingerprint = None
                         old[path].fingerprint_kind = None
+                        old[path].thumb_fingerprint = None
                         old[path].thumb_status = None
                         old[path].thumb_error = None
                 for path in differences["added"]:
@@ -568,7 +587,7 @@ class UploadService:
                 elif not fs.exists(self._file_path(batch, file)) or fs.stat(self._file_path(batch, file)).size != file.size:
                     file.upload_status = "pending"; file.bytes_received = 0; file.fingerprint = None
                     file.fingerprint_kind = None
-                    file.thumb_status = None; file.thumb_error = None
+                    file.thumb_status = None; file.thumb_error = None; file.thumb_fingerprint = None
                     if self.thumbs is not None:
                         self.thumbs.invalidate(batch.id, file.id)
                 else:

@@ -41,7 +41,7 @@ def service(database: Database, settings: Settings, tmp_path: Path) -> Iterator[
             batch = Batch(batch_no='B1', project_code='P', kind='ingest', status='已暂存', uploader_id=user.id, owner_id=user.id,
                 temp_path='B1/P_企业_项目', won=True, payload={'folder_name': 'P_企业_项目'})
             session.add(batch); session.flush()
-            session.add(BatchFile(batch_id=batch.id, rel_path='单品/主图.jpg', size=1, mtime=1, bytes_received=1, upload_status='done', fingerprint='source'))
+            session.add(BatchFile(batch_id=batch.id, rel_path='单品/主图.jpg', size=1, mtime=1, bytes_received=1, upload_status='done', fingerprint='a' * 64, fingerprint_kind='full'))
         try:
             yield ai, batch, user
         finally:

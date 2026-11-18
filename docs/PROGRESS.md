@@ -325,3 +325,18 @@
 - 新版设计的强制约束包括：固定11字段且必须逐项人工确认、视觉 AI 成功门禁、所有文件完整 SHA-256、三方回避双审、项目级在途批次互斥、首次入库全部必要向量成功门禁、修改先准备影子版本、模型切换蓝绿索引、NAS 档案支持原永久链接恢复、严格30天物理删除冷静期、固定内网域名与HTTP安全风险披露。
 - **待后续另行授权的代码适配**：大文件快速指纹实现，标签字段管理允许增删/停用，账号级共享 NAS 会话池，以及 WP07～WP14 尚未实现的新版审核/向量/版本规则。逐项见 `docs/QUESTIONS.md` 最后章节。
 - 开发继续方式：从当前代码和 `PROGRESS.md` 的真实进度接续，逐工作包评估新设计的实现差异；不可按旧版“空仓库，从 WP00 重新开始”提示覆盖现有工程。
+
+## 2026-11-18 · WP00–WP06 的 P0 适配
+
+| 规则 | 本轮实现 | 关键位置 |
+|---|---|---|
+| 02 / 25 | 每次登录独立 NAS 连接和 Cookie 生命周期。分片要求原设备会话，掉线保留偏移并重新登录。生产 DSM 和百炼使用 HTTPS。登录页提示内网 HTTP 风险，写请求校验来源。 | [AuthService](../backend/app/services/auth/service.py)、[SessionPool](../backend/app/services/nas/pool.py)、[SmbFs](../backend/app/services/nas/smb.py)、[上传授权](../backend/app/services/upload/service.py)、[应用入口](../backend/app/main.py) |
+| 08 / 12 / 32 / 36 / 37 | 首次上传须选有内容的主图，所有文件完整 SHA-256，H 编号必填实际年份。数据库部分唯一索引分别保护首次编号和操作项目，在途异常仍占锁。现有 API 只开放首次上传。 | [后端预检](../backend/app/services/preflight/__init__.py)、[前端预检](../frontend/src/lib/preflight.ts)、[指纹服务](../backend/app/services/upload/fingerprint.py)、[批次迁移](../backend/alembic/versions/0012_p0_batch_integrity.py) |
+| 49 / 50 | 发起人填写原因、二次确认后终止；保存历史和原因、释放锁、拒绝继续上传，NAS 临时文件留存。后台在途结果不能写回终态。 | [终止接口与服务](../backend/app/services/upload/service.py)、[终止确认按钮](../frontend/src/components/TerminateBatchButton.tsx) |
+| 19 / 20 / 45 | 固定 11 字段，PUT 仅可写 hint 和 sort_order，只有实际变更才推进版本。明确无节日留空，无法判断保留标记和 AI 原文。缩略图核对完整指纹后用于识别，视觉成功写入时间、模型、当前文件 SHA-256。 | [字段管理](../backend/app/services/ai/fields.py)、[缩略图](../backend/app/services/thumbs/__init__.py)、[视觉证据](../backend/app/services/ai/vision.py)、[字段页面](../frontend/src/pages/TagFieldsPage.tsx) |
+
+迁移从 main 的 `0004_ai` 依次执行 `0011_p0_device_sessions`、`0012_p0_batch_integrity`、`0013_p0_visual_evidence`。保留旧会话记录，升级后令牌失效。保留原有 ID、标签历史和日志；旧快速摘要有显式标记，未结束批次由上传人按需重新计算。检测到重复在途批次时整次迁移回滚。升级前备份数据库、配置与密钥，回退使用升级前备份。本轮未在当前使用的数据库上应用迁移。候选 WP12 库的迁移合流另做。
+
+验证结果为后端 **215 通过 / 16 项默认排除**，前端 **61 通过**，TypeScript 和生产构建通过。新增或更新回归覆盖双设备、跨站写保护、掉线偏移、2 GB 完整指纹、历史补算、并发 H 分配、锁冲突回滚、终止留档、字段写入约束和主图变化后视觉证据失效。本机 SQLite 的只读快照升级后校验了原 ID 和外键。原有 Starlette TestClient 的弃用提示仍在。未接触真实 NAS 或百炼。
+
+后续优先接 WP07/WP08 的固定字段逐项确认、原始 AI 成功校验、快照冻结及二级审核回避。然后衔接 WP09/WP11 的向量发布门禁、档案和永久链接、可见性、蓝绿索引。WP12 的影子版本与严格物理删除门禁、WP13/WP14 的巡检权限、管理员终态清理、备份恢复及 Windows 验收仍待后续工作包。具体范围见审计报告。

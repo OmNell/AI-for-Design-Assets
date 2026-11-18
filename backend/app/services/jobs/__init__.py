@@ -192,36 +192,35 @@ class JobQueue:
                 self._active[claimed[0].kind] += 1
             return claimed
 
+    def _pin_actor(self, job: Job) -> tuple[NasFs | None, int | None]:
+        if job.run_as_user_id is None:
+            return None, None
+        with self.database.session() as session:
+            user = session.get(User, job.run_as_user_id)
+            if user is None or not user.enabled:
+                raise JobFailure("操作人已停用", retryable=False)
+            login = session.get(UserSession, job.run_as_session_id) if job.run_as_session_id is not None else None
+            if login is None or login.user_id != user.id or login.revoked_at is not None or is_expired(login.expires_at):
+                raise NasSessionExpired("缺少有效登录会话")
+            session_id = login.id
+        return self.pool.pin(session_id), session_id
+
     def run_once(self) -> bool:
-        claimed = self._claim()
-        if claimed is None:
-            return False
-        job, registration = claimed
+        claimed = None
+        session_id: int | None = None
         try:
             failure: JobFailure | None = None
-            pinned = False
-            fs: NasFs | None = None
             try:
-                if job.run_as_user_id is not None:
-                    with self._auth_lock:
-                        with self.database.session() as session:
-                            user = session.get(User, job.run_as_user_id)
-                            disabled = user is None or not user.enabled
-                            login = session.get(UserSession, job.run_as_session_id) if job.run_as_session_id is not None else None
-                            session_id = (login.id if login is not None and login.user_id == job.run_as_user_id
-                                          and login.revoked_at is None and not is_expired(login.expires_at) else None)
-                        if disabled:
-                            self._finish(job, registration, JobFailure("操作人已停用", retryable=False))
-                            return True
-                        try:
-                            if session_id is None:
-                                raise NasSessionExpired("缺少有效登录会话")
-                            fs = self.pool.pin(session_id)
-                            pinned = True
-                        except NasSessionExpired:
-                            # 登录后的恢复回调与此处共用同一锁，不能在其扫描后才记录失败。
-                            self._finish(job, registration, JobFailure("操作人会话已失效", retryable=False))
-                            return True
+                with self._auth_lock:
+                    claimed = self._claim()
+                    if claimed is None:
+                        return False
+                    job, registration = claimed
+                    try:
+                        fs, session_id = self._pin_actor(job)
+                    except NasSessionExpired:
+                        self._finish(job, registration, JobFailure("操作人会话已失效", retryable=False))
+                        return True
                 registration.handler(JobContext(job, fs))
             except JobFailure as error:
                 failure = error
@@ -234,19 +233,24 @@ class JobQueue:
             except NasUnavailable:
                 failure = JobFailure("NAS 暂时不可用，请重试")
             except Exception:
+                if claimed is None:
+                    raise
                 failure = JobFailure("任务执行失败，请检查运行环境后重试")
             finally:
-                if pinned:
+                if session_id is not None:
                     try:
                         self.pool.unpin(session_id)
                     except NasUnavailable:
                         logger.warning("任务的 NAS 会话清理失败，连接已作废")
-            self._finish(job, registration, failure)
-            return True
+            if claimed is not None:
+                self._finish(*claimed, failure)
+                return True
+            return False
         finally:
-            with self._lock:
-                self._active[job.kind] -= 1
-            self.wake()
+            if claimed is not None:
+                with self._lock:
+                    self._active[claimed[0].kind] -= 1
+                self.wake()
 
     def _finish(self, job: Job, registration: Registration, failure: JobFailure | None) -> None:
         with self._auth_lock, self._lock, self.database.session() as session:

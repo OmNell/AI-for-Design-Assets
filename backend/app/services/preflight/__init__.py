@@ -55,8 +55,14 @@ def check(folder: str, files: list[ManifestEntry], exists: bool = False, prefix_
         if not is_dir and any(other.startswith(path + "/") for other in kinds):
             add("manifest", "block", path, "文件与目录路径发生冲突")
     active = [entry for entry in files if not ignored(entry)]
-    images = [item for item in active if not item.is_dir and item.rel_path.split("/")[0] in ("套装", "单品") and len(item.rel_path.split("/")) == 2 and IMAGE_NAME.fullmatch(item.rel_path.rsplit("/", 1)[-1])]
-    if not images:
+    has_image = any(
+        not item.is_dir and item.size > 0
+        and item.rel_path.split("/")[0] in ("套装", "单品")
+        and item.rel_path.count("/") == 1
+        and IMAGE_NAME.fullmatch(item.rel_path.rsplit("/", 1)[-1])
+        for item in active
+    )
+    if not has_image:
         add("P07", "block", "套装/单品", "首次入库必须有至少一张单品或套装主图")
     roots = {item.rel_path.split("/")[0] for item in active if item.is_dir or "/" in item.rel_path}
     for name in REQUIRED:

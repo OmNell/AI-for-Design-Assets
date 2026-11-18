@@ -284,6 +284,7 @@ def test_first_ingest_requires_main_image_and_historical_year(upload_client: Tes
     issues = client.post("/api/batches/precheck", json=docs_only).json()["issues"]
     assert any(i["rule_code"] == "P07" and i["level"] == "block" for i in issues)
     assert client.post("/api/batches", json=docs_only).status_code == 422
+    assert client.post("/api/batches", json=body(size=0)).status_code == 422
     assert client.post("/api/batches", json=body("H_企业_项目")).json()["code"] == "historical_year_required"
 
 
@@ -320,3 +321,26 @@ def test_confirm_upgrades_legacy_digest_and_preserves_old_record(upload_client: 
     with client.app.state.database.session() as session:
         assert session.get(Batch, batch["id"]).payload["legacy_fingerprints"][str(file_id)] == {"value": "f" * 64, "kind": "quick"}
         assert session.get(BatchFile, file_id).fingerprint_kind == "full"
+
+
+def test_nas_disconnect_pauses_and_requires_relogin_with_offset(upload_client: TestClient, monkeypatch) -> None:
+    from app.services.nas import NasSessionExpired
+
+    client = upload_client
+    batch = create(client)
+    assert chunk(client, batch, 0, b"abcd").status_code == 200
+    token = client.cookies.get("nas_workbench_session")
+    auth = client.app.state.auth
+    fs = auth.pool.get(auth.context(token, "本机").session_id)
+
+    def disconnect(*args, **kwargs):
+        raise NasSessionExpired("模拟 NAS 掉线")
+
+    monkeypatch.setattr(fs, "open_write", disconnect)
+    assert chunk(client, batch, 1, b"efgh").json()["code"] == "nas_session_expired"
+    assert file_path(client, batch).read_bytes() == b"abcd"
+    assert chunk(client, batch, 1, b"efgh").status_code == 401
+    assert client.post('/api/auth/login', json={"username": "one", "password": "fake"}).status_code == 200
+    resumed = client.post(f'/api/batches/{batch["id"]}/resume', json=body()).json()
+    assert resumed["files"][0]["bytes_received"] == 4
+    assert chunk(client, resumed, 1, b"efgh").status_code == 200

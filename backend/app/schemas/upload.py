@@ -112,6 +112,7 @@ class BatchProductResponse(BaseModel):
     display_name: str
     ai_status: str
     ai_error: str | None
+    visual_ai_succeeded: bool = False
     tags: dict[str, object]
     free_text: str
     flags: list[str]
