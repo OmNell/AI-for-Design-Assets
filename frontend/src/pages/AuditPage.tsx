@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { changePath, claimAudit, getAudit, passAudit, rejectAudit, releaseAudit, savePins, type AuditData, type PinInput } from '../api/audit'
 import { useAuthStore } from '../stores/auth'
+import { IngestPanel } from '../components/IngestPanel'
 import { GlassSurface } from '../components/glass/GlassSurface'
 import { GlassPanel } from '../components/glass/GlassPanel'
 import { GlassButton } from '../components/glass/GlassButton'
@@ -79,6 +80,8 @@ export function AuditPage() {
         {stage && data.claimed_by && (mine || user?.roles.includes('admin')) && <GlassButton primary={false} disabled={busy} onClick={() => void run(() => releaseAudit(id, data.version))}>释放领取</GlassButton>}</div>
     </div></GlassSurface>
 
+    {['入库中', '入库异常', '已入库'].includes(batch.status) && <IngestPanel batchId={id} />}
+
     <div className="grid h-[calc(100vh-300px)] min-h-[560px] grid-cols-[270px_minmax(0,1fr)_420px] gap-4">
       <GlassSurface radius={24} priority="secondary" className="glass-fill min-h-0 p-3"><div data-testid="product-list" className="h-full overflow-y-auto pr-1">
         <ProductList batchId={batch.id} products={products} fields={fields} selectedId={selected?.id} onSelect={setCurrent} pinCounts={pinCounts} /></div></GlassSurface>
@@ -127,7 +130,7 @@ export function AuditPage() {
               <input type="checkbox" checked={!!checks[item]} onChange={event => setChecks({ ...checks, [item]: event.target.checked })} />{label}</label>)}</div>
             {pathBlocked && <p data-testid="path-blocked" className="mt-3 text-xs text-amber-900">{path.company_in_tree ? '位置待定：请先点上方「修改」从目录树选择存放位置。' : '位置待定：等待管理员在对照表中录入该企业。'}</p>}
             <div className="mt-3 flex gap-3"><GlassButton disabled={busy || !allChecked || pathBlocked} title={!allChecked ? '审核清单未全部勾选' : undefined}
-              onClick={() => void run(() => passAudit(id, data.version, checks), () => { setChecks({}); setDone(stage === 'final' ? '终审已通过，批次进入「入库中」。' : '初审已通过，批次进入「待终审」。') })}>通过</GlassButton>
+              onClick={() => void run(() => passAudit(id, data.version, checks), () => { setChecks({}); setDone(stage === 'final' ? '终审已通过，已安排入库。' : '初审已通过，批次进入「待终审」。') })}>通过</GlassButton>
               <GlassButton primary={false} disabled={busy} onClick={() => { setError(''); setRejecting(true) }}>驳回</GlassButton></div></section>}
           </div>}</div>
       </div></GlassSurface>

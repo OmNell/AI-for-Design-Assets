@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Computed, text, JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, Index
+from sqlalchemy import LargeBinary, Computed, text, JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -88,6 +88,8 @@ class Project(Record, Base):
     current_path: Mapped[str] = mapped_column(String, default="")
     status: Mapped[str] = mapped_column(String, default="active")
     ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archive_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archive_review: Mapped[dict[str, object] | None] = mapped_column(JSON)
 
 
 class HCodeSequence(Base):
@@ -165,11 +167,12 @@ class TagField(Record, Base):
 
 class BatchProduct(Record, Base):
     __tablename__ = "batch_products"
-    __table_args__ = (UniqueConstraint("batch_id", "batch_file_id"),)
+    __table_args__ = (UniqueConstraint("batch_id", "batch_file_id"), Index("uq_batch_products_code", "product_code", unique=True))
     batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), index=True)
     batch_file_id: Mapped[int] = mapped_column(ForeignKey("batch_files.id"))
     kind: Mapped[str] = mapped_column(String)
     display_name: Mapped[str] = mapped_column(String)
+    product_code: Mapped[str | None] = mapped_column(String)
     existing_product_id: Mapped[int | None] = mapped_column(Integer)
     ai_status: Mapped[str] = mapped_column(String, default="pending")
     ai_error: Mapped[str | None] = mapped_column(Text)
@@ -264,3 +267,95 @@ class ReviewPin(Record, Base):
     x: Mapped[float] = mapped_column(Float)
     y: Mapped[float] = mapped_column(Float)
     text: Mapped[str] = mapped_column(Text)
+class CatalogFile(Record, Base):
+    __tablename__ = "files"
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    rel_path: Mapped[str] = mapped_column(String)
+    size: Mapped[int] = mapped_column(Integer)
+    mtime: Mapped[int] = mapped_column(Integer)
+    fingerprint: Mapped[str] = mapped_column(String)
+    fingerprint_kind: Mapped[str] = mapped_column(String, default="full")
+    category: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="active")
+    first_batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"))
+
+
+class Product(Record, Base):
+    __tablename__ = "products"
+    product_code: Mapped[str] = mapped_column(String, unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    kind: Mapped[str] = mapped_column(String)
+    display_name: Mapped[str] = mapped_column(String)
+    file_id: Mapped[int] = mapped_column(ForeignKey("files.id"))
+    archive_rel_path: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="active")
+    free_text: Mapped[str] = mapped_column(Text, default="")
+    vision_model: Mapped[str] = mapped_column(String, default="")
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ProductRelation(Record, Base):
+    __tablename__ = "product_relations"
+    __table_args__ = (UniqueConstraint("set_product_id", "item_product_id"),)
+    set_product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    item_product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    source: Mapped[str] = mapped_column(String)
+    confirmed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String, default="active")
+    confirmed_by_original_id: Mapped[int | None] = mapped_column(Integer)
+    inactive_reason: Mapped[str | None] = mapped_column(String)
+    relation_version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class ProductTag(Record, Base):
+    __tablename__ = "product_tags"
+    __table_args__ = (UniqueConstraint("product_id", "field_key"),)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    field_key: Mapped[str] = mapped_column(String, index=True)
+    value: Mapped[str] = mapped_column(Text)
+    terms: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source: Mapped[str] = mapped_column(String)
+    ai_value: Mapped[str] = mapped_column(Text, default="")
+    flag: Mapped[str | None] = mapped_column(String)
+    confirmation_status: Mapped[str] = mapped_column(String)
+
+
+class HistoryVersion(Record, Base):
+    __tablename__ = "history_versions"
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    file_id: Mapped[int] = mapped_column(ForeignKey("files.id"))
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"))
+    old_fingerprint: Mapped[str] = mapped_column(String)
+    old_rel_path: Mapped[str] = mapped_column(String)
+    new_rel_path: Mapped[str] = mapped_column(String)
+    reason: Mapped[str] = mapped_column(String)
+    batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"))
+    expected_missing: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class Link(Record, Base):
+    __tablename__ = "links"
+    __table_args__ = (UniqueConstraint("kind", "target_id"),)
+    link_id: Mapped[str] = mapped_column(String, unique=True)
+    kind: Mapped[str] = mapped_column(String)
+    target_id: Mapped[int] = mapped_column(Integer)
+
+class IngestPlan(Base):
+    __tablename__ = "ingest_plans"
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), primary_key=True)
+    manifest: Mapped[dict[str, object]] = mapped_column(JSON)
+
+
+class ProductEmbedding(Base):
+    __tablename__ = "product_embeddings"
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), primary_key=True)
+    model_id: Mapped[str] = mapped_column(String, primary_key=True)
+    model_version: Mapped[str] = mapped_column(String, primary_key=True)
+    index_generation: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dimension: Mapped[int | None] = mapped_column(Integer)
+    embedding: Mapped[bytes | None] = mapped_column(LargeBinary)
+    text_hash: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text)

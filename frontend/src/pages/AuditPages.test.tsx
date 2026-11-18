@@ -226,3 +226,21 @@ it('核对页的驳回横幅显示总体意见，被钉的图有标记并可撤�
   await until(() => host.textContent === '首页')
   expect(calls.find(call => call.url.endsWith('/cancel'))!.url).toBe('/api/batches/1/cancel')
 })
+
+it('等待正式向量时显示入库异常，终审继续后显示已入库', async () => {
+  login(['final_reviewer'])
+  serve((url) => {
+    const base = { step: 8, step_name: '生成向量并发布', products: 3, files: 4, vectors_ready: 2 }
+    if (url.endsWith('/ingest')) return { ...base, status: '入库异常', error: '1 个商品的正式向量未生成', can_resume: true }
+    if (url.endsWith('/resume-ingest')) return { ...base, status: '已入库', step: 9, step_name: '入库完成', vectors_ready: 3, error: null, can_resume: false }
+    return auditData({ review: reviewData('入库异常'), stage: null, claimed_by_me: false })
+  })
+  audit()
+  await until(() => !!button('继续入库'))
+  expect(host.textContent).toContain('正式向量 2 / 3')
+  expect(host.textContent).toContain('1 个商品的正式向量未生成')
+  act(() => button('继续入库').click())
+  await until(() => host.textContent!.includes('正式向量 3 / 3'))
+  expect(host.textContent).toContain('已入库')
+  expect(button('继续入库')).toBeUndefined()
+})

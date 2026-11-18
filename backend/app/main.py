@@ -13,6 +13,9 @@ from fastapi.responses import FileResponse
 from starlette.exceptions import HTTPException
 
 from app import __version__
+from app.api.ingest import router as ingest_router
+from app.services.ingest import IngestService
+from app.services.links import LinkService
 from app.api.health import router
 from app.api.auth import router as auth_router
 from app.api.admin import router as admin_router
@@ -89,7 +92,11 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             application.state.auth.on_close = upload.session_closed
             application.state.notify = NotifyService(application.state.auth)
             application.state.company_map = CompanyMapService(application.state.auth)
-            application.state.audit = AuditService(application.state.auth, application.state.review, application.state.notify)
+            ingest = IngestService(application.state.auth, jobs, ai, application.state.notify)
+            application.state.ingest = ingest
+            application.state.links = LinkService(application.state.auth)
+            application.state.audit = AuditService(application.state.auth, application.state.review, application.state.notify, ingest)
+            jobs.register("ingest", ingest.handle, concurrency=1, retries=1, recoverable=False, state_callback=ingest.on_job_state)
             jobs.start()
             ai.start()
             logger.info("工作台启动完成，模式：%s", config.mode)
@@ -141,6 +148,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
     application.include_router(ai_runtime_router)
     application.include_router(review_router)
     application.include_router(audit_router)
+    application.include_router(ingest_router)
     static_root = static_dir.resolve()
 
     @application.get("/{path:path}", include_in_schema=False)

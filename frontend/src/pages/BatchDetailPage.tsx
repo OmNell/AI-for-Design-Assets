@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getBatch, confirmBatch, retryAi, type Batch, type BatchProduct } from '../api/upload'
 import { useAuthStore } from '../stores/auth'
+import { IngestPanel } from '../components/IngestPanel'
 import { GlassPanel } from '../components/glass/GlassPanel'
 import { GlassCard } from '../components/glass/GlassCard'
 import { GlassButton } from '../components/glass/GlassButton'
@@ -30,7 +31,7 @@ export function BatchDetailPage() {
   const user = useAuthStore(state => state.user)
   const query = useQueryClient()
   const batch = useQuery({ queryKey: ['batch', id], queryFn: () => getBatch(id), enabled: Number.isInteger(id) && id > 0, retry: false,
-    refetchInterval: result => result.state.data?.status === 'AI 处理中' ? 1000 : false,
+    refetchInterval: result => ['AI 处理中', '入库中'].includes(result.state.data?.status ?? '') ? 1000 : false,
   })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -61,6 +62,7 @@ export function BatchDetailPage() {
       {['待核对', '已驳回', '待初审', '待终审'].includes(value.status) && <Link to={`/batches/${id}/review`} className="self-center text-emerald-800 underline">{['待核对','已驳回'].includes(value.status) ? '进入核对页' : '查看提交版本'}</Link>}
       {['上传中', '上传中断'].includes(value.status) && canOperate && <Link to={`/upload?resume=${id}`} className="text-sm text-emerald-800 underline underline-offset-4">继续上传</Link>}</div>
   </GlassPanel>
+    {['入库中', '入库异常', '已入库'].includes(value.status) && <IngestPanel batchId={id} />}
     <div className="grid grid-cols-3 gap-5"><GlassCard><p className="text-sm text-slate-500">单品完成</p><p className="mt-3 text-2xl">{progress.items_done} / {progress.items_total}</p></GlassCard><GlassCard><p className="text-sm text-slate-500">套装完成</p><p className="mt-3 text-2xl">{progress.sets_done} / {progress.sets_total}</p></GlassCard><GlassCard><p className="text-sm text-slate-500">失败</p><p className="mt-3 text-2xl">{progress.failed}</p></GlassCard></div>
     {value.termination_reason && <p className="text-sm text-slate-600">终止原因：{value.termination_reason}</p>}
     {!['已撤回', '已终止'].includes(value.status) && !!products.length && <div className="grid grid-cols-2 gap-5">{products.map(product => <Product key={product.id} product={product} batch={value} />)}</div>}

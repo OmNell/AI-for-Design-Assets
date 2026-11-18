@@ -259,6 +259,23 @@ class AiClient:
         payload: dict[str, object] = {"model": model, "messages": [{"role": "user", "content": content}]}
         return self._run(model, "set" if items is not None else "item", lambda: self._chat(model, payload), batch_id, product_id)
 
+    def embed(self, text: str, batch_id: int | None) -> list[float]:
+        model = self.config.model_embed.strip()
+
+        def action() -> _Result:
+            body = self._post("/embeddings", model, {"model": model, "input": text})
+            data = body.get("data") if isinstance(body, dict) else None
+            vector = data[0].get("embedding") if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict) else None
+            if (not isinstance(vector, list) or not 1 <= len(vector) <= 8192
+                    or any(type(value) not in (float, int) or not (-1e30 < value < 1e30) for value in vector)
+                    or not any(vector)):
+                raise _AttemptError("向量模型未返回有效向量", retryable=True, usage=_usage(body))
+            if body.get("model") != model:
+                raise _AttemptError("向量响应的模型与配置不一致")
+            return _Result(json.dumps(vector), _usage(body))
+
+        return json.loads(self._run(model, "embed", action, batch_id))
+
     def test_models(self) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
         for kind, model in (("vision", self.config.model_vision), ("text", self.config.model_text), ("embed", self.config.model_embed)):
@@ -309,6 +326,15 @@ class FakeAiClient(AiClient):
                 "multi_object": "一图多品" in name or "multi" in name, "relation_items": relations}
             return _Result(json.dumps(result, ensure_ascii=False), {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})
         return self._run(self.config.model_vision or "fake-vision", "set" if items is not None else "item", action, batch_id, product_id)
+
+    def embed(self, text: str, batch_id: int | None) -> list[float]:
+        model = self.config.model_embed.strip() or "fake-embed"
+        def action() -> _Result:
+            if "向量失败" in text:
+                raise _AttemptError("假向量模型调用失败", retryable=True)
+            vector = [byte / 127.5 - 1 for byte in hashlib.sha256(text.encode("utf-8")).digest()]
+            return _Result(json.dumps(vector), {"prompt_tokens": 1, "total_tokens": 1})
+        return json.loads(self._run(model, "embed", action, batch_id))
 
     def test_models(self) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []

@@ -21,7 +21,7 @@ CATALOG = {"industries":[{"name":"酒业"}], "companies":[{"name":"酒企","indu
 
 
 class Flow:
-    def __init__(self, client: TestClient):
+    def __init__(self, client: TestClient, paths: list[str] | None = None):
         self.client = client
         self.cookies = {}
         self.users = {}
@@ -30,11 +30,17 @@ class Flow:
         for name in ("one", "first", "final", "admin"):
             self.roles(name, ["uploader", "first_reviewer", "final_reviewer"] + (["admin"] if name == "admin" else []))
         self.sign_in("one")
-        self.batch = ready(client, ["单品/杯.jpg"])
+        self.batch = ready(client, paths or ["单品/杯.jpg"])
         self.bid = int(self.batch.split("/")[-1])
         self.base = f"/api/review/{self.bid}"
-        self.product = client.get(self.batch+"/products").json()["products"][0]
-        confirm_fields(client, self.batch, self.product)
+        self.products = client.get(self.batch+"/products").json()["products"]
+        self.product = self.products[0]
+        for product in self.products:
+            confirm_fields(client, self.batch, product)
+            if product["kind"] == "set":
+                items = [item["id"] for item in self.products if item["kind"] == "item"]
+                assert client.put(self.batch + f"/products/{product['id']}/relations",
+                                  json={"item_ids": items, "confirm_kind": "confirmed_members"}).status_code == 200
         assert self.call("one", "POST", self.batch+"/submit", {}).status_code == 200
 
     def sign_in(self, name):
@@ -119,7 +125,8 @@ def test_approval_snapshot_catalog_and_identity(flow):
         assert rows[0].snapshot_id == rows[1].snapshot_id
         assert rows[1].reviewer_id == s.get(UserSession,rows[1].execution_session_id).user_id == f.users["final"]
         assert rows[1].path_change["after"]["path"] == s.get(Batch,f.bid).final_path
-        assert s.scalar(select(Job.id).where(Job.kind=="ingest")) is None
+        job = s.scalar(select(Job).where(Job.kind == "ingest"))
+        assert job.run_as_user_id == f.users["final"] and job.run_as_session_id == rows[1].execution_session_id
     config = f.client.app.state.auth.config
     assert list(config.paths.dev_nas_dir.rglob("杯.jpg"))[0].is_file()
     assert not list((config.paths.dev_nas_dir / config.nas.root_path.strip("/")).rglob("*"))
@@ -180,7 +187,7 @@ def test_concurrent_claim_role_revocation_release_and_termination(flow):
     assert sorted(t.result().status_code for t in tasks)==[200,409]
     with f.client.app.state.database.session() as s:
         batch=s.get(Batch,f.bid)
-        assert (batch.status,batch.lock_active) in [("已终止",False),("入库中",True)]
+        assert (batch.status,batch.lock_active) in [("已终止",False),("入库中",True),("入库异常",True)]
         assert s.scalar(select(ReviewSnapshot.id)) is not None
     assert f.audit("admin","release",version=ver).status_code==409
 

@@ -18,6 +18,7 @@ from app.services.admin.company_map import batch_company, company_path, match_co
 from app.services.auth.service import AuthService, LoginContext
 from app.services.upload.service import UploadService
 from app.services.notify import NotifyService, stage_since, recused
+from app.services.ingest import IngestService
 from app.services.oplog import OplogService
 from app.services.preflight import REQUIRED
 from app.services.review import ReviewService
@@ -34,8 +35,8 @@ def _name(user: User | None) -> str:
 
 
 class AuditService:
-    def __init__(self, auth: AuthService, review: ReviewService, notify: NotifyService) -> None:
-        self.auth, self.review, self.notify = auth, review, notify
+    def __init__(self, auth: AuthService, review: ReviewService, notify: NotifyService, ingest: IngestService) -> None:
+        self.auth, self.review, self.notify, self.ingest = auth, review, notify, ingest
 
     # ---- 取数与权限 ----
     @staticmethod
@@ -92,7 +93,7 @@ class AuditService:
     def _path(session: Session, batch: Batch) -> PathInfo:
         company = batch_company(batch)
         recommended = recommend(session, batch)
-        if batch.status == INGESTING:
+        if batch.status in (INGESTING, "入库异常", "已入库"):
             return PathInfo(recommended=batch.recommended_path, final=batch.final_path, effective=batch.final_path,
                             company_name=company, company_in_tree=recommended is not None)
         selection = batch.payload.get("review_location")
@@ -287,9 +288,8 @@ class AuditService:
             self._log(session, user, "修改存放位置", batch, before, {"path": batch.final_path, "won": won}, host)
             return self._response(session, batch, user)
 
-    def dispatch_ingest(self, session: Session, batch: Batch, reviewer: User) -> None:
-        """终审通过后的入库任务派发点。WP09 在这里以终审本人身份入队 ingest 任务；本包只停在「入库中」。"""
-        return None
+    def dispatch_ingest(self, session: Session, batch: Batch, reviewer: User, login_id: int) -> None:
+        self.ingest.enqueue(session, batch, reviewer.id, login_id)
 
     def approve(self, batch_id: int, checklist: dict[str, bool], login: LoginContext, host: str, version: str) -> AuditResponse:
         with self.auth.lock, self.auth.database.session() as session:
@@ -327,7 +327,7 @@ class AuditService:
             self._log(session, user, "初审通过" if stage == "first" else "终审通过", batch, before,
                       {"status": batch.status, "round": batch.round, "final_path": batch.final_path, "checklist": dict(checklist)}, host)
             if stage == "final":
-                self.dispatch_ingest(session, batch, user)
+                self.dispatch_ingest(session, batch, user, login.session_id)
             self.notify.emit(session, "first_passed" if stage == "first" else "final_passed", batch)
             return self._response(session, batch, user)
 
