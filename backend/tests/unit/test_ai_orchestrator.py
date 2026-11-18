@@ -88,6 +88,6 @@ def test_whole_batch_retry_fences_old_generation(service: tuple[AiService, Batch
 def test_ambiguous_company_alias_does_not_invent_location(service: tuple[AiService, Batch, User]) -> None:
     ai, batch, _ = service
     with ai.auth.database.session() as session:
-        session.add_all([CompanyIndustryMap(company_name=name, aliases=['企业'], company_seq=1, industry_name='行业', industry_seq=1) for name in ['甲企业', '乙企业']])
+        session.add_all([CompanyIndustryMap(company_name=name, aliases=['企业'], company_seq=seq, industry_name='行业', industry_seq=1) for seq, name in enumerate(['甲企业', '乙企业'], 1)])
     with ai.auth.database.session() as session:
         assert ai._recommend(session, session.get(Batch, batch.id)) is None

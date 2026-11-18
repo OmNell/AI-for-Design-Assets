@@ -1,6 +1,6 @@
 # NAS 设计资产工作台
 
-公司内网设计资产工作台。当前完成 WP00～WP07。上传人可以分片上传项目文件夹，查看 AI 生成的标签和套装关系，逐项核对后提交初审。
+公司内网设计资产工作台。当前完成 WP00～WP08。上传人可以分片上传项目文件夹，查看 AI 生成的标签和套装关系，逐项核对后提交初审。两名审核人依次审核，终审通过后等待入库执行。
 
 ## 开发环境
 
@@ -403,3 +403,21 @@ python -m pytest backend/tests/bailian -m bailian -q -s --tb=short
 | POST /submit | 校验当前文件与草稿，原子保存本轮版本，进入待初审 |
 
 `GET /api/tag-values` 提供当前有权查看批次的词项提示。正式商品库由 WP09 接入。管理员可通过 `PUT /api/admin/batches/{id}/owner` 在可编辑阶段交接责任人。追加主图的 multipart 大小上限由 `upload.append_max_mb` 控制，默认 50 MiB。更新后请按安装章节同步 Python 依赖。
+
+## WP08 两级审核
+
+上传人从核对页提交后，初审和终审在各自的待办队列领取批次，核对同一轮快照。每级通过前须勾完六项。驳回时填写总体意见，图片意见随该轮审核保存。责任人从首页打开已驳回批次，修改并重新提交后产生新轮次。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/review/queue?stage=first` 或 `final` | 对应阶段队列及等待时长 |
+| `GET /api/review/{batch_id}` | 冻结版本、审批历史、领取状态和本次操作使用的 `version` |
+| `POST /api/review/{batch_id}/claim`、`/release` | 领取、释放该阶段的审核 |
+| `PUT /api/review/{batch_id}/pins`、`/path` | 暂存本轮意见、终审核定目录 |
+| `POST /api/review/{batch_id}/pass`、`/reject` | 提交六项清单或总体驳回意见。驳回可同时提交最终钉点 |
+| `GET/PUT /api/admin/company-map`、`GET /api/catalog/tree` | 管理员维护行业、标准名与别名，登录用户读取目录树 |
+| `GET /api/todos` | 当前账号各类待办数和对应批次 |
+
+审核写请求均携带最近一次读到的 `X-Review-Version`。发生版本冲突返回 409，重新读取后再核对。已有决定的审核记录、钉点与提交快照由 SQLite 触发器保护。
+
+终审通过后批次停在「入库中」。供 WP09 读取的数据包括同轮 `snapshot_id`、文件 SHA-256、终审 `reviewer_id` 和 `execution_session_id`、核定的 `batches.final_path` 及 `review_rounds.path_change.after` 中的企业和中标状态。该路径相对于配置的正式区域根目录。设备会话失效时需要终审本人重新认证。
