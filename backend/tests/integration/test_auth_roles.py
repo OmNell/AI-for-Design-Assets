@@ -16,7 +16,7 @@ from app.db.models import Oplog, User, UserSession, utcnow
 from app.main import create_app
 from app.schemas.auth import Role
 from app.services.auth.service import COOKIE_NAME, token_hash
-from app.services.nas import NasPermissionDenied
+from app.services.nas import NasPermissionDenied, NasSessionExpired
 
 
 @pytest.fixture
@@ -51,7 +51,7 @@ def test_login_success_hash_cookie_me_and_logout(client: TestClient) -> None:
     assert client.get("/api/auth/me").status_code == 401
     assert client.post("/api/auth/logout").status_code == 401
     with client.app.state.database.session() as session:
-        assert session.scalar(select(UserSession)) is None
+        assert session.scalar(select(UserSession)).revoked_at is not None
         assert [entry.action for entry in session.scalars(select(Oplog))] == ["登录", "退出登录"]
 
 
@@ -109,9 +109,10 @@ def test_expired_token_cleared_and_rejected(client: TestClient) -> None:
 
 
 def test_nas_expiry_invalidates_old_tokens_even_after_new_login(client: TestClient) -> None:
-    user = login(client)
+    login(client)
     old_token = client.cookies[COOKIE_NAME]
-    client.app.state.auth.pool.close(user["id"])
+    first = client.app.state.auth.context(old_token, "设备甲")
+    client.app.state.auth.pool.close(first.session_id)
     response = client.get("/api/auth/me")
     assert response.status_code == 401 and response.json()["code"] == "nas_session_expired"
     assert response.json()["message"] == "NAS 连接已超时，请重新登录"
@@ -132,18 +133,27 @@ def test_disabling_user_revokes_all_tokens(client: TestClient) -> None:
     assert client.post("/api/auth/login", json={"username": "member-demo", "password": "fake-password"}).status_code == 403
 
 
-def test_multiple_browser_tokens_and_final_logout_closes_nas(client: TestClient) -> None:
-    user = login(client)
+def test_multiple_browser_tokens_have_independent_nas_sessions(client: TestClient) -> None:
+    login(client)
     token_a = client.cookies[COOKIE_NAME]
+    auth = client.app.state.auth
+    a = auth.context(token_a, "设备甲")
+    fs_a = auth.pool.get(a.session_id)
     login(client)
     token_b = client.cookies[COOKIE_NAME]
-    assert token_a != token_b
+    b = auth.context(token_b, "设备乙")
+    fs_b = auth.pool.get(b.session_id)
+    assert token_a != token_b and a.user.id == b.user.id and a.session_id != b.session_id
+    assert fs_a is not fs_b
     assert client.post("/api/auth/logout").status_code == 200
+    with pytest.raises(NasSessionExpired):
+        auth.pool.get(b.session_id)
+    assert auth.pool.get(a.session_id) is fs_a
     client.cookies.set(COOKIE_NAME, token_a, domain="testserver.local", path="/")
     assert client.get("/api/auth/me").status_code == 200
     assert client.post("/api/auth/logout").status_code == 200
-    with pytest.raises(Exception, match="过期"):
-        client.app.state.auth.pool.get(user["id"])
+    with pytest.raises(NasSessionExpired):
+        auth.pool.get(a.session_id)
 
 
 def test_nas_open_failure_no_user_or_token_persisted(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -170,3 +180,11 @@ def test_reviewer_inherits_uploader_but_admin_does_not_inherit_review(client: Te
     with application.state.database.session() as session:
         session.get(User, member["id"]).roles = ["admin"]
     assert client.get("/api/test-upload-role").status_code == 403
+
+
+def test_cross_site_writes_blocked_and_same_origin_login_works(client: TestClient) -> None:
+    credentials = {"username": "member-demo", "password": "fake-password"}
+    assert client.post("/api/auth/login", headers={"Origin": "http://other.test"}, json=credentials).status_code == 403
+    assert client.post("/api/auth/login", headers={"Origin": "http://testserver"}, json=credentials).status_code == 200
+    assert client.post("/api/auth/logout", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+    assert client.get("/api/auth/me").status_code == 200

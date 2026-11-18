@@ -15,8 +15,9 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from app.db.database import Database
-from app.db.models import Job, User, utcnow
+from app.db.models import Job, User, UserSession, utcnow
 from app.errors import AppError
+from app.services.auth.service import is_expired
 from app.services.nas import NasFs, NasNotFound, NasPermissionDenied, NasSessionExpired, NasUnavailable, SessionPool
 from app.services.oplog import OplogService
 
@@ -105,12 +106,12 @@ class JobQueue:
             "失败" if job.status == "failed" else "成功", host)
 
     def enqueue(self, kind: str, payload: object, run_as_user_id: int | None = None,
-                scheduled_at: datetime | None = None, session: Session | None = None) -> Job:
+                scheduled_at: datetime | None = None, session: Session | None = None, *, run_as_session_id: int | None = None) -> Job:
         with self._auth_lock:
-            return self._enqueue(kind, payload, run_as_user_id, scheduled_at, session)
+            return self._enqueue(kind, payload, run_as_user_id, scheduled_at, session, run_as_session_id)
 
     def _enqueue(self, kind: str, payload: object, run_as_user_id: int | None,
-                 scheduled_at: datetime | None, session: Session | None) -> Job:
+                 scheduled_at: datetime | None, session: Session | None, run_as_session_id: int | None) -> Job:
         with self._lock:
             if kind not in self._registry:
                 raise AppError("job_kind_unregistered", "该任务类型尚未开放", 422)
@@ -119,7 +120,7 @@ class JobQueue:
         if scheduled_at is not None and scheduled_at.tzinfo is None:
             scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
         def insert(current: Session) -> Job:
-            job = Job(kind=kind, payload=payload, run_as_user_id=run_as_user_id, status="queued",
+            job = Job(kind=kind, payload=payload, run_as_user_id=run_as_user_id, run_as_session_id=run_as_session_id, status="queued",
                       attempts=0, scheduled_at=scheduled_at)
             current.add(job)
             self._changed(current, job, "任务入队", None)
@@ -206,11 +207,16 @@ class JobQueue:
                         with self.database.session() as session:
                             user = session.get(User, job.run_as_user_id)
                             disabled = user is None or not user.enabled
+                            login = session.get(UserSession, job.run_as_session_id) if job.run_as_session_id is not None else None
+                            session_id = (login.id if login is not None and login.user_id == job.run_as_user_id
+                                          and login.revoked_at is None and not is_expired(login.expires_at) else None)
                         if disabled:
                             self._finish(job, registration, JobFailure("操作人已停用", retryable=False))
                             return True
                         try:
-                            fs = self.pool.pin(job.run_as_user_id)
+                            if session_id is None:
+                                raise NasSessionExpired("缺少有效登录会话")
+                            fs = self.pool.pin(session_id)
                             pinned = True
                         except NasSessionExpired:
                             # 登录后的恢复回调与此处共用同一锁，不能在其扫描后才记录失败。
@@ -232,7 +238,7 @@ class JobQueue:
             finally:
                 if pinned:
                     try:
-                        self.pool.unpin(job.run_as_user_id)
+                        self.pool.unpin(session_id)
                     except NasUnavailable:
                         logger.warning("任务的 NAS 会话清理失败，连接已作废")
             self._finish(job, registration, failure)

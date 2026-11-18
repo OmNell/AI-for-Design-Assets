@@ -25,7 +25,7 @@ def me(response: Response, user: User = Depends(require_login)) -> UserResponse:
 
 
 @router.post("/logout", response_model=MessageResponse)
-def logout(request: Request, response: Response, user: User = Depends(require_login)) -> MessageResponse:
-    request.app.state.auth.logout(request.cookies[COOKIE_NAME], client_host(request))
+def logout(request: Request, response: Response) -> MessageResponse:
+    request.app.state.auth.logout(request.cookies.get(COOKIE_NAME, ""), client_host(request))
     response.delete_cookie(COOKIE_NAME, path="/", httponly=True, samesite="lax")
     return MessageResponse(message="已退出登录")

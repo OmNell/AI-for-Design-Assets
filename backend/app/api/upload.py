@@ -4,11 +4,11 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from fastapi.responses import Response
 
-from app.api.dependencies import client_host, require_role, require_login
+from app.api.dependencies import client_host, require_role, require_login, require_login_context
 from app.db.models import User
 from app.schemas.auth import Role
 from app.schemas.upload import BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, ResumeRequest
-from app.services.auth.service import COOKIE_NAME
+from app.services.auth.service import COOKIE_NAME, LoginContext
 
 router = APIRouter(prefix="/api/batches")
 
@@ -28,7 +28,7 @@ class ChunkResponse(BaseModel):
     bytes_received: int
 
 
-def upload_user(request: Request, id: int, x_upload_token: str | None = Header(default=None)) -> User:
+def upload_user(request: Request, id: int, x_upload_token: str | None = Header(default=None)) -> LoginContext:
     return request.app.state.upload.authorize(id, x_upload_token, request.cookies.get(COOKIE_NAME), client_host(request))
 
 
@@ -38,8 +38,8 @@ def precheck(body: PrecheckRequest, request: Request, user: User = Depends(requi
 
 
 @router.post("", response_model=BatchResponse)
-def create(body: CreateBatchRequest, request: Request, user: User = Depends(require_role(Role.UPLOADER))) -> BatchResponse:
-    return request.app.state.upload.create(body, user, client_host(request))
+def create(body: CreateBatchRequest, request: Request, login: LoginContext = Depends(require_login_context)) -> BatchResponse:
+    return request.app.state.upload.create(body, login, client_host(request))
 
 
 @router.get("", response_model=list[BatchResponse])
@@ -58,30 +58,30 @@ def retry_ai(id: int, request: Request, user: User = Depends(require_login)) -> 
 
 
 @router.get("/{id}/upload-state", response_model=BatchResponse)
-def state(id: int, request: Request, user: User = Depends(upload_user)) -> BatchResponse:
-    return request.app.state.upload.state(id, user, client_host(request))
+def state(id: int, request: Request, login: LoginContext = Depends(upload_user)) -> BatchResponse:
+    return request.app.state.upload.state(id, login, client_host(request))
 
 
 @router.put("/{id}/files/{file_id}/chunks/{index}", response_model=ChunkResponse)
-async def chunk(id: int, file_id: int, index: int, request: Request, user: User = Depends(upload_user)) -> ChunkResponse:
+async def chunk(id: int, file_id: int, index: int, request: Request, login: LoginContext = Depends(upload_user)) -> ChunkResponse:
     data = await request.app.state.upload.read_body(request.stream())
-    result = await run_in_threadpool(request.app.state.upload.chunk, id, file_id, index, data, user, client_host(request))
+    result = await run_in_threadpool(request.app.state.upload.chunk, id, file_id, index, data, login, client_host(request))
     return ChunkResponse(**result)
 
 
 @router.post("/{id}/files/{file_id}/complete", response_model=BatchResponse)
-def complete(id: int, file_id: int, request: Request, user: User = Depends(upload_user)) -> BatchResponse:
-    return request.app.state.upload.complete(id, file_id, user, client_host(request))
+def complete(id: int, file_id: int, request: Request, login: LoginContext = Depends(upload_user)) -> BatchResponse:
+    return request.app.state.upload.complete(id, file_id, login, client_host(request))
 
 
 @router.post("/{id}/pause", response_model=BatchResponse)
-def pause(id: int, request: Request, user: User = Depends(upload_user)) -> BatchResponse:
-    return request.app.state.upload.pause(id, user, client_host(request))
+def pause(id: int, request: Request, login: LoginContext = Depends(upload_user)) -> BatchResponse:
+    return request.app.state.upload.pause(id, login, client_host(request))
 
 
 @router.post("/{id}/cancel", response_model=BatchResponse)
-def cancel(id: int, request: Request, user: User = Depends(upload_user)) -> BatchResponse:
-    return request.app.state.upload.cancel(id, user, client_host(request))
+def cancel(id: int, request: Request, login: LoginContext = Depends(upload_user)) -> BatchResponse:
+    return request.app.state.upload.cancel(id, login, client_host(request))
 
 
 @router.post("/{id}/confirm", response_model=BatchResponse)
@@ -90,5 +90,5 @@ def confirm(id: int, request: Request, user: User = Depends(require_role(Role.UP
 
 
 @router.post("/{id}/resume", response_model=BatchResponse)
-def resume(id: int, body: ResumeRequest, request: Request, user: User = Depends(require_role(Role.UPLOADER))) -> BatchResponse:
-    return request.app.state.upload.resume(id, body, user, client_host(request))
+def resume(id: int, body: ResumeRequest, request: Request, login: LoginContext = Depends(require_login_context)) -> BatchResponse:
+    return request.app.state.upload.resume(id, body, login, client_host(request))

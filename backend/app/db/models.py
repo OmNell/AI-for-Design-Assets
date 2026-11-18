@@ -36,6 +36,7 @@ class UserSession(Record, Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     client_host: Mapped[str] = mapped_column(String)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Setting(Record, Base):
@@ -67,6 +68,7 @@ class Job(Record, Base):
     status: Mapped[str] = mapped_column(String, default="queued")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     run_as_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    run_as_session_id: Mapped[int | None] = mapped_column(ForeignKey("sessions.id"))
     error: Mapped[str | None] = mapped_column(Text)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -97,6 +99,7 @@ class Batch(Record, Base):
     status: Mapped[str] = mapped_column(String)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     uploader_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    upload_session_id: Mapped[int | None] = mapped_column(ForeignKey("sessions.id"))
     first_reviewer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     final_reviewer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     round: Mapped[int] = mapped_column(Integer, default=1)

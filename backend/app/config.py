@@ -100,6 +100,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def unique_dev_users(self) -> Settings:
+        if self.mode == "prod" and not self.nas.dsm_https:
+            raise ValueError("生产模式的 DSM 登录必须使用 HTTPS")
         names = [user.username for user in self.dev_users]
         if len(set(names)) != len(names):
             raise ValueError("开发账号不能重复")

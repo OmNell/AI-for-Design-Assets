@@ -159,7 +159,7 @@ class AiClient:
         key = self._key()
         try:
             base = httpx.URL(self.config.base_url)
-            if base.scheme not in ("http", "https") or not base.host or base.username or base.password or base.query or base.fragment:
+            if base.scheme != "https" or not base.host or base.username or base.password or base.query or base.fragment:
                 raise ValueError("接口地址格式不正确")
         except (ValueError, httpx.InvalidURL):
             raise _AttemptError("AI接口地址格式不正确") from None

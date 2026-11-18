@@ -7,16 +7,17 @@ import secrets
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Batch, BatchFile, BatchProduct, PreflightAck, Project, User, utcnow
+from app.db.models import Batch, BatchFile, BatchProduct, PreflightAck, Project, User, UserSession, utcnow
 from app.errors import AppError
 from app.schemas.upload import AiProgress, BatchProductResponse, BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, ResumeRequest, UploadFileResponse
-from app.services.auth.service import AuthService, token_hash
-from app.services.nas import NasFs, NasUnavailable, Region
+from app.services.auth.service import AuthService, LoginContext, is_expired, token_hash
+from app.services.nas import NasFs, NasSessionExpired, NasUnavailable, Region
 from app.services.nas.factory import create_paths
 from app.services.oplog import OplogService
 from app.services.preflight import check, ignored
@@ -41,7 +42,7 @@ class UploadService:
         self.paths = create_paths(auth.config)
         self.chunk_bytes = auth.config.upload.chunk_mb * 1024 * 1024
         self._hashes: dict[tuple[int, int], tuple[int, HashState]] = {}
-        self._pinned: set[int] = set()
+        self._pinned: dict[int, int] = {}
         self._activity: dict[int, float] = {}
         self._stop = threading.Event()
         # 重启只能保留清单/偏移，不能假装仍有浏览器和 NAS 会话。
@@ -71,22 +72,23 @@ class UploadService:
             raise AppError("forbidden", "当前账号没有上传权限", 403)
         return batch
 
-    def authorize(self, batch_id: int, token: str | None, cookie: str | None, host: str) -> User:
-        if token:
-            with self.lock, self.database.session() as session:
-                batch = session.get(Batch, batch_id)
-                expected = batch.payload.get("upload_token_hash") if batch else None
-                if not isinstance(expected, str) or not secrets.compare_digest(expected, token_hash(token)):
-                    # 最后完成响应丢失或取消与完成竞态时，只能回退到仍有效的本人登录会话。
-                    if batch is not None and expected is None and cookie:
-                        return self.auth.current(cookie, host)
-                    raise AppError("upload_token_invalid", "上传令牌无效，请重新登录后继续上传", 401)
-                user = session.get(User, batch.uploader_id)
-                if user is None:
-                    raise AppError("login_required", "请重新登录", 401)
-                self._batch(session, batch_id, user)
-                return user
-        return self.auth.current(cookie, host)
+    def authorize(self, batch_id: int, token: str | None, cookie: str | None, host: str) -> LoginContext:
+        login = self.auth.context(cookie, host)
+        with self.lock, self.database.session() as session:
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login, batch)
+            expected = batch.payload.get("upload_token_hash")
+            if token is not None and expected is not None and not secrets.compare_digest(expected, token_hash(token)):
+                raise AppError("upload_token_invalid", "上传凭据已变更，请重新继续上传", 409)
+        return login
+
+    @staticmethod
+    def _check_login(session: Session, login: LoginContext, batch: Batch | None = None) -> None:
+        row = session.get(UserSession, login.session_id)
+        if row is None or row.user_id != login.user.id or row.revoked_at is not None or is_expired(row.expires_at):
+            raise AppError("session_expired", "登录已过期，请重新登录", 401)
+        if batch is not None and batch.upload_session_id != login.session_id:
+            raise AppError("upload_session_mismatch", "上传绑定到其他登录会话，请重新选择文件夹继续上传", 409)
 
     def precheck(self, body: PrecheckRequest) -> PrecheckResponse:
         parts = body.folder_name.split("_")
@@ -155,7 +157,9 @@ class UploadService:
             return self._snapshot(session, batch)
 
     def _fs(self, batch: Batch) -> NasFs:
-        return self.auth.pool.get(batch.uploader_id)
+        if batch.upload_session_id is None:
+            raise NasSessionExpired("请重新登录后继续上传")
+        return self.auth.pool.get(batch.upload_session_id)
 
     def _root(self, batch: Batch) -> str:
         return self.paths.join(Region.TEMP, batch.batch_no, str(batch.payload["folder_name"]))
@@ -169,8 +173,10 @@ class UploadService:
 
     def _activate(self, session: Session, batch: Batch, host: str) -> None:
         if batch.id not in self._pinned:
-            self.auth.pool.pin(batch.uploader_id)
-            self._pinned.add(batch.id)
+            if batch.upload_session_id is None:
+                raise NasSessionExpired("请重新登录后继续上传")
+            self.auth.pool.pin(batch.upload_session_id)
+            self._pinned[batch.id] = batch.upload_session_id
         self._activity[batch.id] = time.monotonic()
         if self._busy(session, batch):
             if not batch.payload.get("queued"):
@@ -193,9 +199,9 @@ class UploadService:
 
     def _release(self, batch: Batch) -> None:
         self._activity.pop(batch.id, None)
-        if batch.id in self._pinned:
-            self._pinned.remove(batch.id)
-            self.auth.pool.unpin(batch.uploader_id)
+        pinned = self._pinned.pop(batch.id, None)
+        if pinned is not None:
+            self.auth.pool.unpin(pinned)
 
     def _finish_if_ready(self, session: Session, batch: Batch, host: str) -> None:
         session.flush()
@@ -206,10 +212,14 @@ class UploadService:
             self._log(session, batch, "上传已暂存", "uploader", host)
             self._release(batch)
 
-    def create(self, body: CreateBatchRequest, user: User, host: str) -> BatchResponse:
+    def create(self, body: CreateBatchRequest, login: LoginContext, host: str) -> BatchResponse:
         with self.lock:
             result = self._validate(body, body.acks)
             with self.database.session() as session:
+                user = session.get(User, login.user.id)
+                self._check_login(session, login)
+                if user is None or not user.enabled or not set(user.roles) & {"uploader", "first_reviewer", "final_reviewer"}:
+                    raise AppError("forbidden", "当前账号没有上传权限", 403)
                 code = result.project_code
                 if code == "H":
                     year = body.historical_year or datetime.now(timezone(timedelta(hours=8))).year
@@ -224,7 +234,7 @@ class UploadService:
                     raise AppError("preflight_blocked", "新编号后的路径不符合预检要求", 422)
                 token = secrets.token_urlsafe(32)
                 batch = Batch(batch_no=secrets.token_hex(16), project_code=code, kind="ingest", status=UPLOADING,
-                    owner_id=user.id, uploader_id=user.id, temp_path="", won=body.won,
+                    owner_id=user.id, uploader_id=user.id, upload_session_id=login.session_id, temp_path="", won=body.won,
                     payload={"folder_name": folder, "original_folder_name": body.folder_name, "queued": False,
                              "directories": [item.rel_path for item in body.files if item.is_dir], "upload_token_hash": token_hash(token)})
                 session.add(batch); session.flush()
@@ -244,9 +254,10 @@ class UploadService:
                     raise
             return response
 
-    def state(self, batch_id: int, user: User, host: str) -> BatchResponse:
-        with self.lock, self.database.session() as session:
-            batch = self._batch(session, batch_id, user)
+    def state(self, batch_id: int, login: LoginContext, host: str) -> BatchResponse:
+        with self._transfer(login, host) as session:
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login, batch)
             if batch.payload.get("queued"):
                 self._activate(session, batch, host)
             if batch.status == UPLOADING:
@@ -257,16 +268,19 @@ class UploadService:
         with self.lock, self.database.session() as session:
             return [self._snapshot(session, batch) for batch in session.scalars(select(Batch).where(Batch.uploader_id == user.id).order_by(Batch.id.desc()))]
 
-    def _receiving(self, session: Session, batch_id: int, user: User, file_id: int) -> tuple[Batch, BatchFile, NasFs]:
-        batch = self._batch(session, batch_id, user)
+    def _receiving(self, session: Session, batch_id: int, login: LoginContext, file_id: int) -> tuple[Batch, BatchFile, NasFs]:
+        batch = self._batch(session, batch_id, login.user)
+        self._check_login(session, login, batch)
         if batch.status != UPLOADING or batch.payload.get("queued"):
             raise AppError("batch_not_uploading", "批次当前不在上传中", 409)
         file = session.get(BatchFile, file_id)
         if file is None or file.batch_id != batch_id:
             raise AppError("file_not_found", "文件不存在于该批次", 404)
         if batch.id not in self._pinned:
-            self.auth.pool.pin(batch.uploader_id)
-            self._pinned.add(batch.id)
+            if batch.upload_session_id is None:
+                raise NasSessionExpired("请重新登录后继续上传")
+            self.auth.pool.pin(batch.upload_session_id)
+            self._pinned[batch.id] = batch.upload_session_id
         self._activity[batch.id] = time.monotonic()
         return batch, file, self._fs(batch)
 
@@ -297,11 +311,22 @@ class UploadService:
             self._hashes.pop((batch.id, file.id), None)
             self._log(session, batch, "校正分片偏移", "uploader", host)
 
-    def chunk(self, batch_id: int, file_id: int, index: int, data: bytes, user: User, host: str) -> dict[str, int]:
+    @contextmanager
+    def _transfer(self, login: LoginContext, host: str) -> Iterator[Session]:
+        with self.lock:
+            try:
+                with self.database.session() as session:
+                    yield session
+            except NasSessionExpired:
+                # 文件写失败则事务回滚，保留已确认的偏移，由重登录后的续传校正残留分片。
+                self.auth.disconnect(login.session_id, host)
+                raise
+
+    def chunk(self, batch_id: int, file_id: int, index: int, data: bytes, login: LoginContext, host: str) -> dict[str, int]:
         with self.lock:
             conflict: int | None = None
-            with self.database.session() as session:
-                batch, file, fs = self._receiving(session, batch_id, user, file_id)
+            with self._transfer(login, host) as session:
+                batch, file, fs = self._receiving(session, batch_id, login, file_id)
                 self._repair(session, batch, file, fs, host)
                 offset = index * self.chunk_bytes
                 length = min(self.chunk_bytes, file.size - offset)
@@ -336,9 +361,10 @@ class UploadService:
                 raise AppError("upload_offset_conflict", "分片偏移不一致", 409, {"bytes_received": conflict})
             return {"bytes_received": received}
 
-    def complete(self, batch_id: int, file_id: int, user: User, host: str) -> BatchResponse:
-        with self.lock, self.database.session() as session:
-            batch = self._batch(session, batch_id, user)
+    def complete(self, batch_id: int, file_id: int, login: LoginContext, host: str) -> BatchResponse:
+        with self._transfer(login, host) as session:
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login, batch)
             file = session.get(BatchFile, file_id)
             if file is None or file.batch_id != batch_id:
                 raise AppError("file_not_found", "文件不存在于该批次", 404)
@@ -346,7 +372,7 @@ class UploadService:
                 if self.thumbs is not None:
                     self.thumbs.enqueue(session, batch, file)
                 return self._snapshot(session, batch)
-            batch, file, fs = self._receiving(session, batch_id, user, file_id)
+            batch, file, fs = self._receiving(session, batch_id, login, file_id)
             if file.upload_status == "done":
                 if self.thumbs is not None:
                     self.thumbs.enqueue(session, batch, file)
@@ -373,9 +399,10 @@ class UploadService:
             self._finish_if_ready(session, batch, host)
             return self._snapshot(session, batch)
 
-    def pause(self, batch_id: int, user: User, host: str) -> BatchResponse:
+    def pause(self, batch_id: int, login: LoginContext, host: str) -> BatchResponse:
         with self.lock, self.database.session() as session:
-            batch = self._batch(session, batch_id, user)
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login, batch)
             if batch.status == UPLOADING:
                 batch.status = INTERRUPTED
                 batch.payload = {**batch.payload, "queued": False}
@@ -383,9 +410,10 @@ class UploadService:
                 self._release(batch)
             return self._snapshot(session, batch)
 
-    def cancel(self, batch_id: int, user: User, host: str) -> BatchResponse:
+    def cancel(self, batch_id: int, login: LoginContext, host: str) -> BatchResponse:
         with self.lock, self.database.session() as session:
-            batch = self._batch(session, batch_id, user)
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login)
             if batch.status == WITHDRAWN:
                 return self._snapshot(session, batch)
             if batch.status not in (UPLOADING, INTERRUPTED, STAGED, AI):
@@ -396,7 +424,7 @@ class UploadService:
                 fs.delete(root, recursive=True)
             batch.status = WITHDRAWN
             if self.ai is not None:
-                self.ai.cancel_jobs(session, batch, "批次已撤回", user.id, host)
+                self.ai.cancel_jobs(session, batch, "批次已撤回", login.user.id, host)
             if self.thumbs is not None:
                 self.thumbs.invalidate(batch.id)
             batch.payload = {**batch.payload, "upload_token_hash": None, "queued": False}
@@ -418,11 +446,14 @@ class UploadService:
             self._log(session, batch, "确认开始 AI 处理", "uploader", host)
             return self._snapshot(session, batch)
 
-    def resume(self, batch_id: int, body: ResumeRequest, user: User, host: str) -> BatchResponse:
-        with self.lock, self.database.session() as session:
-            batch = self._batch(session, batch_id, user)
+    def resume(self, batch_id: int, body: ResumeRequest, login: LoginContext, host: str) -> BatchResponse:
+        with self._transfer(login, host) as session:
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login)
             if batch.status not in (UPLOADING, INTERRUPTED):
                 raise AppError("invalid_batch_state", "该批次不能继续上传", 409)
+            if batch.status == UPLOADING and batch.upload_session_id != login.session_id:
+                raise AppError("upload_session_mismatch", "批次正在其他设备上传，请先在原设备暂停", 409)
             if body.folder_name not in (batch.payload["folder_name"], batch.payload["original_folder_name"]):
                 raise AppError("folder_mismatch", "请重新拖入同一个项目文件夹", 422)
             self._validate(body, body.acks)
@@ -433,7 +464,7 @@ class UploadService:
                            "directories": [] if sorted(batch.payload.get("directories", [])) == sorted(item.rel_path for item in body.files if item.is_dir) else ["空目录或目录清单变化"]}
             if any(differences.values()) and not body.accept_changes:
                 return self._snapshot(session, batch, differences=differences)
-            fs = self._fs(batch)
+            fs = self.auth.pool.get(login.session_id)
             if any(differences.values()):
                 for path in differences["missing"] + differences["changed"]:
                     target = self._file_path(batch, old[path])
@@ -477,11 +508,23 @@ class UploadService:
                 if code in {"P07", "P08", "P09"}:
                     session.add(PreflightAck(batch_id=batch.id, rule_code=code))
             self._release(batch)
+            batch.upload_session_id = login.session_id
             token = secrets.token_urlsafe(32)
             batch.payload = {**batch.payload, "upload_token_hash": token_hash(token)}
             self._activate(session, batch, host)
             self._log(session, batch, "继续上传", "uploader", host)
             return self._snapshot(session, batch, token if batch.status != STAGED else None, differences)
+
+    def session_closed(self, session_id: int, host: str) -> None:
+        with self.lock, self.database.session() as session:
+            for batch in session.scalars(select(Batch).where(Batch.upload_session_id == session_id, Batch.status == UPLOADING)):
+                self._interrupt(session, batch, host)
+
+    def _interrupt(self, session: Session, batch: Batch, host: str) -> None:
+        batch.status = INTERRUPTED
+        batch.payload = {**batch.payload, "queued": False, "upload_token_hash": None}
+        self._log(session, batch, "上传中断", "system", host)
+        self._release(batch)
 
     def _sweep(self) -> None:
         while not self._stop.wait(5):
@@ -490,13 +533,12 @@ class UploadService:
     def expire_idle(self) -> None:
         with self.lock, self.database.session() as session:
             for batch_id, last in tuple(self._activity.items()):
-                if time.monotonic() - last > 60:
-                    batch = session.get(Batch, batch_id)
-                    if batch and batch.status == UPLOADING:
-                        batch.status = INTERRUPTED
-                        batch.payload = {**batch.payload, "queued": False}
-                        self._log(session, batch, "上传中断", "system", "上传请求静默超时")
-                        self._release(batch)
+                batch = session.get(Batch, batch_id)
+                if batch is None or batch.status != UPLOADING:
+                    continue
+                login = session.get(UserSession, batch.upload_session_id) if batch.upload_session_id is not None else None
+                if login is None or login.revoked_at is not None or is_expired(login.expires_at) or time.monotonic() - last > 60:
+                    self._interrupt(session, batch, "上传请求或登录超时")
 
     def shutdown(self) -> None:
         self._stop.set()

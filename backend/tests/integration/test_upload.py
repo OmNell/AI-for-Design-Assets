@@ -121,20 +121,23 @@ def test_queue_h_code_cancel(upload_client: TestClient) -> None:
 
 
 @pytest.mark.parametrize("termination", ["expire", "logout"])
-def test_upload_token_survives_login_expiry_and_logout(upload_client: TestClient, termination: str) -> None:
+def test_upload_token_requires_login_after_expiry_or_logout(upload_client: TestClient, termination: str) -> None:
     client = upload_client
     batch = create(client)
+    assert chunk(client, batch, 0, b"abcd").status_code == 200
     if termination == "expire":
         with client.app.state.database.session() as session:
             session.execute(update(UserSession).values(expires_at=utcnow() - timedelta(hours=1)))
     else:
         assert client.post('/api/auth/logout').status_code == 200
-    assert client.get('/api/auth/me').status_code == 401
-    assert chunk(client, batch, 0, b"abcd").status_code == 200
-    # Cookie 已清除，上传状态与暂停仍由独立令牌授权。
-    assert client.get(f'/api/batches/{batch["id"]}/upload-state', headers=headers(batch)).status_code == 200
-    assert client.post(f'/api/batches/{batch["id"]}/pause', headers=headers(batch)).json()["status"] == "上传中断"
+    assert chunk(client, batch, 1, b"efgh").status_code == 401
+    assert client.get(f'/api/batches/{batch["id"]}/upload-state', headers=headers(batch)).status_code == 401
     assert client.get('/api/batches').status_code == 401
+    assert client.post('/api/auth/login', json={"username": "one", "password": "fake"}).status_code == 200
+    assert client.get(f'/api/batches/{batch["id"]}').json()["status"] == "上传中断"
+    resumed = client.post(f'/api/batches/{batch["id"]}/resume', json=body()).json()
+    assert resumed["files"][0]["bytes_received"] == 4
+    assert chunk(client, resumed, 1, b"efgh").status_code == 200
 
 
 def test_resume_same_manifest_changed_manifest_and_reset(upload_client: TestClient) -> None:
@@ -150,7 +153,7 @@ def test_resume_same_manifest_changed_manifest_and_reset(upload_client: TestClie
     assert accepted["files"][0]["bytes_received"] == 0 and accepted["upload_token"]
     assert chunk(client, accepted, 0, b"ABCD").status_code == 200
     assert client.post(f'/api/batches/{batch["id"]}/resume', json={**body(), "folder_name": "X_别家_项目"}).status_code == 422
-    assert chunk(client, batch, 0, b"abcd").status_code == 401
+    assert chunk(client, batch, 0, b"abcd").status_code == 409
 
 
 def test_file_tail_after_crash_is_rolled_back(upload_client: TestClient) -> None:
@@ -186,7 +189,7 @@ def test_other_user_tokens_ownership_role_and_wrong_file(upload_client: TestClie
     assert client.get('/api/batches/999').status_code == 404
     assert client.post('/api/batches/999/confirm').status_code == 404
     assert client.post(f'/api/batches/{batch["id"]}/files/999/complete', headers=headers(batch)).status_code == 404
-    assert client.get(f'/api/batches/{batch["id"]}/upload-state', headers={"X-Upload-Token": "invalid"}).status_code == 401
+    assert client.get(f'/api/batches/{batch["id"]}/upload-state', headers={"X-Upload-Token": "invalid"}).status_code == 409
     client.post('/api/auth/login', json={"username": "two", "password": "fake"})
     for url in (f'/api/batches/{batch["id"]}', f'/api/batches/{batch["id"]}/upload-state'):
         assert client.get(url).status_code == 403
@@ -255,3 +258,17 @@ def test_upload_permission_revocation_rejects_independent_token(upload_client: T
     assert chunk(client, batch, 0, b"abcd").status_code == 403
     assert client.post('/api/batches/precheck', json=body()).status_code == 403
     assert client.post('/api/batches', json=body()).status_code == 403
+
+
+def test_second_device_cannot_drive_active_session_of_same_user(upload_client: TestClient) -> None:
+    client = upload_client
+    batch = create(client)
+    auth = client.app.state.auth
+    original = client.cookies.get("nas_workbench_session")
+    assert client.post('/api/auth/login', json={"username": "one", "password": "fake"}).status_code == 200
+    assert chunk(client, batch, 0, b"abcd").json()["code"] == "upload_session_mismatch"
+    assert client.post(f'/api/batches/{batch["id"]}/resume', json=body()).status_code == 409
+    assert client.post('/api/auth/logout').status_code == 200
+    assert auth.context(original, "原设备").user.username == "one"
+    client.cookies.set("nas_workbench_session", original, domain="testserver.local", path="/")
+    assert chunk(client, batch, 0, b"abcd").status_code == 200

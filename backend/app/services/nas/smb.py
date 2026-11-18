@@ -7,11 +7,10 @@ import stat
 from typing import BinaryIO, Callable, Mapping, TypeVar, cast
 
 import smbclient
-from pydantic import SecretStr
 from smbprotocol.exceptions import SMBConnectionClosed
 from smbprotocol.session import Session
 
-from .errors import NasPermissionDenied, NasUnavailable, translate
+from .errors import NasPermissionDenied, NasSessionExpired, translate
 from .fs import BaseFs, NasStat
 from .paths import Access, NasPaths, Region, safe_join
 
@@ -37,49 +36,51 @@ class SmbFs(BaseFs):
         self.share = share
         self.username = username
         self.timeout = timeout
-        self._password: SecretStr | None = SecretStr(password)
+        self._disconnected = False
         self._cache: dict[str, object] = {}
         self._session: Session | None = None
         try:
-            self._connect()
+            self._connect(password)
         except Exception as error:
             self.close()
             raise translate(error) from None
 
-    def _connect(self) -> None:
-        if self._password is None:
-            raise NasUnavailable("SMB 会话凭据已清除，请重新登录")
+    def _connect(self, password: str) -> None:
         self._session = smbclient.register_session(
-            self.host, username=self.username, password=self._password.get_secret_value(),
+            self.host, username=self.username, password=password,
             connection_cache=self._cache, connection_timeout=self.timeout,
             auth_protocol="ntlm", require_signing=True,
         )
-        # 重连凭据只在实例中存一份，不让库对象继续持有明文密码引用。
+        # 已有连接不需要登录口令；连接失效时由本人重新登录。
         self._session.password = None
 
     def _options(self) -> dict[str, object]:
         return {"username": self.username, "connection_cache": self._cache,
                 "connection_timeout": self.timeout, "auth_protocol": "ntlm", "require_signing": True}
 
-    def _reconnect(self) -> None:
-        if self._streams:
-            raise NasUnavailable("存在活动文件句柄，不能透明重连，请关闭句柄后重试")
-        smbclient.reset_connection_cache(connection_cache=self._cache, fail_on_error=False)
-        self._session = None
-        self._connect()
+    def _check_connection(self) -> None:
+        if self._disconnected or self._session is None or not self._session.connection.transport.connected:
+            raise NasSessionExpired("SMB 连接已断开，请重新登录")
+
+    def touch(self) -> None:
+        with self._lock:
+            self._check_connection()
+            super().touch()
+
+    def _run(self, action: Callable[[], T]) -> T:
+        def checked() -> T:
+            try:
+                return action()
+            except Exception as error:
+                if disconnected(error):
+                    self._disconnected = True
+                    raise NasSessionExpired("SMB 连接已断开，请重新登录") from None
+                raise
+        return super()._run(checked)
 
     def _call(self, action: Callable[[], T], retry: bool = False) -> T:
-        reconnected = False
-        if self._session is None or not self._session.connection.transport.connected:
-            self._reconnect()
-            reconnected = True
-        try:
-            return action()
-        except Exception as error:
-            if retry and not reconnected and disconnected(error):
-                self._reconnect()
-                return action()
-            raise
+        self._check_connection()
+        return action()
 
     def _unc(self, path: str) -> str:
         # 禁止重解析点/符号链接把受限目录重定向到其他区域或共享。
@@ -131,6 +132,5 @@ class SmbFs(BaseFs):
         try:
             smbclient.reset_connection_cache(connection_cache=self._cache, fail_on_error=True)
         finally:
-            self._password = None
             self._session = None
             self._cache.clear()

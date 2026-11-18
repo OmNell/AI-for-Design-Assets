@@ -44,7 +44,7 @@ class ThumbService:
         payload = job.payload if isinstance(job.payload, dict) else {}
         batch = session.get(Batch, payload.get("batch_id"))
         file = session.get(BatchFile, payload.get("batch_file_id"))
-        if (batch is None or file is None or file.batch_id != batch.id or batch.status == "已撤回"
+        if (batch is None or file is None or file.batch_id != batch.id or batch.status in ("已撤回", "已终止")
             or file.upload_status != "done" or not is_main_image(file)
             or job.run_as_user_id != batch.uploader_id or payload.get("source_version") != source_version(file)):
             return None
@@ -63,7 +63,7 @@ class ThumbService:
         if job is not None and isinstance(job.payload, dict) and job.payload.get("source_version") == version:
             return
         job = self.queue.enqueue("thumb", {"batch_id": batch.id, "batch_file_id": file.id, "source_version": version},
-                                 run_as_user_id=batch.uploader_id, session=session)
+                                 run_as_user_id=batch.uploader_id, session=session, run_as_session_id=batch.upload_session_id)
         batch.payload = {**batch.payload, "thumb_jobs": {**references, str(file.id): job.id}}
 
     def on_job_state(self, session: Session, job: Job) -> None:
@@ -114,7 +114,7 @@ class ThumbService:
                 or current.id == batch.final_reviewer_id and "final_reviewer" in current.roles):
                 raise AppError("forbidden", "无权查看该批次缩略图", 403)
             file = session.get(BatchFile, file_id)
-            if batch.status == "已撤回" or file is None or file.batch_id != batch.id or not is_main_image(file):
+            if batch.status in ("已撤回", "已终止") or file is None or file.batch_id != batch.id or not is_main_image(file):
                 raise AppError("thumbnail_not_found", "缩略图不存在", 404, {"retryable": False})
             if size not in (300, 1600, 1024):
                 raise AppError("invalid_thumbnail_size", "图片尺寸不支持", 422)
@@ -130,7 +130,7 @@ class ThumbService:
         if directory.exists():
             shutil.rmtree(directory)
 
-    def resume_for_user(self, user_id: int) -> None:
+    def resume_for_user(self, user_id: int, session_id: int) -> None:
         # 重启后凭据仅能由本人重新登录恢复，不借用管理员或系统 NAS 账号。
         with self.auth.lock, self.auth.database.session() as session:
             for job in session.scalars(select(Job).where(Job.kind == "thumb", Job.run_as_user_id == user_id,
@@ -138,7 +138,7 @@ class ThumbService:
                 if self._source(session, job) is None:
                     continue
                 session.execute(update(Job).where(Job.id == job.id, Job.status == "failed").values(status="queued", attempts=0,
-                                error=None, scheduled_at=None, started_at=None, finished_at=None))
+                                error=None, scheduled_at=None, started_at=None, finished_at=None, run_as_session_id=session_id))
                 session.refresh(job)
                 self.on_job_state(session, job)
                 OplogService(session).write(user_id, "uploader", "恢复缩略图任务", "job", str(job.id),

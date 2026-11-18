@@ -61,23 +61,25 @@ def test_idle_upload_releases_own_session_and_resumes_durably(database: Database
     with create_session_pool(settings) as pool:
         auth = AuthService(database, pool, create_auth_backend(settings), settings)
         upload = UploadService(auth)
+        auth.on_close = upload.session_closed
         try:
-            user, token, _ = auth.login('one', 'fake', '本机')
+            _, token, _ = auth.login('one', 'fake', '本机')
+            login = auth.context(token, '本机')
             body = CreateBatchRequest(folder_name='P_企业_项目', won=True, acks=['P07', 'P08'], files=[ManifestEntry(rel_path='资料.txt', size=1)])
-            batch = upload.create(body, user, '本机')
-            upload.chunk(batch.id, batch.files[0].id, 0, b'X', user, '本机')
+            batch = upload.create(body, login, '本机')
+            upload.chunk(batch.id, batch.files[0].id, 0, b'X', login, '本机')
             auth.logout(token, '本机')
-            assert pool.get(user.id)
             clock[0] = 61
             upload.expire_idle()
             with pytest.raises(NasSessionExpired):
-                pool.get(user.id)
+                pool.get(login.session_id)
             with database.session() as session:
                 assert session.get(Batch, batch.id).status == '上传中断'
                 assert '上传中断' in list(session.scalars(select(Oplog.action)))
-            user, _, _ = auth.login('one', 'fake', '本机')
-            resumed = upload.resume(batch.id, ResumeRequest(folder_name=body.folder_name, files=body.files, acks=body.acks), user, '本机')
+            _, token, _ = auth.login('one', 'fake', '本机')
+            login = auth.context(token, '本机')
+            resumed = upload.resume(batch.id, ResumeRequest(folder_name=body.folder_name, files=body.files, acks=body.acks), login, '本机')
             assert resumed.files[0].bytes_received == 1
-            assert upload.complete(batch.id, batch.files[0].id, user, '本机').status == '已暂存'
+            assert upload.complete(batch.id, batch.files[0].id, login, '本机').status == '已暂存'
         finally:
             upload.shutdown()
