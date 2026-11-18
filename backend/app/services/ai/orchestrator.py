@@ -17,13 +17,13 @@ from app.errors import AppError
 from app.services.auth.service import AuthService
 from app.services.crypto import SecretCipher
 from app.services.jobs import JobContext, JobFailure, JobQueue
-from app.services.nas import NasPermissionDenied, safe_join
 from app.services.oplog import OplogService
 from app.services.thumbs import ThumbService, is_main_image, source_version
 from .client import AiCallError, AiClient, FakeAiClient
 from .field_catalog import fixed_fields
 from .parsing import FieldDefinition, parse_result
 from .vision import has_visual_evidence
+from app.services.admin.company_map import recommend
 from .settings import AiSettingsService, require_admin
 
 PROCESSING = "AI 处理中"
@@ -110,16 +110,7 @@ class AiService:
 
     @staticmethod
     def _recommend(session: Session, batch: Batch) -> str | None:
-        company = str(batch.payload["folder_name"]).split("_")[1]
-        matches = [row for row in session.scalars(select(CompanyIndustryMap)) if row.company_name == company or company in row.aliases]
-        if len(matches) != 1:
-            return None
-        row = matches[0]
-        try:
-            return safe_join("01已中标项目" if batch.won else "02未中标项目",
-                             f"{row.industry_seq:02d}{row.industry_name}", f"{row.company_seq:02d}{row.company_name}")
-        except NasPermissionDenied:
-            return None
+        return recommend(session, batch)
 
     def handle_batch(self, context: JobContext) -> None:
         with self.auth.lock, self.auth.database.session() as session:
@@ -268,7 +259,7 @@ class AiService:
                     nas.host, nas.share, nas.root_path, nas.temp_path, nas.backup_path]
         company = secrets_[1]
         for row in session.scalars(select(CompanyIndustryMap)):
-            if row.company_name == company or company in row.aliases:
+            if company.casefold() in {name.casefold() for name in [row.company_name, *row.aliases]}:
                 secrets_.extend([row.company_name, *row.aliases])
         def clean(value: str) -> str:
             for secret in sorted(filter(None, secrets_), key=len, reverse=True):

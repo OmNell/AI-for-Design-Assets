@@ -16,11 +16,12 @@ import time
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Batch, BatchFile, BatchProduct, Oplog, PreflightAck, ReviewSnapshot, TagField, User, utcnow
+from app.db.models import Batch, BatchFile, BatchProduct, Oplog, PreflightAck, ReviewRound, ReviewSnapshot, TagField, User, utcnow
 from app.errors import AppError
 from app.schemas.review import (BulkRequest, FolderFile, FolderGroup, OwnerResponse, Pending, ProductPatch, ProductUpdate,
                                 RelationView, ReviewBatch, ReviewField, ReviewProduct, ReviewResponse, TagValue, TagView)
 from app.services.ai.orchestrator import RELATION_FLAGS, REVIEWING, AiService, active_products
+from .history import round_history
 from app.services.ai.field_catalog import fixed_fields, FIXED_FIELDS
 from app.services.ai.vision import has_visual_evidence
 from app.services.ai.parsing import split_terms
@@ -184,7 +185,7 @@ class ReviewService:
             groups.setdefault(head if rest else "项目根目录", []).append(FolderFile(name=rest or head, size=file.size))
         owner = session.get(User, batch.owner_id)
         parts = str(batch.payload["folder_name"]).split("_")
-        return ReviewResponse(
+        return ReviewResponse(history=round_history(session, batch.id),
             batch=ReviewBatch(id=batch.id, batch_no=batch.batch_no, project_code=batch.project_code,
                 folder_name=str(batch.payload["folder_name"]), company_name=parts[1] if len(parts) == 3 else "",
                 project_name=parts[2] if len(parts) == 3 else "", status=batch.status, won=batch.won, round=batch.round,
@@ -197,15 +198,21 @@ class ReviewService:
             pending=self._pending(session, batch, products),
             folders=[FolderGroup(name=name, files=files) for name, files in groups.items()])
 
+    @staticmethod
+    def submitted_snapshot(session: Session, batch: Batch) -> ReviewSnapshot:
+        snapshot = session.scalar(select(ReviewSnapshot).where(ReviewSnapshot.batch_id == batch.id,
+                                  ReviewSnapshot.round == batch.round, ReviewSnapshot.digest == batch.review_snapshot_hash))
+        if snapshot is None:
+            raise AppError("snapshot_missing", "本轮缺少有效提交快照", 409)
+        return snapshot
+
     def read(self, batch_id: int, actor: User) -> ReviewResponse:
         with self.auth.lock, self.auth.database.session() as session:
             batch, user = self._readable(session, batch_id, actor)
             if batch.review_snapshot_hash and batch.status not in REVIEWING:
-                frozen = session.scalar(select(ReviewSnapshot).where(ReviewSnapshot.batch_id == batch.id,
-                                                                      ReviewSnapshot.round == batch.round))
-                if frozen is None or frozen.digest != batch.review_snapshot_hash:
-                    raise AppError("snapshot_missing", "找不到本轮提交版本", 409)
+                frozen = self.submitted_snapshot(session, batch)
                 view = ReviewResponse.model_validate(frozen.content["review"])
+                view.history = round_history(session, batch.id)
                 view.batch.status, view.batch.review_snapshot_hash = batch.status, frozen.digest
                 return view
             return self._response(session, batch, user)
@@ -574,6 +581,9 @@ class ReviewService:
             view = ReviewResponse.model_validate(content["review"])
             batch.round, batch.note_to_reviewer = view.batch.round, view.batch.note_to_reviewer
             batch.status, batch.review_snapshot_hash = SUBMITTED, digest
+            payload = {key: value for key, value in batch.payload.items() if key not in ("review_location", "claim_nonce")}
+            batch.payload = {**payload, "stage_since": utcnow().isoformat()}
+            batch.final_path = None
             batch.first_reviewer_id = batch.final_reviewer_id = None
             session.add(ReviewSnapshot(batch_id=batch.id, round=batch.round, submitted_by=user.id, digest=digest, content=content))
             self._log(session, user, "提交审核", "batch", batch.id, before,
@@ -583,6 +593,7 @@ class ReviewService:
 
     def change_owner(self, batch_id: int, user_id: int, actor: User, host: str) -> OwnerResponse:
         with self.auth.lock, self.auth.database.session() as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
             admin = self._user(session, actor)
             if "admin" not in admin.roles:
                 raise AppError("forbidden", "只有管理员可以更换责任人", 403)
@@ -598,6 +609,9 @@ class ReviewService:
                 raise AppError("invalid_owner", "新责任人必须是启用且具有上传权限的账号", 422)
             if batch.payload.get("ai_single"):
                 raise AppError("ai_in_progress", "请等待本次主图打标结束后更换责任人", 409)
+            if session.scalar(select(ReviewRound.id).where(ReviewRound.batch_id == batch.id,
+                    ReviewRound.reviewer_id == target.id, ReviewRound.decision.is_not(None)).limit(1)):
+                raise AppError("reviewer_conflict", "已审核过该批次的账号不能接任提交人", 409)
             before = {"owner_id": batch.owner_id}
             batch.owner_id = target.id
             self._log(session, admin, "更换批次责任人", "batch", batch.id, before, {"owner_id": target.id}, host)

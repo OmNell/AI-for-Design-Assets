@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Computed, text, JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Index
+from sqlalchemy import Computed, text, JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -201,6 +201,7 @@ class ReviewSnapshot(Base):
 
 class CompanyIndustryMap(Record, Base):
     __tablename__ = "company_industry_map"
+    __table_args__ = (Index("uq_company_directory_seq", "industry_seq", "company_seq", unique=True),)
     company_name: Mapped[str] = mapped_column(String, unique=True)
     aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
     company_seq: Mapped[int] = mapped_column(Integer)
@@ -229,3 +230,37 @@ class AiAlert(Record, Base):
     run_id: Mapped[str] = mapped_column(String)
     reason: Mapped[str] = mapped_column(Text)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Industry(Record, Base):
+    __tablename__ = "industries"
+    name: Mapped[str] = mapped_column(String, unique=True)
+    seq: Mapped[int] = mapped_column(Integer, unique=True)
+    last_company_seq: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ReviewRound(Record, Base):
+    """每个批次每轮每级一条：未决定时是领取人的草稿（承载暂存的钉图意见）。"""
+    __tablename__ = "review_rounds"
+    __table_args__ = (UniqueConstraint("batch_id", "round", "stage"),)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), index=True)
+    round: Mapped[int] = mapped_column(Integer)
+    stage: Mapped[str] = mapped_column(String)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("review_snapshots.id"))
+    execution_session_id: Mapped[int | None] = mapped_column(ForeignKey("sessions.id"))
+    path_change: Mapped[dict | None] = mapped_column(JSON)
+    reviewer_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    decision: Mapped[str | None] = mapped_column(String)
+    comment: Mapped[str | None] = mapped_column(Text)
+    checklist: Mapped[object | None] = mapped_column(JSON)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ReviewPin(Record, Base):
+    __tablename__ = "review_pins"
+    review_round_id: Mapped[int] = mapped_column(ForeignKey("review_rounds.id"), index=True)
+    batch_product_id: Mapped[int] = mapped_column(ForeignKey("batch_products.id"))
+    x: Mapped[float] = mapped_column(Float)
+    y: Mapped[float] = mapped_column(Float)
+    text: Mapped[str] = mapped_column(Text)

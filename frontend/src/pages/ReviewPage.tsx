@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useParams, useNavigate } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { appendProduct, bulkUpdate, changeOwner, getReview, patchProduct, removeProduct, retryProductAi, setRelations, submitReview,
-  type Pending, type ProductPatch, type ProductUpdate, type ReviewData, type ReviewField, type ReviewProduct } from '../api/review'
+  type Pending, type ProductPatch, type ProductUpdate, type ReviewData, type ReviewProduct } from '../api/review'
 import { DraftSaver, type SaveStatus } from '../lib/draftSaver'
 import { formatBytes, splitTerms } from '../lib/terms'
 import { useAuthStore } from '../stores/auth'
 import { GlassSurface } from '../components/glass/GlassSurface'
 import { GlassPanel } from '../components/glass/GlassPanel'
 import { GlassButton } from '../components/glass/GlassButton'
-import { GlassListItem } from '../components/glass/GlassListItem'
+import { ProductList, RoundHistory } from '../components/review/ProductList'
+import { TerminateBatchButton } from '../components/TerminateBatchButton'
 import { Thumb } from '../components/review/Thumb'
 import { ImageViewer } from '../components/review/ImageViewer'
 import { TagForm } from '../components/review/TagForm'
@@ -49,11 +50,6 @@ function pendingText(pending: Pending): string[] {
     pending.missing_main_image ? '缺少有效主图' : '', pending.yellow ? `黄色 ${pending.yellow} 项` : '', pending.relations_unconfirmed ? `套装关系未确认 ${pending.relations_unconfirmed} 个` : '',
     pending.failed ? `打标失败 ${pending.failed} 张` : '', pending.processing ? `正在打标 ${pending.processing} 张` : ''].filter(Boolean)
 }
-function marks(product: ReviewProduct, fields: ReviewField[]) {
-  const yellow = product.flags.includes('multi_object') || fields.some(field => product.tags[field.key]?.flag) || (product.kind === 'set' && !product.relation_confirmed)
-  return { yellow, red: product.ai_status === 'failed' || (product.ai_status === 'done' && !product.visual_ai_succeeded), busy: product.ai_status === 'pending' }
-}
-
 type Modal = 'bulk' | 'append' | 'remove' | 'owner' | null
 
 export function ReviewPage() {
@@ -62,6 +58,7 @@ export function ReviewPage() {
 }
 
 function ReviewWorkspace({ id }: { id: number }) {
+  const navigate = useNavigate()
   const valid = Number.isInteger(id) && id > 0
   const user = useAuthStore(state => state.user)
   const client = useQueryClient()
@@ -147,28 +144,20 @@ function ReviewWorkspace({ id }: { id: number }) {
   const draft = selected ? drafts[selected.id] ?? selected.relation_items.map(item => item.batch_product_id) : []
   const toggle = (productId: number, on: boolean) => setChecked(value => { const next = new Set(value); if (on) next.add(productId); else next.delete(productId); return next })
   const selection = products.filter(product => checked.has(product.id)).map(product => product.id)
-  const group = (kind: 'set' | 'item', title: string) => {
-    const rows = products.filter(product => product.kind === kind)
-    return <details open className="mb-3"><summary className="mb-2 cursor-pointer select-none text-xs font-medium text-slate-500">{title}（{rows.length}）</summary>
-      <ul className="space-y-1.5">{rows.map(product => {
-        const mark = marks(product, fields)
-        return <li key={product.id} className="review-row"><GlassListItem active={product.id === selected?.id}>
-          <div className="flex items-center gap-2 px-2 py-1.5">
-            <input type="checkbox" aria-label={`选择 ${product.display_name}`} checked={checked.has(product.id)} onChange={event => toggle(product.id, event.target.checked)} />
-            <button type="button" aria-current={product.id === selected?.id} className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={() => setCurrent(product.id)}>
-              <Thumb batchId={batch.id} fileId={product.batch_file_id} version={product.fingerprint ?? ''} alt={`${product.display_name} 缩略图`} />
-              <span className="min-w-0 flex-1 truncate text-sm" title={product.display_name}>{product.display_name}</span>
-              {mark.busy && <span className="shrink-0 rounded-full bg-sky-600 px-1.5 text-[11px] text-white" title="正在打标">…</span>}
-              {mark.yellow && <span className="shrink-0 rounded-full bg-amber-500 px-1.5 text-[11px] text-white" title="有待处理的黄色项">黄</span>}
-              {mark.red && <span className="shrink-0 rounded-full bg-red-600 px-1.5 text-[11px] text-white" title="打标失败，需重试或手填">红</span>}
-            </button></div></GlassListItem></li>
-      })}</ul>
-      {!rows.length && <p className="text-xs text-slate-400">没有{title}主图</p>}</details>
-  }
-
+  // 最近一次驳回（本轮）：横幅、列表标记与大图钉点都来自它。
+  const history = data.history ?? []
+  const rejection = batch.status === '已驳回' ? history.find(item => item.decision === 'reject') : undefined
+  const rejectPins = rejection?.pins ?? []
+  const pinCounts = rejectPins.reduce<Record<number, number>>((counts, pin) => ({ ...counts, [pin.batch_product_id]: (counts[pin.batch_product_id] ?? 0) + 1 }), {})
+  const isUploader = user?.id === batch.uploader_id
   return <div className="space-y-4">
     {batch.status === '已驳回' && <div data-testid="reject-banner" role="status" className="rounded-2xl border border-red-300/70 bg-red-100/70 px-5 py-3 text-sm text-red-900">
-      本批次已被驳回（第 {batch.round} 轮）。请按审核意见修改后重新提交；驳回意见将在审核功能开放后显示在这里。</div>}
+      <div className="flex items-start justify-between gap-4"><div className="min-w-0">
+        <p className="font-medium">本批次已被驳回（第 {batch.round} 轮）{rejection ? ` · ${rejection.stage === 'final' ? '终审' : '初审'} ${rejection.reviewer_name}` : ''}。请按意见修改后重新提交，将从初审重新开始。</p>
+        {rejection?.comment && <p className="mt-1 whitespace-pre-wrap">总体意见：{rejection.comment}</p>}
+        {!!rejectPins.length && <p className="mt-1 text-xs">有 {rejectPins.length} 条意见钉在图片上，列表中带「钉」标记的图选中后可在大图上查看。</p>}</div>
+        {isUploader && <TerminateBatchButton id={batch.id} disabled={busy} onTerminated={() => { void client.invalidateQueries({queryKey:['batches']}); navigate('/') }} />}</div>
+      {history.length > 1 && <details className="mt-2"><summary className="cursor-pointer text-xs">查看历次意见（{history.length}）</summary><div className="mt-2"><RoundHistory history={history} /></div></details>}</div>}
     <GlassSurface radius={24} className="px-6 py-4">
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0"><h1 className="truncate text-lg font-semibold">{batch.project_code} {batch.company_name} {batch.project_name}
@@ -195,7 +184,7 @@ function ReviewWorkspace({ id }: { id: number }) {
     {/* 三栏内部各自滚动：用次级玻璃，lite 模式下不挂实时滤镜，60 张以上主图滚动才流畅。 */}
     <div className="grid h-[calc(100vh-345px)] min-h-[560px] grid-cols-[270px_minmax(0,1fr)_400px] gap-4">
       <GlassSurface radius={24} priority="secondary" className="glass-fill min-h-0 p-3"><div className="flex h-full flex-col">
-        <div data-testid="product-list" className="min-h-0 flex-1 overflow-y-auto pr-1">{group('set', '套装')}{group('item', '单品')}</div>
+        <div data-testid="product-list" className="min-h-0 flex-1 overflow-y-auto pr-1"><ProductList batchId={batch.id} products={products} fields={fields} selectedId={selected?.id} onSelect={setCurrent} checked={editable ? checked : undefined} onToggle={toggle} pinCounts={pinCounts} /></div>
         {editable && <div className="mt-2 border-t border-slate-400/20 pt-2">
           <div className="mb-2 flex items-center justify-between text-xs text-slate-500"><span>已选 {selection.length} 张</span>
             <span><button type="button" className="underline underline-offset-4" onClick={() => setChecked(new Set(items.map(item => item.id)))}>全选单品</button>
@@ -208,7 +197,7 @@ function ReviewWorkspace({ id }: { id: number }) {
         <div className="mb-2 flex items-center justify-between gap-3 text-sm"><span className="truncate font-medium">{selected.display_name}</span>
           {selected.kind === 'set' && <label className="flex shrink-0 items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={sideBySide} onChange={event => setSideBySide(event.target.checked)} />并排显示包含的单品</label>}</div>
         <div className={`min-h-0 flex-1 ${selected.kind === 'set' && sideBySide ? 'grid grid-cols-2 gap-3' : ''}`}>
-          <ImageViewer key={selected.id} batchId={batch.id} fileId={selected.batch_file_id} version={selected.fingerprint ?? ''} name={selected.display_name} />
+          <ImageViewer key={selected.id} batchId={batch.id} fileId={selected.batch_file_id} version={selected.fingerprint ?? ''} name={selected.display_name} pins={rejectPins.filter(pin => pin.batch_product_id === selected.id)} />
           {selected.kind === 'set' && sideBySide && <div data-testid="side-items" className="min-h-0 overflow-y-auto rounded-2xl bg-white/20 p-2">
             <div className="grid grid-cols-2 gap-2">{items.filter(item => draft.includes(item.id)).map(item => <button type="button" key={item.id} className="rounded-xl bg-white/30 p-1.5 text-left hover:bg-white/50" onClick={() => setCurrent(item.id)}>
               <Thumb batchId={batch.id} fileId={item.batch_file_id} version={item.fingerprint ?? ''} size={1024} alt={`${item.display_name} 图片`} className="aspect-square w-full" />

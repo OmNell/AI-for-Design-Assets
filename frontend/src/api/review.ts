@@ -16,7 +16,9 @@ export interface ReviewBatch {
   status: string; won: boolean; round: number; owner_id: number; owner_name: string; uploader_id: number
   recommended_path: string | null; note_to_reviewer: string | null; editable: boolean; review_snapshot_hash: string | null
 }
-export interface ReviewData { batch: ReviewBatch; fields: ReviewField[]; products: ReviewProduct[]; pending: Pending; folders: FolderGroup[] }
+export interface PinView { batch_product_id: number; product_name: string; x: number; y: number; text: string }
+export interface RoundView { round: number; stage: string; reviewer_name: string; decision: string; comment: string | null; decided_at: string | null; pins: PinView[] }
+export interface ReviewData { history?: RoundView[]; batch: ReviewBatch; fields: ReviewField[]; products: ReviewProduct[]; pending: Pending; folders: FolderGroup[] }
 export interface ProductUpdate { product: ReviewProduct; pending: Pending }
 export interface ProductPatch { tags?: Record<string, string>; free_text?: string; confirmations?: Record<string, "confirmed_value" | "confirmed_unknown">; resolve_flags?: string[] }
 export interface TagValue { term: string; count: number }
