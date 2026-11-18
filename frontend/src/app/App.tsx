@@ -18,6 +18,7 @@ import { ComponentsPage } from '../pages/ComponentsPage'
 import { AiSettingsPage } from '../pages/AiSettingsPage'
 import { TagFieldsPage } from '../pages/TagFieldsPage'
 import { BatchDetailPage } from '../pages/BatchDetailPage'
+import { ReviewPage } from '../pages/ReviewPage'
 import { canAccess, navigation, type NavigationItem } from './navigation'
 
 
@@ -76,6 +77,7 @@ function AuthBootstrap() {
       </RoleGuard>} />)}
       <Route path="/admin/tag-fields" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><TagFieldsPage /></RoleGuard>} />
       <Route path="/batches/:id" element={<BatchDetailPage />} />
+      <Route path="/batches/:id/review" element={<ReviewPage />} />
       <Route path="/components" element={<DevComponents />} /><Route path="*" element={<PlaceholderPage title="页面不存在" />} />
     </Route></Route></Routes>
 }

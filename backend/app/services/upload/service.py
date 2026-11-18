@@ -9,7 +9,7 @@ import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import func, select, true
+from sqlalchemy import func, or_, select, true
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
@@ -23,7 +23,7 @@ from app.services.oplog import OplogService
 from app.services.preflight import check, ignored
 from .fingerprint import HashState, fingerprint
 from app.services.thumbs import ThumbService, is_main_image
-from app.services.ai.orchestrator import AiService
+from app.services.ai.orchestrator import AiService, active_products
 from app.services.ai.vision import has_visual_evidence
 
 UPLOADING = "上传中"
@@ -127,7 +127,7 @@ class UploadService:
         session.flush()
         files = list(session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id).order_by(BatchFile.id)))
         file_by_id = {file.id: file for file in files}
-        products = list(session.scalars(select(BatchProduct).where(BatchProduct.batch_id == batch.id).order_by(BatchProduct.id)))
+        products = active_products(session, batch.id)
         proven = {product.id for product in products if product.batch_file_id in file_by_id
                   and has_visual_evidence(product, file_by_id[product.batch_file_id])}
         return BatchResponse(id=batch.id, batch_no=batch.batch_no, project_code=batch.project_code,
@@ -163,11 +163,13 @@ class UploadService:
             if batch is None:
                 raise AppError("batch_not_found", "批次不存在", 404)
             user = session.get(User, login.user.id)
-            if user is None or not user.enabled or not ("admin" in user.roles or user.id == batch.uploader_id and set(user.roles) & {"uploader", "first_reviewer", "final_reviewer"}):
+            if user is None or not user.enabled or not ("admin" in user.roles or user.id == batch.owner_id and set(user.roles) & {"uploader", "first_reviewer", "final_reviewer"}):
                 raise AppError("forbidden", "只有上传人或管理员可以重试 AI", 403)
             if batch.status not in (AI, "待核对", "AI 处理失败") or self.ai is None:
                 raise AppError("invalid_batch_state", "该批次当前不能重试 AI", 409)
             self._check_login(session, login)
+            if batch.status == "待核对" and (user.id != batch.owner_id or not set(user.roles) & {"uploader", "first_reviewer", "final_reviewer"}):
+                raise AppError("forbidden", "只有当前责任人可以重新识别核对中的批次", 403)
             self._verify_for_ai(session, batch, login, host)
             self.ai.start_batch(session, batch, user, host)
             OplogService(session).write(user.id, ",".join(user.roles), "重试整批 AI", "batch", str(batch.id), None, {"status": AI}, "成功", host)
@@ -306,7 +308,7 @@ class UploadService:
 
     def list(self, user: User) -> list[BatchResponse]:
         with self.lock, self.database.session() as session:
-            return [self._snapshot(session, batch) for batch in session.scalars(select(Batch).where(Batch.uploader_id == user.id).order_by(Batch.id.desc()))]
+            return [self._snapshot(session, batch) for batch in session.scalars(select(Batch).where(or_(Batch.uploader_id == user.id, Batch.owner_id == user.id)).order_by(Batch.id.desc()))]
 
     def _receiving(self, session: Session, batch_id: int, login: LoginContext, file_id: int) -> tuple[Batch, BatchFile, NasFs]:
         batch = self._batch(session, batch_id, login.user)

@@ -15,7 +15,7 @@ function Product({ product, batch }: { product: BatchProduct; batch: Batch }) {
   const file = batch.files.find(value => value.id === product.batch_file_id)
   const names = new Map(batch.products?.map(value => [value.id, value.display_name]))
   return <GlassCard><div className="flex items-start justify-between gap-5"><div><h3 className="font-semibold">{product.display_name}</h3><p className="mt-2 text-xs text-slate-500">{product.kind === 'item' ? '单品' : '套装'} · {product.ai_status === 'done' ? '打标完成' : product.ai_status === 'failed' ? '打标失败' : '等待处理'}</p></div>{file && <ThumbnailPreview batchId={batch.id} file={file} />}</div>
-    {product.ai_status === 'done' && product.visual_ai_succeeded === false && <p className="mt-4 text-sm text-amber-800">当前主图缺少已验证的视觉识别结果，请重试整批 AI。</p>}
+    {product.ai_status === 'done' && product.visual_ai_succeeded === false && <p className="mt-4 text-sm text-amber-800">当前主图缺少已验证的视觉识别结果，请重新打标。</p>}
     {product.ai_error && <p className="mt-4 text-sm text-red-800">{product.ai_error}</p>}
     {product.flags.includes('multi_object') && <p className="mt-4 rounded-xl bg-amber-100/65 p-3 text-sm text-amber-900">一图识别到多个商品</p>}
     {product.flags.includes('empty_relation') && <p className="mt-4 rounded-xl bg-amber-100/65 p-3 text-sm text-amber-900">套装推荐清单为空</p>}
@@ -53,16 +53,17 @@ export function BatchDetailPage() {
     {value.status === 'AI 处理中' && <p role="status" className="mt-4 text-sm text-slate-500">正在按单品、套装的顺序处理，请稍候…</p>}
     {error && <p role="alert" className="mt-4 text-red-800">{error}</p>}
     <div className="mt-6 flex gap-4">{value.status === '已暂存' && canOperate && <GlassButton disabled={busy} onClick={() => void act(() => confirmBatch(id))}>确认，开始 AI 处理</GlassButton>}
-      {['AI 处理中', 'AI 处理失败', '待核对'].includes(value.status) && canRetry && <GlassButton disabled={busy} onClick={() => void act(() => retryAi(id))}>重试整批 AI</GlassButton>}
-      {['上传中', '上传中断', '已暂存', 'AI 处理中', 'AI 处理失败', '待核对'].includes(value.status) && canOperate && <TerminateBatchButton id={id} disabled={busy} onTerminated={result => {
+      {['AI 处理中', 'AI 处理失败', '待核对'].includes(value.status) && (value.status === '待核对' ? user?.id === value.owner_id : canRetry) && <GlassButton disabled={busy} onClick={() => void act(() => retryAi(id))}>重试整批 AI</GlassButton>}
+      {['上传中', '上传中断', '已暂存', 'AI 处理中', 'AI 处理失败', '待核对', '已驳回', '待初审', '待终审'].includes(value.status) && canOperate && <TerminateBatchButton id={id} disabled={busy} onTerminated={result => {
         query.setQueryData(['batch', id], result)
         void query.invalidateQueries({ queryKey: ['batches'] })
       }} />}
+      {['待核对', '已驳回', '待初审', '待终审'].includes(value.status) && <Link to={`/batches/${id}/review`} className="self-center text-emerald-800 underline">{['待核对','已驳回'].includes(value.status) ? '进入核对页' : '查看提交版本'}</Link>}
       {['上传中', '上传中断'].includes(value.status) && canOperate && <Link to={`/upload?resume=${id}`} className="text-sm text-emerald-800 underline underline-offset-4">继续上传</Link>}</div>
   </GlassPanel>
     <div className="grid grid-cols-3 gap-5"><GlassCard><p className="text-sm text-slate-500">单品完成</p><p className="mt-3 text-2xl">{progress.items_done} / {progress.items_total}</p></GlassCard><GlassCard><p className="text-sm text-slate-500">套装完成</p><p className="mt-3 text-2xl">{progress.sets_done} / {progress.sets_total}</p></GlassCard><GlassCard><p className="text-sm text-slate-500">失败</p><p className="mt-3 text-2xl">{progress.failed}</p></GlassCard></div>
     {value.termination_reason && <p className="text-sm text-slate-600">终止原因：{value.termination_reason}</p>}
     {!['已撤回', '已终止'].includes(value.status) && !!products.length && <div className="grid grid-cols-2 gap-5">{products.map(product => <Product key={product.id} product={product} batch={value} />)}</div>}
-    {value.status === '待核对' && <p className="text-sm text-slate-500">AI 处理已结束。本页只展示结果，核对编辑功能将在后续工作包开放。</p>}
+    {value.status === '待核对' && <p className="text-sm text-slate-500">AI 处理已结束。本页只展示结果，请进入核对页逐项确认。</p>}
   </div>
 }

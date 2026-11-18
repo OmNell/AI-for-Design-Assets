@@ -46,12 +46,13 @@ class ThumbService:
         file = session.get(BatchFile, payload.get("batch_file_id"))
         if (batch is None or file is None or file.batch_id != batch.id or batch.status in ("已撤回", "已终止")
             or file.upload_status != "done" or not is_main_image(file)
-            or job.run_as_user_id != batch.uploader_id or payload.get("source_version") != source_version(file)):
+            or (file.removed or job.run_as_user_id not in (batch.owner_id, batch.uploader_id)) or payload.get("source_version") != source_version(file)):
             return None
         return batch, file
 
-    def enqueue(self, session: Session, batch: Batch, file: BatchFile) -> None:
-        if not is_main_image(file):
+    def enqueue(self, session: Session, batch: Batch, file: BatchFile, *, actor_id: int | None = None,
+                session_id: int | None = None, retry: bool = False) -> None:
+        if file.removed or not is_main_image(file):
             return
         version = source_version(file)
         # 调用方持有认证锁，与 complete 同一事务，重复完成不会派发两次。
@@ -61,11 +62,13 @@ class ThumbService:
         existing_id = references.get(str(file.id))
         job = session.get(Job, existing_id) if isinstance(existing_id, int) else None
         if job is not None and isinstance(job.payload, dict) and job.payload.get("source_version") == version:
-            if job.status != "done" or file.thumb_fingerprint == file.fingerprint:
+            cached = (self._directory(batch.id, file.id) / "1024.jpg").is_file()
+            if (job.status in ("queued", "running") or job.status == "failed" and not retry
+                    or job.status == "done" and cached and file.thumb_fingerprint == file.fingerprint):
                 return
         file.thumb_status, file.thumb_error, file.thumb_fingerprint = "pending", None, None
         job = self.queue.enqueue("thumb", {"batch_id": batch.id, "batch_file_id": file.id, "source_version": version},
-                                 run_as_user_id=batch.uploader_id, session=session, run_as_session_id=batch.upload_session_id)
+                                 run_as_user_id=actor_id or batch.uploader_id, session=session, run_as_session_id=session_id or batch.upload_session_id)
         batch.payload = {**batch.payload, "thumb_jobs": {**references, str(file.id): job.id}}
 
     def on_job_state(self, session: Session, job: Job) -> None:
@@ -127,7 +130,7 @@ class ThumbService:
                 or current.id == batch.final_reviewer_id and "final_reviewer" in current.roles):
                 raise AppError("forbidden", "无权查看该批次缩略图", 403)
             file = session.get(BatchFile, file_id)
-            if batch.status in ("已撤回", "已终止") or file is None or file.batch_id != batch.id or not is_main_image(file):
+            if batch.status in ("已撤回", "已终止") or file is None or file.batch_id != batch.id or file.removed or not is_main_image(file):
                 raise AppError("thumbnail_not_found", "缩略图不存在", 404, {"retryable": False})
             if size not in (300, 1600, 1024):
                 raise AppError("invalid_thumbnail_size", "图片尺寸不支持", 422)

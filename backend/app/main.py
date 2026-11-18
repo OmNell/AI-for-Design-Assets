@@ -32,6 +32,8 @@ from app.services.ai.orchestrator import AiService
 from app.services.ai.settings import AiSettingsService
 from app.services.ai.fields import TagFieldService
 from app.api.ai_settings import router as ai_settings_router
+from app.api.review import router as review_router
+from app.services.review import ReviewService
 from app.api.ai_runtime import router as ai_runtime_router
 from app.db.models import Job
 from sqlalchemy.orm import Session
@@ -79,6 +81,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             application.state.auth.on_login = thumbs.resume_for_user
             upload = UploadService(application.state.auth, thumbs, ai)
             application.state.upload = upload
+            application.state.review = ReviewService(application.state.auth, thumbs, ai)
             application.state.auth.on_close = upload.session_closed
             jobs.start()
             ai.start()
@@ -129,6 +132,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
     application.include_router(upload_router)
     application.include_router(ai_settings_router)
     application.include_router(ai_runtime_router)
+    application.include_router(review_router)
     static_root = static_dir.resolve()
 
     @application.get("/{path:path}", include_in_schema=False)
