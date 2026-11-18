@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from app.db.database import Database
-from app.db.models import Job, Oplog, User, utcnow
+from app.db.models import Job, Oplog, User, UserSession, utcnow
 from app.errors import AppError
 from app.services.jobs import JobContext, JobFailure, JobQueue
 from app.services.nas import Access, LocalFs, Region, SessionPool
@@ -172,15 +172,19 @@ def test_missing_session_fails_without_running_handler_or_retry(database: Databa
 def test_handler_receives_only_own_fs(database: Database, tmp_path: Path) -> None:
     with database.session() as session:
         user = User(username='one', roles=['uploader']); session.add(user); session.flush()
+        first = UserSession(user_id=user.id, token_hash="first", client_host="设备甲", expires_at=utcnow() + timedelta(hours=1))
+        second = UserSession(user_id=user.id, token_hash="second", client_host="设备乙", expires_at=utcnow() + timedelta(hours=1))
+        session.add_all([first, second]); session.flush()
     with make_pool(tmp_path) as pool:
-        own = pool.open(user.id, 'one', 'fake')
+        pool.open(first.id, 'one', 'fake')
+        own = pool.open(second.id, 'one', 'fake')
         queue = JobQueue(database, pool)
         def handler(context: JobContext) -> None:
             assert context.fs is own
             with context.fs.open_write('工作台临时区/own') as stream:
                 stream.write(b'own')
         queue.register('thumb', handler)
-        job = queue.enqueue('thumb', {}, user.id)
+        job = queue.enqueue('thumb', {}, user.id, run_as_session_id=second.id)
         assert queue.run_once()
         assert job_state(database, job.id).status == 'done'
         with own.open_read('工作台临时区/own') as stream:

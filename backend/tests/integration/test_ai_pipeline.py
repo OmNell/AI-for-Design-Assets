@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import select
 
 from app.config import DevUser, Settings
-from app.db.models import AiAlert, AiCall, Batch, BatchProduct, CompanyIndustryMap, Job, User, utcnow
+from app.db.models import AiAlert, AiCall, Batch, BatchFile, BatchProduct, CompanyIndustryMap, Job, User, utcnow
 from app.main import create_app
 
 
@@ -32,12 +32,12 @@ def login(client: TestClient, user: str = 'one') -> None:
     assert client.post('/api/auth/login', json={'username': user, 'password': 'fake'}).status_code == 200
 
 
-def uploaded(client: TestClient, paths: list[str], company: str = '企业') -> dict:
+def uploaded(client: TestClient, paths: list[str], company: str = '企业', project_code: str = 'P001') -> dict:
     source = BytesIO()
     with Image.new('RGB', (1200, 800), 'blue') as image:
         image.save(source, 'JPEG')
     content = source.getvalue()
-    response = client.post('/api/batches', json={'folder_name': f'P001_{company}_项目', 'won': True, 'acks': ['P08'],
+    response = client.post('/api/batches', json={'folder_name': f'{project_code}_{company}_项目', 'won': True, 'acks': ['P08'],
         'files': [{'rel_path': path, 'size': len(content), 'mtime': 1} for path in paths]})
     assert response.status_code == 200, response.text
     batch = response.json()
@@ -69,7 +69,15 @@ def test_six_items_two_sets_order_flags_terms_and_known_company(client: TestClie
         if product['ai_status'] != 'done':
             continue
         assert len(product['tags']) == 11 and product['free_text']
-        assert all(tag['value'] and tag['source'] == 'ai' and tag['value'] == tag['ai_value'] for tag in product['tags'].values())
+        assert product["visual_ai_succeeded"]
+        for key, tag in product["tags"].items():
+            assert tag["source"] == "ai"
+            if tag["flag"] == "uncertain":
+                assert tag["value"] == "" and tag["terms"] == [] and tag["ai_value"] == "无法判断"
+            elif key == "festival":
+                assert tag["value"] == tag["ai_value"] == "" and tag["terms"] == []
+            else:
+                assert tag["value"] and tag["value"] == tag["ai_value"]
     assert any(tag['flag'] == 'uncertain' for tag in products['无法判断']['tags'].values())
     assert products['一图多品']['flags'] == ['multi_object']
     assert products['空关系']['flags'] == ['empty_relation'] and not products['空关系']['relation_confirmed']
@@ -102,7 +110,7 @@ def test_all_failed_retry_owner_admin_and_unknown_location(client: TestClient) -
     assert client.post(f"/api/batches/{batch['id']}/retry-ai").status_code == 200
     assert client.app.state.jobs.wait_idle()
     assert client.post('/api/batches/999/retry-ai').status_code == 404
-    staged = uploaded(client, ['单品/未确认.jpg'])
+    staged = uploaded(client, ['单品/未确认.jpg'], '陌生企业', project_code='P002')
     assert client.post(f"/api/batches/{staged['id']}/retry-ai").status_code == 409
 
 
@@ -119,18 +127,18 @@ def test_cancel_pending_and_running_ai_does_not_publish_late_result(client: Test
     assert client.post(f"/api/batches/{batch['id']}/confirm").status_code == 200
     try:
         assert entered.wait(2)
-        response = client.post(f"/api/batches/{batch['id']}/cancel")
-        assert response.status_code == 200 and response.json()['status'] == '已撤回'
+        response = client.post(f"/api/batches/{batch['id']}/cancel", json={'reason': '本次无需继续'})
+        assert response.status_code == 200 and response.json()['status'] == '已终止'
     finally:
         release.set()
     assert client.app.state.jobs.wait_idle()
     with client.app.state.database.session() as session:
-        assert session.get(Batch, batch['id']).status == '已撤回'
+        assert session.get(Batch, batch['id']).status == '已终止'
         assert all(not product.tags for product in session.scalars(select(BatchProduct).where(BatchProduct.batch_id == batch['id'])))
-        assert any(job.status == 'failed' and job.error == '批次已撤回' for job in session.scalars(select(Job).where(Job.kind == 'ai_tag_product')))
+        assert any(job.status == 'failed' and job.error == '批次已终止' for job in session.scalars(select(Job).where(Job.kind == 'ai_tag_product')))
 
 
-def test_new_field_next_batch_and_stall_alert_is_deduplicated(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_updated_hint_for_next_batch_and_stall_alert_is_deduplicated(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services.ai.client import FakeAiClient
     original = FakeAiClient.generate
     seen = []
@@ -140,7 +148,8 @@ def test_new_field_next_batch_and_stall_alert_is_deduplicated(client: TestClient
     monkeypatch.setattr(FakeAiClient, 'generate', capture)
     login(client, 'admin')
     fields = client.get('/api/admin/tag-fields').json()
-    fields['fields'].append({'key': 'new_field', 'label': '新增字段', 'hint': '仅描述图中可见细节', 'sort_order': 12, 'enabled': True})
+    fields["fields"] = [{key: field[key] for key in ("key", "hint", "sort_order")} for field in fields["fields"]]
+    fields["fields"][0]["hint"] = "仅描述图中可见细节"
     assert client.put('/api/admin/tag-fields', json=fields).status_code == 200
     test = client.post('/api/settings/ai/test')
     assert test.status_code == 200 and len(test.json()['results']) == 3
@@ -149,9 +158,9 @@ def test_new_field_next_batch_and_stall_alert_is_deduplicated(client: TestClient
     assert client.post('/api/settings/ai/test').status_code == 403
     assert client.get('/api/admin/ai-alerts').status_code == 403
     result = confirm(client, uploaded(client, ['单品/正常.jpg']))
-    assert 'new_field' in result['products'][0]['tags']
-    assert result['tag_labels']['new_field'] == '新增字段'
-    assert any(field['key'] == 'new_field' and field['hint'] == '仅描述图中可见细节' for field in seen)
+    assert len(result['products'][0]['tags']) == 11
+    assert result['tag_labels']['category'] == '品类'
+    assert any(field['key'] == 'category' and field['hint'] == '仅描述图中可见细节' for field in seen)
     with client.app.state.database.session() as session:
         batch = session.get(Batch, result['id'])
         batch.status = 'AI 处理中'
@@ -190,3 +199,17 @@ def test_production_payload_has_only_review_image_and_sanitized_candidate_text(c
             assert max(decoded.size) <= 1024 and not decoded.getexif()
     finally:
         real.close()
+
+
+def test_only_visual_success_on_current_fingerprint_counts(client: TestClient) -> None:
+    result = confirm(client, uploaded(client, ['单品/正常.jpg', '单品/调用失败.jpg']))
+    good, failed = sorted(result["products"], key=lambda item: not item["visual_ai_succeeded"])
+    assert good["visual_ai_succeeded"] and not failed["visual_ai_succeeded"]
+    with client.app.state.database.session() as session:
+        old = session.get(BatchProduct, failed["id"])
+        old.ai_status = "done"
+        old.tags = {"category": {"value": "手工标签"}}
+        image = session.get(BatchFile, good["batch_file_id"])
+        image.fingerprint = "0" * 64
+    current = client.get(f"/api/batches/{result['id']}").json()
+    assert all(not item["visual_ai_succeeded"] for item in current["products"])

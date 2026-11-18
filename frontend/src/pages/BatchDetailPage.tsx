@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { getBatch, confirmBatch, cancelBatch, retryAi, type Batch, type BatchProduct } from '../api/upload'
+import { getBatch, confirmBatch, retryAi, type Batch, type BatchProduct } from '../api/upload'
 import { useAuthStore } from '../stores/auth'
 import { GlassPanel } from '../components/glass/GlassPanel'
 import { GlassCard } from '../components/glass/GlassCard'
 import { GlassButton } from '../components/glass/GlassButton'
+import { TerminateBatchButton } from '../components/TerminateBatchButton'
 import { ThumbnailPreview } from '../components/ThumbnailPreview'
 
 const initialLabels: Record<string, string> = { category: '品类', material: '材质', color: '主色', style: '风格', festival: '节日场景', audience: '受众群体', usage_scene: '使用场景', size: '尺寸', craft: '工艺', material_name: '物料名称', structure: '结构' }
@@ -14,6 +15,7 @@ function Product({ product, batch }: { product: BatchProduct; batch: Batch }) {
   const file = batch.files.find(value => value.id === product.batch_file_id)
   const names = new Map(batch.products?.map(value => [value.id, value.display_name]))
   return <GlassCard><div className="flex items-start justify-between gap-5"><div><h3 className="font-semibold">{product.display_name}</h3><p className="mt-2 text-xs text-slate-500">{product.kind === 'item' ? '单品' : '套装'} · {product.ai_status === 'done' ? '打标完成' : product.ai_status === 'failed' ? '打标失败' : '等待处理'}</p></div>{file && <ThumbnailPreview batchId={batch.id} file={file} />}</div>
+    {product.ai_status === 'done' && product.visual_ai_succeeded === false && <p className="mt-4 text-sm text-amber-800">当前主图缺少已验证的视觉识别结果，请重试整批 AI。</p>}
     {product.ai_error && <p className="mt-4 text-sm text-red-800">{product.ai_error}</p>}
     {product.flags.includes('multi_object') && <p className="mt-4 rounded-xl bg-amber-100/65 p-3 text-sm text-amber-900">一图识别到多个商品</p>}
     {product.flags.includes('empty_relation') && <p className="mt-4 rounded-xl bg-amber-100/65 p-3 text-sm text-amber-900">套装推荐清单为空</p>}
@@ -52,11 +54,15 @@ export function BatchDetailPage() {
     {error && <p role="alert" className="mt-4 text-red-800">{error}</p>}
     <div className="mt-6 flex gap-4">{value.status === '已暂存' && canOperate && <GlassButton disabled={busy} onClick={() => void act(() => confirmBatch(id))}>确认，开始 AI 处理</GlassButton>}
       {['AI 处理中', 'AI 处理失败', '待核对'].includes(value.status) && canRetry && <GlassButton disabled={busy} onClick={() => void act(() => retryAi(id))}>重试整批 AI</GlassButton>}
-      {value.status === 'AI 处理中' && canOperate && <GlassButton disabled={busy} primary={false} onClick={() => void act(() => cancelBatch(id))}>撤回批次</GlassButton>}
+      {['上传中', '上传中断', '已暂存', 'AI 处理中', 'AI 处理失败', '待核对'].includes(value.status) && canOperate && <TerminateBatchButton id={id} disabled={busy} onTerminated={result => {
+        query.setQueryData(['batch', id], result)
+        void query.invalidateQueries({ queryKey: ['batches'] })
+      }} />}
       {['上传中', '上传中断'].includes(value.status) && canOperate && <Link to={`/upload?resume=${id}`} className="text-sm text-emerald-800 underline underline-offset-4">继续上传</Link>}</div>
   </GlassPanel>
     <div className="grid grid-cols-3 gap-5"><GlassCard><p className="text-sm text-slate-500">单品完成</p><p className="mt-3 text-2xl">{progress.items_done} / {progress.items_total}</p></GlassCard><GlassCard><p className="text-sm text-slate-500">套装完成</p><p className="mt-3 text-2xl">{progress.sets_done} / {progress.sets_total}</p></GlassCard><GlassCard><p className="text-sm text-slate-500">失败</p><p className="mt-3 text-2xl">{progress.failed}</p></GlassCard></div>
-    {value.status !== '已撤回' && !!products.length && <div className="grid grid-cols-2 gap-5">{products.map(product => <Product key={product.id} product={product} batch={value} />)}</div>}
+    {value.termination_reason && <p className="text-sm text-slate-600">终止原因：{value.termination_reason}</p>}
+    {!['已撤回', '已终止'].includes(value.status) && !!products.length && <div className="grid grid-cols-2 gap-5">{products.map(product => <Product key={product.id} product={product} batch={value} />)}</div>}
     {value.status === '待核对' && <p className="text-sm text-slate-500">AI 处理已结束。本页只展示结果，核对编辑功能将在后续工作包开放。</p>}
   </div>
 }

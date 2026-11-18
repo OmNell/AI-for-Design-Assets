@@ -55,14 +55,19 @@ def parse_result(raw: str, fields: list[FieldDefinition], kind: str = "item",
     source = document.get("tags", document)
     if not isinstance(source, dict):
         raise AiResponseError("模型标签必须是对象")
+    description = document.get("free_text", "")
+    if not any(isinstance(source.get(field["key"]), str) for field in fields) and not (isinstance(description, str) and description.strip()):
+        raise AiResponseError("模型未返回识别内容")
     tags: dict[str, TagValue] = {}
     for field in fields:
-        value = source.get(field["key"], "")
-        if not isinstance(value, str):
+        raw_value = source.get(field["key"])
+        ai_value = raw_value if isinstance(raw_value, str) else ""
+        uncertain = not isinstance(raw_value, str) or ai_value.strip() in {"无法判断", "无法确定"}
+        value = "" if uncertain else ai_value
+        if field["key"] == "festival" and value.strip() == "通用":
             value = ""
         tags[field["key"]] = {"value": value, "terms": split_terms(value), "source": "ai",
-                              "ai_value": value, "flag": "uncertain" if value.strip() == "无法判断" else None}
-    description = document.get("free_text", "")
+                              "ai_value": ai_value, "flag": "uncertain" if uncertain else None}
     flags: list[str] = []
     if kind == "item" and document.get("multi_object") is True:
         flags.append("multi_object")

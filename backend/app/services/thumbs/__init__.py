@@ -8,14 +8,14 @@ import re
 import shutil
 import tempfile
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Batch, BatchFile, Job, User
+from app.db.models import Batch, BatchFile, Job, User, UserSession
 from app.errors import AppError
-from app.services.auth.service import AuthService
+from app.services.auth.service import AuthService, is_expired
 from app.services.jobs import JobContext, JobFailure, JobQueue
-from app.services.nas import NasPermissionDenied, Region
+from app.services.nas import NasPermissionDenied, NasSessionExpired, Region
 from app.services.nas.factory import create_paths
 from app.services.oplog import OplogService
 from .images import ImageDecodeError, render_variants
@@ -44,7 +44,7 @@ class ThumbService:
         payload = job.payload if isinstance(job.payload, dict) else {}
         batch = session.get(Batch, payload.get("batch_id"))
         file = session.get(BatchFile, payload.get("batch_file_id"))
-        if (batch is None or file is None or file.batch_id != batch.id or batch.status == "已撤回"
+        if (batch is None or file is None or file.batch_id != batch.id or batch.status in ("已撤回", "已终止")
             or file.upload_status != "done" or not is_main_image(file)
             or job.run_as_user_id != batch.uploader_id or payload.get("source_version") != source_version(file)):
             return None
@@ -61,9 +61,11 @@ class ThumbService:
         existing_id = references.get(str(file.id))
         job = session.get(Job, existing_id) if isinstance(existing_id, int) else None
         if job is not None and isinstance(job.payload, dict) and job.payload.get("source_version") == version:
-            return
+            if job.status != "done" or file.thumb_fingerprint == file.fingerprint:
+                return
+        file.thumb_status, file.thumb_error, file.thumb_fingerprint = "pending", None, None
         job = self.queue.enqueue("thumb", {"batch_id": batch.id, "batch_file_id": file.id, "source_version": version},
-                                 run_as_user_id=batch.uploader_id, session=session)
+                                 run_as_user_id=batch.uploader_id, session=session, run_as_session_id=batch.upload_session_id)
         batch.payload = {**batch.payload, "thumb_jobs": {**references, str(file.id): job.id}}
 
     def on_job_state(self, session: Session, job: Job) -> None:
@@ -78,10 +80,13 @@ class ThumbService:
         with self.auth.lock, self.auth.database.session() as session:
             source = self._source(session, context.job)
             if source is None:
-                raise JobFailure("图片已变更或批次已撤回", retryable=False)
+                raise JobFailure("图片已变更或批次已终止", retryable=False)
             batch, file = source
             path = self.paths.join(Region.TEMP, batch.batch_no, str(batch.payload["folder_name"]), file.rel_path)
             batch_id, file_id = batch.id, file.id
+            expected_fingerprint = file.fingerprint if file.fingerprint_kind == "full" else None
+            if expected_fingerprint is None:
+                raise JobFailure("主图缺少完整指纹，请先补算", retryable=False)
         if context.fs is None:
             raise JobFailure("操作人会话已失效", retryable=False)
         self.root.parent.mkdir(parents=True, exist_ok=True)
@@ -90,13 +95,21 @@ class ThumbService:
             try:
                 with context.fs.open_read(path) as stream:
                     render_variants(stream, Path(stage))
+                    stream.seek(0)
+                    digest = hashlib.sha256()
+                    while data := stream.read(1024 * 1024):
+                        digest.update(data)
+                    if digest.hexdigest() != expected_fingerprint:
+                        raise JobFailure("主图内容与完整指纹不一致，请核对主图", retryable=False)
             except ImageDecodeError as error:
                 raise JobFailure(str(error), retryable=False) from None
             except NasPermissionDenied:
                 raise JobFailure("NAS 无权限，无法读取主图", retryable=False) from None
             with self.auth.lock, self.auth.database.session() as session:
-                if self._source(session, context.job) is None:
-                    raise JobFailure("图片已变更或批次已撤回", retryable=False)
+                current = self._source(session, context.job)
+                if current is None:
+                    raise JobFailure("图片已变更或批次已终止", retryable=False)
+                current[1].thumb_fingerprint = expected_fingerprint
                 directory = self._directory(batch_id, file_id)
                 directory.mkdir(parents=True, exist_ok=True)
                 for size in (300, 1600, 1024):
@@ -114,7 +127,7 @@ class ThumbService:
                 or current.id == batch.final_reviewer_id and "final_reviewer" in current.roles):
                 raise AppError("forbidden", "无权查看该批次缩略图", 403)
             file = session.get(BatchFile, file_id)
-            if batch.status == "已撤回" or file is None or file.batch_id != batch.id or not is_main_image(file):
+            if batch.status in ("已撤回", "已终止") or file is None or file.batch_id != batch.id or not is_main_image(file):
                 raise AppError("thumbnail_not_found", "缩略图不存在", 404, {"retryable": False})
             if size not in (300, 1600, 1024):
                 raise AppError("invalid_thumbnail_size", "图片尺寸不支持", 422)
@@ -130,17 +143,29 @@ class ThumbService:
         if directory.exists():
             shutil.rmtree(directory)
 
-    def resume_for_user(self, user_id: int) -> None:
+    def resume_for_user(self, user_id: int, session_id: int) -> None:
         # 重启后凭据仅能由本人重新登录恢复，不借用管理员或系统 NAS 账号。
         with self.auth.lock, self.auth.database.session() as session:
-            for job in session.scalars(select(Job).where(Job.kind == "thumb", Job.run_as_user_id == user_id,
-                                                         Job.status == "failed", Job.error == "操作人会话已失效")):
+            candidates = select(Job).where(Job.kind == "thumb", Job.run_as_user_id == user_id, or_(
+                Job.status == "queued", and_(Job.status == "failed", Job.error == "操作人会话已失效")))
+            for job in session.scalars(candidates):
                 if self._source(session, job) is None:
                     continue
-                session.execute(update(Job).where(Job.id == job.id, Job.status == "failed").values(status="queued", attempts=0,
-                                error=None, scheduled_at=None, started_at=None, finished_at=None))
-                session.refresh(job)
+                if job.status == "queued" and job.run_as_session_id is not None:
+                    old = session.get(UserSession, job.run_as_session_id)
+                    if old is not None and old.revoked_at is None and not is_expired(old.expires_at):
+                        try:
+                            self.auth.pool.get(old.id)
+                        except NasSessionExpired:
+                            pass
+                        else:
+                            continue
+                before = job.status
+                if before == "failed":
+                    job.status, job.attempts, job.error = "queued", 0, None
+                    job.scheduled_at = job.started_at = job.finished_at = None
+                job.run_as_session_id = session_id
                 self.on_job_state(session, job)
                 OplogService(session).write(user_id, "uploader", "恢复缩略图任务", "job", str(job.id),
-                                           {"status": "failed"}, {"status": "queued"}, "成功", "本人重新登录")
+                                           {"status": before}, {"status": "queued"}, "成功", "本人重新登录")
         self.queue.wake()

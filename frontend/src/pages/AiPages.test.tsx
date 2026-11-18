@@ -8,7 +8,7 @@ import { AiSettingsPage } from './AiSettingsPage'
 import { TagFieldsPage } from './TagFieldsPage'
 import { BatchDetailPage } from './BatchDetailPage'
 import { useAuthStore } from '../stores/auth'
-import type { AiSettings, AiSettingsInput, TagFields } from '../api/ai'
+import type { AiSettings, AiSettingsInput, TagFields, TagFieldsInput } from '../api/ai'
 import type { Batch } from '../api/upload'
 
 let root: Root
@@ -35,6 +35,8 @@ function type(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
 }
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  HTMLDialogElement.prototype.showModal ??= function () { this.setAttribute('open', '') }
+  HTMLDialogElement.prototype.close ??= function () { this.removeAttribute('open') }
   vi.stubGlobal('CSS', { supports: () => false })
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   query = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } })
@@ -81,31 +83,29 @@ it('测试连接逐项展示成功和厂商错误，并显示停滞批次入口'
   expect(host.querySelector('a[href="/batches/2"]')).not.toBeNull()
 })
 
-it('字段页支持新增说明、调整顺序与软删除，不提供可选值或人工必填', async () => {
-  let saved: TagFields | undefined
+it('固定字段页面只允许修改填写说明与顺序', async () => {
+  let saved: TagFieldsInput | undefined
   vi.stubGlobal('fetch', vi.fn(async (_url: string, options: RequestInit) => {
-    if (options?.method === 'PUT') { saved = JSON.parse(String(options.body)) as TagFields; return response({ ...saved, version: 2 }) }
+    if (options?.method === 'PUT') {
+      saved = JSON.parse(String(options.body)) as TagFieldsInput
+      return response({ version: 2, fields: saved.fields.map(value => ({ ...fields.fields.find(field => field.key === value.key), ...value })) })
+    }
     return response(fields)
   }))
   mount(<TagFieldsPage />)
-  await until(() => !!button('新增字段'))
-  expect(host.textContent).toContain('没有人工必填')
-  expect(host.textContent).not.toContain('可选值')
-  expect(host.querySelectorAll<HTMLInputElement>('input[pattern]')[0].readOnly).toBe(true)
-  act(() => button('新增字段').click())
-  const inputs = [...host.querySelectorAll<HTMLInputElement>('input:not([type="checkbox"])')]
-  type(inputs[inputs.length - 2], 'custom')
-  type(inputs[inputs.length - 1], '自定义字段')
-  type([...host.querySelectorAll('textarea')].at(-1)!, '请填写新增的中文说明')
-  act(() => host.querySelector<HTMLButtonElement>('[aria-label="上移自定义字段"]')!.click())
-  act(() => button('删除').click())
+  await until(() => !!button('保存字段'))
+  expect(host.textContent).toContain('11 个固定字段')
+  expect(button('新增字段')).toBeUndefined()
+  expect(button('删除')).toBeUndefined()
+  expect(host.querySelector('input')).toBeNull()
+  type(host.querySelector('textarea')!, '请填写实际看到的品类')
+  act(() => host.querySelector<HTMLButtonElement>('[aria-label="上移风格"]')!.click())
   await act(async () => { host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
   await until(() => host.textContent!.includes('标签字段已保存'))
-  expect(saved?.version).toBe(1)
-  expect(saved?.fields.map(value => value.key)).toEqual(['category', 'custom', 'style'])
-  expect(saved?.fields[0].enabled).toBe(false)
-  expect(saved?.fields[1].hint).toBe('请填写新增的中文说明')
-  expect(saved?.fields[1].sort_order).toBe(1)
+  expect(saved).toEqual({ version: 1, fields: [
+    { key: 'style', hint: '设计风格', sort_order: 0 },
+    { key: 'category', hint: '请填写实际看到的品类', sort_order: 1 },
+  ] })
   expect(host.textContent).toContain('当前版本 2')
 })
 
@@ -113,11 +113,11 @@ it('字段版本冲突保留编辑内容并展示错误', async () => {
   vi.stubGlobal('fetch', vi.fn(async (_url: string, options: RequestInit) => options?.method === 'PUT' ? response({ code: 'version_conflict', message: '字段版本已变化，请刷新后重试' }, 409) : response(fields)))
   mount(<TagFieldsPage />)
   await until(() => !!button('保存字段'))
-  const label = host.querySelectorAll<HTMLInputElement>('input:not([type="checkbox"])')[1]
-  type(label, '改过的名称')
+  const label = host.querySelector('textarea')!
+  type(label, '改过的提示')
   await act(async () => { host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
   await until(() => host.textContent!.includes('字段版本已变化'))
-  expect(label.value).toBe('改过的名称')
+  expect(label.value).toBe('改过的提示')
 })
 
 it('详情只读显示进度、字段标黄、图级标黄与套装推荐关系', async () => {
@@ -139,24 +139,34 @@ it('详情只读显示进度、字段标黄、图级标黄与套装推荐关系'
   expect(host.querySelector('input,textarea')).toBeNull()
 })
 
-it('整批失败可重试，恢复处理时显示新进度并可撤回', async () => {
+it('整批失败可重试，随后填写原因并确认终止', async () => {
   const calls: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  let reason: string | undefined
+  vi.stubGlobal('fetch', vi.fn(async (url: string, options: RequestInit) => {
     calls.push(url)
     if (url.endsWith('/retry-ai')) return response(batch())
-    if (url.endsWith('/cancel')) return response(batch('已撤回'))
+    if (url.endsWith('/cancel')) {
+      reason = (JSON.parse(String(options.body)) as { reason: string }).reason
+      return response({ ...batch('已终止'), termination_reason: reason })
+    }
     return response(batch('AI 处理失败'))
   }))
   detail()
   await until(() => !!button('重试整批 AI'))
   act(() => button('重试整批 AI').click())
-  await until(() => !!button('撤回批次'))
-  expect(host.textContent).toContain('正在按单品、套装的顺序处理')
-  act(() => button('撤回批次').click())
-  await until(() => host.textContent!.includes('已撤回'))
+  await until(() => host.textContent!.includes('正在按单品、套装的顺序处理'))
+  act(() => button('终止批次').click())
+  const dialog = document.querySelector('dialog')!
+  const submit = dialog.querySelector<HTMLButtonElement>('button[type="submit"]')!
+  expect(submit.disabled).toBe(true)
+  type(dialog.querySelector('textarea')!, '改用另一批素材')
+  expect(submit.disabled).toBe(false)
+  await act(async () => submit.click())
+  await until(() => host.textContent!.includes('已终止'))
   expect(calls).toContain('/api/batches/1/retry-ai')
   expect(calls).toContain('/api/batches/1/cancel')
-  expect(button('撤回批次')).toBeUndefined()
+  expect(reason).toBe('改用另一批素材')
+  expect(button('终止批次')).toBeUndefined()
 })
 
 it('AI 处理时轮询详情，结束后停止轮询', async () => {

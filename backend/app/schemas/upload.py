@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ManifestEntry(BaseModel):
@@ -46,6 +46,16 @@ class ResumeRequest(PrecheckRequest):
     acks: list[str] = Field(default_factory=list)
 
 
+class TerminateBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def trim_reason(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
 class UploadFileResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -55,6 +65,7 @@ class UploadFileResponse(BaseModel):
     upload_status: str
     bytes_received: int
     fingerprint: str | None
+    fingerprint_kind: str | None = None
     thumb_status: str | None = None
     thumb_error: str | None = None
 
@@ -68,6 +79,8 @@ class BatchResponse(BaseModel):
     status: str
     queued: bool
     won: bool
+    terminated_at: datetime | None = None
+    termination_reason: str | None = None
     updated_at: datetime
     files: list[UploadFileResponse]
     directories: list[str]
@@ -99,6 +112,7 @@ class BatchProductResponse(BaseModel):
     display_name: str
     ai_status: str
     ai_error: str | None
+    visual_ai_succeeded: bool = False
     tags: dict[str, object]
     free_text: str
     flags: list[str]

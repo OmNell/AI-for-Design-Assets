@@ -12,16 +12,18 @@ from collections.abc import Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import AiAlert, Batch, BatchFile, BatchProduct, CompanyIndustryMap, Job, TagField, User, utcnow
+from app.db.models import AiAlert, Batch, BatchFile, BatchProduct, CompanyIndustryMap, Job, User, utcnow
 from app.errors import AppError
 from app.services.auth.service import AuthService
 from app.services.crypto import SecretCipher
 from app.services.jobs import JobContext, JobFailure, JobQueue
 from app.services.nas import NasPermissionDenied, safe_join
 from app.services.oplog import OplogService
-from app.services.thumbs import ThumbService, is_main_image
+from app.services.thumbs import ThumbService, is_main_image, source_version
 from .client import AiCallError, AiClient, FakeAiClient
-from .parsing import parse_result
+from .field_catalog import fixed_fields
+from .parsing import FieldDefinition, parse_result
+from .vision import has_visual_evidence
 from .settings import AiSettingsService, require_admin
 
 PROCESSING = "AI 处理中"
@@ -104,8 +106,7 @@ class AiService:
             if batch is None:
                 return
             if not batch.payload.get("ai_initialized"):
-                fields = [{"key": row.key, "label": row.label, "hint": row.hint} for row in session.scalars(
-                    select(TagField).where(TagField.enabled.is_(True)).order_by(TagField.sort_order, TagField.id))]
+                fields = [{"key": row.key, "label": row.label, "hint": row.hint} for row in fixed_fields(session)]
                 batch.payload = {**batch.payload, "ai_fields": fields, "ai_initialized": True}
                 batch.recommended_path = self._recommend(session, batch)
                 for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id).order_by(BatchFile.id)):
@@ -117,6 +118,8 @@ class AiService:
                             kind="set" if file.rel_path.startswith("套装/") else "item", display_name=Path(file.rel_path).stem)
                         session.add(product)
                     product.ai_status, product.ai_error = "pending", None
+                    if not has_visual_evidence(product, file):
+                        product.ai_success_at = product.ai_model = product.ai_fingerprint = None
                     product.flags, product.relation_items, product.relation_confirmed = [], [], False
                 self._log(session, batch, "建立 AI 商品清单及位置建议")
             session.flush()
@@ -134,9 +137,15 @@ class AiService:
             if product.ai_status != "pending" or str(product.id) in references:
                 continue
             file = session.get(BatchFile, product.batch_file_id)
-            if file.thumb_status == "failed":
+            if file is None or file.removed or file.upload_status != "done" or file.fingerprint_kind != "full" or not file.fingerprint:
+                product.ai_status, product.ai_error = "failed", "主图缺少有效的完整 SHA-256，请核对文件后重试"
+                self._log(session, batch, "主图指纹未验证")
+            elif file.thumb_status == "failed":
                 product.ai_status, product.ai_error = "failed", file.thumb_error or "送审图生成失败"
                 self._log(session, batch, "送审图失败，跳过该商品")
+            elif file.thumb_status == "done" and file.thumb_fingerprint != file.fingerprint:
+                product.ai_status, product.ai_error = "failed", "旧送审图未经完整指纹校验，请重试"
+                self._log(session, batch, "送审图指纹未验证")
             elif file.thumb_status == "done":
                 job = self.queue.enqueue("ai_tag_product", {"batch_id": batch.id, "run_id": batch.payload["ai_run"],
                     "product_id": product.id}, session=session)
@@ -197,11 +206,19 @@ class AiService:
             if product is None or product.ai_status == "done":
                 return
             file = session.get(BatchFile, product.batch_file_id)
+            if file is None or file.removed or file.upload_status != "done" or file.fingerprint_kind != "full" or not file.fingerprint:
+                raise JobFailure("主图缺少有效的完整 SHA-256", retryable=False)
+            version = source_version(file)
             image_path = self.auth.config.paths.data_dir / "thumbs" / "batch" / str(batch.id) / str(file.id) / "1024.jpg"
-            if file.thumb_status != "done" or not image_path.is_file():
+            if file.thumb_status != "done" or file.thumb_fingerprint != file.fingerprint or not image_path.is_file():
                 raise JobFailure("送审图尚不可用，请重新登录恢复缩略图后重试", retryable=False)
             image = image_path.read_bytes()
-            fields = list(batch.payload.get("ai_fields", []))
+            saved = {field["key"]: field["hint"] for field in batch.payload.get("ai_fields", [])}
+            fields: list[FieldDefinition] = [
+                {"key": row.key, "label": row.label, "hint": saved.get(row.key, row.hint)}
+                for row in fixed_fields(session)
+            ]
+            fixed_keys = {field["key"] for field in fields}
             clean = self._sanitize(session, batch)
             safe_fields = [{"key": field["key"], "label": clean(field["label"]), "hint": clean(field["hint"])} for field in fields]
             items, valid = [], {}
@@ -210,7 +227,7 @@ class AiService:
                     BatchProduct.kind == "item").order_by(BatchProduct.id)), 1):
                     valid[index] = item.id
                     items.append({"index": index, "name": clean(item.display_name), "tags": {key: clean(str(value.get("value", "")))
-                        for key, value in item.tags.items() if isinstance(value, dict)}})
+                        for key, value in item.tags.items() if isinstance(value, dict) and key in fixed_keys}})
             batch_id, product_id, kind, filename = batch.id, product.id, product.kind, file.rel_path.rsplit("/", 1)[-1]
         client = self.client()
         retries = client.config.retries
@@ -231,6 +248,15 @@ class AiService:
             if batch is None:
                 return
             product = session.get(BatchProduct, product_id)
+            if product is None:
+                return
+            file = session.get(BatchFile, product.batch_file_id)
+            if (file is None or file.removed or file.upload_status != "done" or file.fingerprint_kind != "full"
+                    or file.thumb_fingerprint != file.fingerprint or source_version(file) != version):
+                raise JobFailure("主图已变化，请重新识别", retryable=False)
+            product.ai_success_at = utcnow()
+            product.ai_model = client.config.model_vision or "fake-vision"
+            product.ai_fingerprint = file.fingerprint
             product.tags = {**product.tags, **result["tags"]}
             product.free_text, product.flags = result["free_text"], result["flags"]
             product.relation_items, product.relation_confirmed = result["relation_items"], False

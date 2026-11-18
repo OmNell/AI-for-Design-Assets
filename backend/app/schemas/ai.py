@@ -60,16 +60,25 @@ class TagFieldsResponse(BaseModel):
     fields: list[TagFieldItem]
 
 
-class TagFieldsWrite(TagFieldsResponse):
+class TagFieldEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    hint: str
+    sort_order: int = Field(ge=0)
+
+
+class TagFieldsWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int = Field(ge=1)
+    fields: list[TagFieldEdit]
 
     @field_validator("fields")
     @classmethod
-    def unique_keys(cls, value: list[TagFieldItem]) -> list[TagFieldItem]:
-        keys = [field.key for field in value]
-        if len(keys) != len(set(keys)):
+    def unique_keys_and_order(cls, value: list[TagFieldEdit]) -> list[TagFieldEdit]:
+        if len({field.key for field in value}) != len(value):
             raise ValueError("字段 key 不能重复")
+        if len({field.sort_order for field in value}) != len(value):
+            raise ValueError("字段显示顺序不能重复")
         return value
 
 

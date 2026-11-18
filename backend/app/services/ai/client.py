@@ -159,7 +159,7 @@ class AiClient:
         key = self._key()
         try:
             base = httpx.URL(self.config.base_url)
-            if base.scheme not in ("http", "https") or not base.host or base.username or base.password or base.query or base.fragment:
+            if base.scheme != "https" or not base.host or base.username or base.password or base.query or base.fragment:
                 raise ValueError("接口地址格式不正确")
         except (ValueError, httpx.InvalidURL):
             raise _AttemptError("AI接口地址格式不正确") from None
@@ -297,7 +297,7 @@ class FakeAiClient(AiClient):
             choices = ("保温杯", "雨伞", "茶具套装")
             category = choices[int(hashlib.sha256(filename.encode()).hexdigest()[:8], 16) % len(choices)]
             defaults = {"category": category, "material": "陶瓷、胡桃木", "color": "中国红、哑光黑", "style": "极简、国潮",
-                "festival": "通用", "audience": "企业客户、员工", "usage_scene": "商务社交、日常居家", "size": "约20cm高",
+                "festival": "", "audience": "企业客户、员工", "usage_scene": "商务社交、日常居家", "size": "约20cm高",
                 "craft": "烫金、激光雕刻", "material_name": "双层玻璃杯", "structure": "杯身加杯盖"}
             tags = {field["key"]: defaults.get(field["key"], "演示" + field["label"]) for field in fields}
             if fields and ("无法判断" in name or "uncertain" in name):

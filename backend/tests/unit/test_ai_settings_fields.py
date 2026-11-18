@@ -13,7 +13,7 @@ from app.config import Settings
 from app.db.database import Database
 from app.db.models import Batch, BatchFile, BatchProduct, Oplog, Setting, TagField, User
 from app.errors import AppError
-from app.schemas.ai import AiSettingsWrite, TagFieldItem, TagFieldsWrite
+from app.schemas.ai import AiSettingsWrite, TagFieldEdit, TagFieldItem, TagFieldsWrite
 from app.services.ai.fields import TagFieldService
 from app.services.ai.settings import AiSettingsService
 from app.services.auth.backends import FakeAuthBackend
@@ -43,10 +43,10 @@ def ai_body(**changes: object) -> AiSettingsWrite:
 def test_seed_fields_match_business_hints_and_have_no_vocabularies(services: tuple[AiSettingsService, TagFieldService, User]) -> None:
     _, fields, actor = services
     state = fields.read(actor)
-    assert state.version == 1 and len(state.fields) == 11
+    assert state.version == 2 and len(state.fields) == 11
     assert [(field.key, field.label, field.hint) for field in state.fields] == [
         ("category", "品类", "这是什么东西"), ("material", "材质", "主要材料"), ("color", "主色", "主要颜色"),
-        ("style", "风格", "设计风格"), ("festival", "节日场景", "适用的具体节日；不针对节日就写「通用」"),
+        ("style", "风格", "设计风格"), ("festival", "节日场景", "适用的具体节日；不针对节日时留空"),
         ("audience", "受众群体", "给谁用、送给谁"), ("usage_scene", "使用场景", "用途和使用的场合"),
         ("size", "尺寸", "大小的描述"), ("craft", "工艺", "制作或装饰工艺"),
         ("material_name", "物料名称", "物料的称呼"), ("structure", "结构", "组成部分和形态结构")]
@@ -87,7 +87,7 @@ def test_config_fallback_and_database_override(services: tuple[AiSettingsService
     assert ai.cipher.decrypt(ai.effective().api_key_enc.get_secret_value()) == "config-key"
 
 
-def test_fields_save_version_order_disable_and_keep_historical_values(services: tuple[AiSettingsService, TagFieldService, User]) -> None:
+def test_fields_save_hint_order_and_keep_historical_values(services: tuple[AiSettingsService, TagFieldService, User]) -> None:
     ai, fields, actor = services
     with ai.auth.database.session() as session:
         batch = Batch(batch_no="B1", project_code="P", kind="ingest", status="待核对", owner_id=actor.id,
@@ -100,35 +100,34 @@ def test_fields_save_version_order_disable_and_keep_historical_values(services: 
         session.add(product); session.flush()
         product_id = product.id
     state = fields.read(actor)
-    items = [item for item in state.fields if item.key != "category"]
-    items[0].label = "材料"
-    items[0].hint = "新的材料说明"
-    items[0].sort_order = 20
-    items.append(TagFieldItem(key="custom", label="新增字段", hint="原样进入提示词", sort_order=0))
+    items = [TagFieldEdit(key=item.key, hint=item.hint, sort_order=item.sort_order) for item in state.fields]
+    items[0].sort_order, items[1].sort_order = items[1].sort_order, items[0].sort_order
+    items[1].hint = "新的材料说明"
     after = fields.save(actor, TagFieldsWrite(version=state.version, fields=items), "本机")
-    assert after.version == 2 and after.fields[0].key == "category" and not after.fields[0].enabled
-    assert "category" not in {item["key"] for item in fields.enabled_fields()}
-    assert fields.enabled_fields()[0]["key"] == "custom"
-    assert next(item for item in after.fields if item.key == "material").hint == "新的材料说明"
+    assert after.version == state.version + 1 and after.fields[0].key == "material"
+    assert all(item.enabled for item in after.fields)
+    assert len(fields.enabled_fields()) == 11
+    assert after.fields[0].label == "材质" and after.fields[0].hint == "新的材料说明"
     with ai.auth.database.session() as session:
         assert session.get(BatchProduct, product_id).tags == {"category": {"value": "历史值"}}
-        assert {row.version for row in session.scalars(select(TagField))} == {2}
+        assert {row.version for row in session.scalars(select(TagField))} == {after.version}
         assert "修改标签字段" in list(session.scalars(select(Oplog.action)))
-    unchanged = fields.save(actor, TagFieldsWrite(version=after.version, fields=after.fields), "本机")
-    assert unchanged.version == 3
+    unchanged = fields.save(actor, TagFieldsWrite(version=after.version, fields=items), "本机")
+    assert unchanged.version == after.version
 
 
 def test_stale_version_and_concurrent_saves(services: tuple[AiSettingsService, TagFieldService, User]) -> None:
     _, fields, actor = services
     state = fields.read(actor)
-    body = TagFieldsWrite(version=state.version, fields=state.fields)
+    edits = [TagFieldEdit(key=item.key, hint=item.hint + "！", sort_order=item.sort_order) for item in state.fields]
+    body = TagFieldsWrite(version=state.version, fields=edits)
     def save(_: int) -> int:
         try:
             return fields.save(actor, body, "本机").version
         except AppError as error:
             return error.status_code
     with ThreadPoolExecutor(max_workers=2) as pool:
-        assert sorted(pool.map(save, range(2))) == [2, 409]
+        assert sorted(pool.map(save, range(2))) == [state.version + 1, 409]
 
 
 def test_current_admin_role_rechecked(services: tuple[AiSettingsService, TagFieldService, User]) -> None:
@@ -149,8 +148,8 @@ def test_settings_rejects_credential_urls(base_url: str) -> None:
 
 
 def test_duplicate_keys_and_nonenglish_keys_rejected() -> None:
-    field = {"key": "category", "label": "品类", "hint": "任意", "sort_order": 0}
+    field = {"key": "category", "hint": "任意", "sort_order": 0}
     with pytest.raises(ValidationError):
         TagFieldsWrite.model_validate({"version": 1, "fields": [field, field]})
     with pytest.raises(ValidationError):
-        TagFieldItem.model_validate({**field, "key": "中文"})
+        TagFieldItem.model_validate({**field, "key": "中文", "label": "品类"})

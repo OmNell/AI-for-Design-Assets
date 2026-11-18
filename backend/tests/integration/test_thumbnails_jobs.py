@@ -173,7 +173,7 @@ def test_cancel_hides_and_removes_cached_thumbnails(client: TestClient) -> None:
     batch = upload(client, {"单品/主图.jpg": jpeg()})
     assert client.app.state.jobs.wait_idle()
     assert client.get(url(batch)).status_code == 200
-    assert client.post(f'/api/batches/{batch["id"]}/cancel').status_code == 200
+    assert client.post(f'/api/batches/{batch["id"]}/cancel', json={'reason': '本次无需继续'}).status_code == 200
     assert client.get(url(batch)).status_code == 404
     assert not (client.app.state.settings.paths.data_dir / 'thumbs' / 'batch' / str(batch['id'])).exists()
 
@@ -190,7 +190,7 @@ def test_cancel_during_render_cannot_republish_cache(client: TestClient, monkeyp
     batch = upload(client, {"单品/主图.jpg": jpeg()})
     try:
         assert rendered.wait(2)
-        assert client.post(f'/api/batches/{batch["id"]}/cancel').status_code == 200
+        assert client.post(f'/api/batches/{batch["id"]}/cancel', json={'reason': '本次无需继续'}).status_code == 200
     finally:
         release.set()
     assert client.app.state.jobs.wait_idle()

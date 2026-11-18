@@ -6,15 +6,19 @@ from fastapi import Depends, Request
 from app.db.models import User
 from app.errors import AppError
 from app.schemas.auth import Role
-from app.services.auth.service import COOKIE_NAME
+from app.services.auth.service import COOKIE_NAME, LoginContext
 
 
 def client_host(request: Request) -> str:
     return request.client.host if request.client else "未知"
 
 
-def require_login(request: Request) -> User:
-    return request.app.state.auth.current(request.cookies.get(COOKIE_NAME), client_host(request))
+def require_login_context(request: Request) -> LoginContext:
+    return request.app.state.auth.context(request.cookies.get(COOKIE_NAME), client_host(request))
+
+
+def require_login(login: LoginContext = Depends(require_login_context)) -> User:
+    return login.user
 
 
 def require_role(*roles: Role) -> Callable[..., User]:

@@ -15,11 +15,12 @@ export type AiSettingsInput = Omit<AiSettings, 'api_key_set'> & { api_key?: stri
 export interface ModelTest { kind: string; model: string; success: boolean; error: string | null }
 export interface TagField { key: string; label: string; hint: string; sort_order: number; enabled: boolean }
 export interface TagFields { version: number; fields: TagField[] }
+export interface TagFieldsInput { version: number; fields: Pick<TagField, 'key' | 'hint' | 'sort_order'>[] }
 export interface AiAlert { id: number; batch_id: number; run_id: number; reason: string; detected_at: string }
 
 export const getAiSettings = (): Promise<AiSettings> => request('/api/settings/ai')
 export const saveAiSettings = (value: AiSettingsInput): Promise<AiSettings> => request('/api/settings/ai', { method: 'PUT', body: JSON.stringify(value) })
 export const testAiModels = (): Promise<{ results: ModelTest[] }> => request('/api/settings/ai/test', { method: 'POST' })
 export const getTagFields = (): Promise<TagFields> => request('/api/admin/tag-fields')
-export const saveTagFields = (value: TagFields): Promise<TagFields> => request('/api/admin/tag-fields', { method: 'PUT', body: JSON.stringify(value) })
+export const saveTagFields = (value: TagFieldsInput): Promise<TagFields> => request('/api/admin/tag-fields', { method: 'PUT', body: JSON.stringify(value) })
 export const getAiAlerts = (): Promise<AiAlert[]> => request('/api/admin/ai-alerts')

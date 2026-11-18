@@ -1,7 +1,7 @@
 """角色表管理；不替用户授予 NAS 文件权限。"""
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
-from app.db.models import User, UserSession
+from app.db.models import User, UserSession, utcnow
 from app.errors import AppError
 from app.schemas.auth import RoleUpdate
 from app.services.auth.service import AuthService
@@ -21,6 +21,7 @@ class RoleService:
 
     def update(self, actor: User, change: RoleUpdate, host: str) -> User:
         with self.auth.lock:
+            revoked: list[int] = []
             with self.auth.database.session() as session:
                 # 与修改处于同一事务，再次确认操作者仍有效，避免检查后被撤权。
                 current = session.get(User, actor.id)
@@ -33,9 +34,12 @@ class RoleService:
                 user.roles = [role.value for role in change.roles]
                 user.enabled = change.enabled
                 if not user.enabled:
-                    session.execute(delete(UserSession).where(UserSession.user_id == user.id))
+                    now = utcnow()
+                    for login in session.scalars(select(UserSession).where(UserSession.user_id == user.id, UserSession.revoked_at.is_(None))):
+                        login.revoked_at = now
+                        revoked.append(login.id)
                 OplogService(session).write(current.id, "admin", "修改角色", "user", str(user.id), before,
                                            {"roles": user.roles, "enabled": user.enabled}, "成功", host)
-            if not user.enabled:
-                self.auth.pool.close(user.id, force=True)
+            for session_id in revoked:
+                self.auth.close_session(session_id, host, force=True)
             return user

@@ -34,22 +34,28 @@ def test_ignored_and_unsafe_manifests() -> None:
     assert any(i.rule_code == 'manifest' for i in check('P_企业_项目', [ManifestEntry(rel_path='a'), ManifestEntry(rel_path='a/b')]))
 
 
-def test_fingerprints_full_cached_quick_and_2gb_sparse(tmp_path: Path) -> None:
+def test_fingerprints_full_cached_and_2gb_sparse(tmp_path: Path) -> None:
     fs = LocalFs(tmp_path, {Region.TEMP: Access.WRITE})
     path = '工作台临时区/data'
     data = b'a' * (5 * 1024 * 1024) + b'z' * (4 * 1024 * 1024)
     with fs.open_write(path) as stream:
         stream.write(data)
-    assert fingerprint(fs, path, len(data), len(data)) == (hashlib.sha256(data).hexdigest(), 'full')
     digest = hashlib.sha256(data)
-    assert fingerprint(fs, path, len(data), len(data), digest)[0] == digest.hexdigest()
-    expected = hashlib.sha256(data[:4*1024*1024] + data[-4*1024*1024:] + str(len(data)).encode()).hexdigest()
-    assert fingerprint(fs, path, len(data), 1) == (expected, 'quick')
-    with fs.open_write(path) as stream:
-        stream.truncate(2 * 1024**3)
+    assert fingerprint(fs, path, len(data)) == digest.hexdigest()
+    assert fingerprint(fs, path, len(data), digest) == digest.hexdigest()
     size = 2 * 1024**3
-    expected = hashlib.sha256(bytes(8*1024*1024) + str(size).encode()).hexdigest()
-    assert fingerprint(fs, path, size, 200*1024*1024) == (expected, 'quick')
+    with fs.open_write(path) as stream:
+        stream.truncate(size)
+    expected = hashlib.sha256()
+    block = bytes(1024 * 1024)
+    for _ in range(2048):
+        expected.update(block)
+    assert fingerprint(fs, path, size) == expected.hexdigest()
+    # 只修改中间内容：原首尾取样算法无法区分。
+    with (tmp_path / path).open("r+b") as stream:
+        stream.seek(size // 2)
+        stream.write(b"X")
+    assert fingerprint(fs, path, size) != expected.hexdigest()
     fs.close()
 
 
@@ -61,23 +67,25 @@ def test_idle_upload_releases_own_session_and_resumes_durably(database: Database
     with create_session_pool(settings) as pool:
         auth = AuthService(database, pool, create_auth_backend(settings), settings)
         upload = UploadService(auth)
+        auth.on_close = upload.session_closed
         try:
-            user, token, _ = auth.login('one', 'fake', '本机')
-            body = CreateBatchRequest(folder_name='P_企业_项目', won=True, acks=['P07', 'P08'], files=[ManifestEntry(rel_path='资料.txt', size=1)])
-            batch = upload.create(body, user, '本机')
-            upload.chunk(batch.id, batch.files[0].id, 0, b'X', user, '本机')
+            _, token, _ = auth.login('one', 'fake', '本机')
+            login = auth.context(token, '本机')
+            body = CreateBatchRequest(folder_name='P_企业_项目', won=True, acks=['P07', 'P08'], files=[ManifestEntry(rel_path='单品/主图.jpg', size=1)])
+            batch = upload.create(body, login, '本机')
+            upload.chunk(batch.id, batch.files[0].id, 0, b'X', login, '本机')
             auth.logout(token, '本机')
-            assert pool.get(user.id)
             clock[0] = 61
             upload.expire_idle()
             with pytest.raises(NasSessionExpired):
-                pool.get(user.id)
+                pool.get(login.session_id)
             with database.session() as session:
                 assert session.get(Batch, batch.id).status == '上传中断'
                 assert '上传中断' in list(session.scalars(select(Oplog.action)))
-            user, _, _ = auth.login('one', 'fake', '本机')
-            resumed = upload.resume(batch.id, ResumeRequest(folder_name=body.folder_name, files=body.files, acks=body.acks), user, '本机')
+            _, token, _ = auth.login('one', 'fake', '本机')
+            login = auth.context(token, '本机')
+            resumed = upload.resume(batch.id, ResumeRequest(folder_name=body.folder_name, files=body.files, acks=body.acks), login, '本机')
             assert resumed.files[0].bytes_received == 1
-            assert upload.complete(batch.id, batch.files[0].id, user, '本机').status == '已暂存'
+            assert upload.complete(batch.id, batch.files[0].id, login, '本机').status == '已暂存'
         finally:
             upload.shutdown()

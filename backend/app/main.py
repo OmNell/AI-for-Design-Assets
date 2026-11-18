@@ -5,9 +5,10 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
 from starlette.exceptions import HTTPException
 
@@ -22,7 +23,7 @@ from app.services.admin import RoleService
 from app.services.nas.factory import create_auth_backend, create_session_pool
 from app.config import Settings, load_settings
 from app.db.database import Database
-from app.errors import register_handlers
+from app.errors import error_response, register_handlers
 from app.logging_config import configure_logging
 from app.services.crypto import SecretCipher
 from app.services.jobs import JobQueue
@@ -78,6 +79,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             application.state.auth.on_login = thumbs.resume_for_user
             upload = UploadService(application.state.auth, thumbs, ai)
             application.state.upload = upload
+            application.state.auth.on_close = upload.session_closed
             jobs.start()
             ai.start()
             logger.info("工作台启动完成，模式：%s", config.mode)
@@ -111,6 +113,16 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
 
     application = FastAPI(title="NAS 设计资产工作台", version=__version__, lifespan=lifespan)
     register_handlers(application)
+
+    @application.middleware("http")
+    async def protect_api_writes(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        if request.url.path.startswith("/api/") and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("origin")
+            if request.headers.get("sec-fetch-site") == "cross-site" or (
+                origin is not None and origin != f"{request.url.scheme}://{request.url.netloc}"
+            ):
+                return error_response(403, "unsafe_origin", "此操作只允许从工作台页面发起")
+        return await call_next(request)
     application.include_router(router)
     application.include_router(auth_router)
     application.include_router(admin_router)
