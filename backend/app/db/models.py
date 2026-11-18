@@ -120,6 +120,7 @@ class Batch(Record, Base):
     won: Mapped[bool] = mapped_column(Boolean)
     recommended_path: Mapped[str | None] = mapped_column(String)
     final_path: Mapped[str | None] = mapped_column(String)
+    review_snapshot_hash: Mapped[str | None] = mapped_column(String(64))
     note_to_reviewer: Mapped[str | None] = mapped_column(Text)
     payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     ingest_step: Mapped[int] = mapped_column(Integer, default=0)
@@ -179,7 +180,23 @@ class BatchProduct(Record, Base):
     free_text: Mapped[str] = mapped_column(Text, default="")
     relation_items: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     relation_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    free_text_source: Mapped[str] = mapped_column(String, default="ai")
+    ai_free_text: Mapped[str] = mapped_column(Text, default="")
+    tags_confirmation: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    relation_confirm_kind: Mapped[str] = mapped_column(String, default="pending")
     flags: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+
+class ReviewSnapshot(Base):
+    __tablename__ = "review_snapshots"
+    __table_args__ = (UniqueConstraint("batch_id", "round"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"))
+    round: Mapped[int] = mapped_column(Integer)
+    submitted_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    digest: Mapped[str] = mapped_column(String(64))
+    content: Mapped[dict[str, object]] = mapped_column(JSON)
 
 
 class CompanyIndustryMap(Record, Base):

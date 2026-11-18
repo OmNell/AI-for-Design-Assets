@@ -6,7 +6,7 @@ export class ApiError extends Error {
 export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   let response: Response
   try { response = await fetch(path, { ...options, credentials: 'same-origin',
-    headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers } }) }
+    headers: { ...(options.body && !(options.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}), ...options.headers } }) }
   catch (error: unknown) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error
     throw new ApiError(0, 'network_error', '无法连接工作台，请检查网络后重试')
