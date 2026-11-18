@@ -20,7 +20,7 @@ export const rules: Rule[] = [
   { code: 'P06', level: 'block', message: '套装/单品中只能平铺 jpg、jpeg、png 图片', detect: c => active(c).filter(e => {
     const parts = e.rel_path.split('/'); return ['套装', '单品'].includes(parts[0]) && (e.is_dir ? parts.length > 1 : parts.length !== 2 || !/\.(jpe?g|png)$/i.test(parts[1]))
   }).map(e => e.rel_path) },
-  { code: 'P07', level: 'warn', message: '套装和单品均为空', detect: c => active(c).some(e => !e.is_dir && /^(套装|单品)\/[^/]+\.(jpe?g|png)$/i.test(e.rel_path)) ? [] : ['套装/单品'] },
+  { code: 'P07', level: 'block', message: '首次入库必须有至少一张单品或套装主图', detect: c => active(c).some(e => !e.is_dir && /^(套装|单品)\/[^/]+\.(jpe?g|png)$/i.test(e.rel_path)) ? [] : ['套装/单品'] },
   { code: 'P08', level: 'warn', message: '缺少资料夹', detect: c => requiredDirectories.filter(name => !active(c).some(e => e.rel_path === name && e.is_dir || e.rel_path.startsWith(name + '/'))) },
   { code: 'P09', level: 'warn', message: '项目名含不建议的空格或标点', detect: c => c.folder.split('_').length === 3 && /[·—\s\uFF00-\uFFEF\u3000-\u303F]/.test(c.folder.split('_')[2]) ? [c.folder] : [] },
   { code: 'P10', level: null, message: '根散文件、其他目录和资料夹内容不作业务检查', detect: c => active(c).filter(e => !['套装', '单品'].includes(e.rel_path.split('/')[0])).map(e => e.rel_path) },

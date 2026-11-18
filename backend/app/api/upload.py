@@ -6,8 +6,9 @@ from fastapi.responses import Response
 
 from app.api.dependencies import client_host, require_role, require_login, require_login_context
 from app.db.models import User
+from app.errors import AppError
 from app.schemas.auth import Role
-from app.schemas.upload import BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, ResumeRequest
+from app.schemas.upload import BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, ResumeRequest, TerminateBatchRequest
 from app.services.auth.service import COOKIE_NAME, LoginContext
 
 router = APIRouter(prefix="/api/batches")
@@ -33,8 +34,12 @@ def upload_user(request: Request, id: int, x_upload_token: str | None = Header(d
 
 
 @router.post("/precheck", response_model=PrecheckResponse)
-def precheck(body: PrecheckRequest, request: Request, user: User = Depends(require_role(Role.UPLOADER))) -> PrecheckResponse:
-    return request.app.state.upload.precheck(body)
+def precheck(body: PrecheckRequest, request: Request, user: User = Depends(require_role(Role.UPLOADER)), resume_id: int | None = None) -> PrecheckResponse:
+    if resume_id is not None:
+        batch = request.app.state.upload.view(resume_id, user)
+        if batch.uploader_id != user.id:
+            raise AppError("forbidden", "只能核对本人的续传清单", 403)
+    return request.app.state.upload.precheck(body, resume_id)
 
 
 @router.post("", response_model=BatchResponse)
@@ -80,13 +85,13 @@ def pause(id: int, request: Request, login: LoginContext = Depends(upload_user))
 
 
 @router.post("/{id}/cancel", response_model=BatchResponse)
-def cancel(id: int, request: Request, login: LoginContext = Depends(upload_user)) -> BatchResponse:
-    return request.app.state.upload.cancel(id, login, client_host(request))
+def terminate(id: int, body: TerminateBatchRequest, request: Request, login: LoginContext = Depends(require_login_context)) -> BatchResponse:
+    return request.app.state.upload.terminate(id, login, body.reason, client_host(request))
 
 
 @router.post("/{id}/confirm", response_model=BatchResponse)
-def confirm(id: int, request: Request, user: User = Depends(require_role(Role.UPLOADER))) -> BatchResponse:
-    return request.app.state.upload.confirm(id, user, client_host(request))
+def confirm(id: int, request: Request, login: LoginContext = Depends(require_login_context)) -> BatchResponse:
+    return request.app.state.upload.confirm(id, login, client_host(request))
 
 
 @router.post("/{id}/resume", response_model=BatchResponse)

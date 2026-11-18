@@ -3,8 +3,9 @@ import { useNavigate, useSearchParams } from 'react-router'
 import { GlassPanel } from '../components/glass/GlassPanel'
 import { GlassButton } from '../components/glass/GlassButton'
 import { GlassModal } from '../components/glass/GlassModal'
+import { TerminateBatchButton } from '../components/TerminateBatchButton'
 import { ThumbnailPreview } from '../components/ThumbnailPreview'
-import { checkUpload, createBatch, resumeBatch, getBatch, pauseBatch, cancelBatch, confirmBatch, type Batch, type Precheck } from '../api/upload'
+import { checkUpload, createBatch, resumeBatch, getBatch, pauseBatch, confirmBatch, type Batch, type Precheck } from '../api/upload'
 import { readDrop, readInput, readPicker, type DirectorySelection } from '../lib/dirReader'
 import { isIgnored, manifest, preflight, type Issue } from '../lib/preflight'
 import { Uploader } from '../lib/uploader'
@@ -15,7 +16,7 @@ export function UploadPage() {
   const resumeId = Number(params.get('resume')) || null
   const navigate = useNavigate()
   const [won, setWon] = useState<boolean | null>(null)
-  const [year, setYear] = useState(new Date().getFullYear())
+  const [year, setYear] = useState('')
   const [selection, setSelection] = useState<DirectorySelection | null>(null)
   const [checked, setChecked] = useState<Precheck | null>(null)
   const [issues, setIssues] = useState<Issue[]>([])
@@ -56,7 +57,7 @@ export function UploadPage() {
     const local = preflight({ folder: value.folder_name, entries: files })
     setIssues(local)
     try {
-      const server = await checkUpload({ folder_name: value.folder_name, files })
+      const server = await checkUpload({ folder_name: value.folder_name, files }, resumeId ?? batch?.id)
       setChecked(server)
       const combined = [...local, ...server.issues]
       setIssues(combined.filter((issue, index) => combined.findIndex(item => item.rule_code === issue.rule_code && item.path === issue.path) === index))
@@ -93,7 +94,11 @@ export function UploadPage() {
     try {
       const body = { folder_name: selection.folder_name, files: manifest(selection.entries), acks }
       const existingId = resumeId ?? (batch && ['上传中', '上传中断'].includes(batch.status) ? batch.id : null)
-      const value = existingId ? await resumeBatch(existingId, { ...body, accept_changes: acceptChanges }) : await createBatch({ ...body, won, historical_year: year })
+      if (!existingId && checked?.code_status === 'need_h_code' && !validYear) {
+        setError('请选择历史项目实际所属年份')
+        return
+      }
+      const value = existingId ? await resumeBatch(existingId, { ...body, accept_changes: acceptChanges }) : await createBatch({ ...body, won, historical_year: checked?.code_status === 'need_h_code' ? Number(year) : undefined })
       if (value.differences && Object.values(value.differences).some(paths => paths.length) && !acceptChanges) { setDifferences(value.differences); setConfirm(false); return }
       void start(value)
     } catch (reason: unknown) { setError(reason instanceof Error ? reason.message : '无法开始上传') }
@@ -108,18 +113,19 @@ export function UploadPage() {
     }
     setRunning(false)
   }
-  const cancel = async () => {
+  const onTerminated = (value: Batch) => {
     manualStop.current = true
-    uploader.current?.stop(); setBusy(true)
-    try { if (liveBatch.current) apply(await cancelBatch(liveBatch.current.id, liveBatch.current.upload_token)); setRunning(false) }
-    catch (reason: unknown) { setError(reason instanceof Error ? reason.message : '取消失败，请重试') }
-    finally { setBusy(false) }
+    uploader.current?.stop()
+    apply(value)
+    setRunning(false)
   }
   const total = batch?.files.reduce((sum, file) => sum + file.size, 0) ?? 0
   const received = batch?.files.reduce((sum, file) => sum + file.bytes_received, 0) ?? 0
   const warnings = [...new Set(issues.filter(issue => issue.level === 'warn').map(issue => issue.rule_code))]
   const blocked = issues.some(issue => issue.level === 'block')
-  const ready = !busy && checked && !blocked && warnings.every(code => acks.includes(code))
+  const validYear = /^[0-9]{1,4}$/.test(year) && Number(year) >= 1
+  const needsYear = checked?.code_status === 'need_h_code' && !batch
+  const ready = !busy && checked && !blocked && (!needsYear || validYear) && warnings.every(code => acks.includes(code))
   const choose = !batch || !!selection || batch.status === '上传中断' || batch.status === '上传中' && !running
   const selectionFiles = selection?.entries.filter(e => !e.is_dir && !isIgnored(e)) ?? []
   return <div className="space-y-6"><GlassPanel><h1 className="text-2xl font-semibold">{resumeId ? '继续上传' : '上传新项目'}</h1>
@@ -132,7 +138,7 @@ export function UploadPage() {
       <input type="file" hidden ref={fileInput} {...{ webkitdirectory: '' }} multiple onChange={event => { if (event.target.files?.length) { try { void inspect(readInput(event.target.files)) } catch (reason: unknown) { setError(reason instanceof Error ? reason.message : '目录读取失败') } } event.target.value = '' }} />
     </div>}
     {selection && !selection.preservesEmptyDirectories && <p role="alert" className="mt-4 text-amber-800">该浏览器的普通文件夹选择无法列出空目录。包含空文件夹时，请改用拖入方式，或使用 Chrome / Edge 目录选择。</p>}
-    {selection && checked?.code_status === 'need_h_code' && !batch && <label className="mt-5 block text-sm">历史项目年份<input type="number" min={1} max={9999} className="field ml-4 max-w-32" value={year} onChange={event => setYear(Number(event.target.value))} /></label>}
+    {selection && checked?.code_status === 'need_h_code' && !batch && <label className="mt-5 block text-sm">实际所属年份（必填）<input type="number" min={1} max={9999} required className="field ml-4 max-w-32" value={year} onChange={event => setYear(event.target.value)} /></label>}
   </GlassPanel>
   {selection && <GlassPanel><h2 className="text-xl font-semibold">预检结果</h2><div className="mt-6 grid grid-cols-2 gap-8">
     <div className="max-h-96 overflow-auto rounded-xl bg-white/20 p-4 font-mono text-xs"><p className={`mb-3 font-semibold ${blocked ? 'text-red-800' : warnings.length ? 'text-amber-700' : 'text-slate-600'}`}>{selection.folder_name}</p>{selection.entries.map(entry => {
@@ -149,11 +155,12 @@ export function UploadPage() {
   {batch && !selection && <GlassPanel><h2 className="text-xl font-semibold">上传进度</h2><progress className="mt-6 h-3 w-full accent-emerald-700" max={Math.max(total, 1)} value={total ? received : batch.status === '已暂存' ? 1 : 0} />
     <p className="mt-3 text-sm text-slate-600">{formatSize(received)} / {formatSize(total)} · {formatSize(speed)}/秒 · 预计剩余 {speed > 0 ? Math.ceil((total - received) / speed) + ' 秒' : '—'}</p>
     <div className="my-6 max-h-96 overflow-auto text-sm">{batch.files.map(file => <div key={file.id} className="flex items-center justify-between gap-5 border-b border-slate-400/10 py-3"><div className="flex min-w-0 items-center gap-4">
-      {batch.status !== '已撤回' && file.upload_status === 'done' && /^(套装|单品)\/[^/]+\.(jpe?g|png)$/i.test(file.rel_path) && <ThumbnailPreview key={`${batch.id}:${file.id}:${file.fingerprint}`} batchId={batch.id} file={file} />}
+      {!['已撤回', '已终止'].includes(batch.status) && file.upload_status === 'done' && /^(套装|单品)\/[^/]+\.(jpe?g|png)$/i.test(file.rel_path) && <ThumbnailPreview key={`${batch.id}:${file.id}:${file.fingerprint}`} batchId={batch.id} file={file} />}
       <span className="break-all">{file.rel_path}</span></div><span className="shrink-0 text-slate-500">{file.upload_status === 'done' ? '已完成' : file.upload_status === 'partial' ? '上传中' : '等待'} · {formatSize(file.bytes_received)} / {formatSize(file.size)}</span></div>)}</div>
-    <div className="flex gap-4">{running && <GlassButton onClick={() => void pause()}>暂停</GlassButton>}{['上传中', '上传中断', '已暂存'].includes(batch.status) && <GlassButton disabled={busy} onClick={() => void cancel()}>取消上传</GlassButton>}
+    <div className="flex gap-4">{running && <GlassButton onClick={() => void pause()}>暂停</GlassButton>}{['上传中', '上传中断', '已暂存'].includes(batch.status) && <TerminateBatchButton id={batch.id} disabled={busy} onTerminated={onTerminated} />}
       {batch.status === '上传中断' && <GlassButton onClick={() => { setBatch(null); navigate(`/upload?resume=${batch.id}`) }}>重新拖入继续</GlassButton>}
       {batch.status === '已暂存' && <GlassButton disabled={busy} onClick={() => { setBusy(true); void confirmBatch(batch.id).then(value => { apply(value); navigate(`/batches/${value.id}`) }).catch((reason: Error) => setError(reason.message)).finally(() => setBusy(false)) }}>确认，开始 AI 处理</GlassButton>}</div>
+    {batch.termination_reason && <p className="mt-5 text-sm text-slate-600">终止原因：{batch.termination_reason}</p>}
     {batch.status === '已暂存' && <p className="mt-5 text-emerald-800">{batch.files.length} 个文件已到达临时区，指纹已计算；空目录已保留。</p>}
     {['AI 处理中', 'AI 处理失败', '待核对'].includes(batch.status) && <p className="mt-5 text-emerald-800"><a href={`/batches/${batch.id}`} className="underline underline-offset-4">查看 AI 进度与结果</a></p>}
   </GlassPanel>}

@@ -76,13 +76,10 @@ def test_upload_duplicate_out_of_order_complete_confirm(upload_client: TestClien
     assert done.json()["files"][0]["fingerprint"] == hashlib.sha256(b"abcdefghij").hexdigest()
     assert client.post(f'/api/batches/{batch["id"]}/confirm').json()["status"] == "AI 处理中"
     assert client.post(f'/api/batches/{batch["id"]}/confirm').status_code == 409
-    canceled = client.post(f'/api/batches/{batch["id"]}/cancel')
-    # WP06 允许处理中撤回；后台坏图也可能已先结束为 AI 处理失败。
-    if canceled.status_code == 200:
-        assert canceled.json()["status"] == "已撤回"
-    else:
-        assert canceled.status_code == 409
-        assert client.get(f'/api/batches/{batch["id"]}').json()["status"] in ("AI 处理失败", "待核对")
+    canceled = client.post(f'/api/batches/{batch["id"]}/cancel', json={"reason": "重复素材"})
+    assert canceled.status_code == 200 and canceled.json()["status"] == "已终止"
+    assert canceled.json()["termination_reason"] == "重复素材"
+    assert file_path(client, batch).read_bytes() == b"abcdefghij"
     with client.app.state.database.session() as session:
         assert "P08" in list(session.scalars(select(PreflightAck.rule_code)))
         assert session.scalar(select(Project)) is None
@@ -113,11 +110,11 @@ def test_queue_h_code_cancel(upload_client: TestClient) -> None:
     assert second["queued"] and not first["queued"]
     assert first["folder_name"] == "H2025-0001_企业_历史"
     assert chunk(client, second, 0, b"abcd").status_code == 409
-    assert client.post(f'/api/batches/{first["id"]}/cancel', headers=headers(first)).json()["status"] == "已撤回"
-    assert not file_path(client, first).parent.parent.exists()
+    assert client.post(f'/api/batches/{first["id"]}/cancel', json={"reason": "重复素材"}).json()["status"] == "已终止"
+    assert file_path(client, first).parent.parent.is_dir()
     state = client.get(f'/api/batches/{second["id"]}/upload-state', headers=headers(second)).json()
     assert not state["queued"]
-    assert client.post(f'/api/batches/{second["id"]}/cancel', headers=headers(second)).status_code == 200
+    assert client.post(f'/api/batches/{second["id"]}/cancel', json={"reason": "重复素材"}).status_code == 200
 
 
 @pytest.mark.parametrize("termination", ["expire", "logout"])
@@ -193,17 +190,24 @@ def test_other_user_tokens_ownership_role_and_wrong_file(upload_client: TestClie
     client.post('/api/auth/login', json={"username": "two", "password": "fake"})
     for url in (f'/api/batches/{batch["id"]}', f'/api/batches/{batch["id"]}/upload-state'):
         assert client.get(url).status_code == 403
-    assert client.post(f'/api/batches/{batch["id"]}/cancel').status_code == 403
+    assert client.post(f'/api/batches/{batch["id"]}/cancel', json={"reason": "重复素材"}).status_code == 403
     assert client.post(f'/api/batches/{batch["id"]}/resume', json=body()).status_code == 403
     assert client.get('/api/batches').json() == []
 
 
 def test_empty_files_directories_and_bounded_body(upload_client: TestClient) -> None:
     client = upload_client
-    batch = create(client, body(name="空文件", size=0))
-    assert finish(client, batch).json()["status"] == "已暂存"
+    payload = body(name="空文件", size=0)
+    payload["files"].append({"rel_path": "单品/主图.jpg", "size": 4})
+    batch = create(client, payload)
+    empty = finish(client, batch).json()
+    assert empty["files"][0]["fingerprint"] == hashlib.sha256(b"").hexdigest()
+    assert empty["files"][0]["fingerprint_kind"] == "full"
+    image = {**batch, "files": [batch["files"][1]]}
+    assert chunk(client, image, 0, b"abcd").status_code == 200
+    assert finish(client, image).json()["status"] == "已暂存"
     assert file_path(client, batch, "空文件").stat().st_size == 0
-    assert client.post(f'/api/batches/{batch["id"]}/cancel', headers=headers(batch)).json()["status"] == "已撤回"
+    assert client.post(f'/api/batches/{batch["id"]}/cancel', json={"reason": "重复素材"}).json()["status"] == "已终止"
     next_batch = create(client)
     assert chunk(client, next_batch, 0, b"12345").status_code == 413
     assert chunk(client, next_batch, -1, b"1234").status_code == 422
@@ -215,7 +219,7 @@ def test_empty_files_directories_and_bounded_body(upload_client: TestClient) -> 
 
 def test_queue_fifo_and_restart_does_not_leave_unreachable_queue(upload_client: TestClient, tmp_path: Path) -> None:
     client = upload_client
-    first, second, third = create(client), create(client), create(client)
+    first, second, third = (create(client, body(f"P{n}_企业_项目")) for n in range(1, 4))
     assert second["queued"] and third["queued"]
     client.post(f'/api/batches/{first["id"]}/pause', headers=headers(first))
     assert client.get(f'/api/batches/{third["id"]}/upload-state', headers=headers(third)).json()["queued"]
@@ -272,3 +276,47 @@ def test_second_device_cannot_drive_active_session_of_same_user(upload_client: T
     assert auth.context(original, "原设备").user.username == "one"
     client.cookies.set("nas_workbench_session", original, domain="testserver.local", path="/")
     assert chunk(client, batch, 0, b"abcd").status_code == 200
+
+
+def test_first_ingest_requires_main_image_and_historical_year(upload_client: TestClient) -> None:
+    client = upload_client
+    docs_only = body(name="02设计方案/资料.txt")
+    issues = client.post("/api/batches/precheck", json=docs_only).json()["issues"]
+    assert any(i["rule_code"] == "P07" and i["level"] == "block" for i in issues)
+    assert client.post("/api/batches", json=docs_only).status_code == 422
+    assert client.post("/api/batches", json=body("H_企业_项目")).json()["code"] == "historical_year_required"
+
+
+def test_active_ingest_conflict_and_termination_release(upload_client: TestClient) -> None:
+    client = upload_client
+    batch = create(client)
+    assert client.post("/api/batches", json=body()).json()["code"] == "project_busy"
+    assert client.post(f'/api/batches/{batch["id"]}/cancel', json={"reason": "  "}).status_code == 422
+    assert chunk(client, batch, 0, b"abcd").status_code == 200
+    assert client.post(f'/api/batches/{batch["id"]}/cancel', json={"reason": " 改用另一套 "}).json()["termination_reason"] == "改用另一套"
+    repeated = client.post(f'/api/batches/{batch["id"]}/cancel', json={"reason": "另一原因"}).json()
+    assert repeated["termination_reason"] == "改用另一套"
+    assert file_path(client, batch).read_bytes() == b"abcd"
+    assert client.post(f'/api/batches/{batch["id"]}/resume', json=body()).status_code == 409
+    replacement = create(client)
+    assert replacement["id"] != batch["id"] and replacement["project_code"] == batch["project_code"]
+    with client.app.state.database.session() as session:
+        assert session.get(Batch, batch["id"]).lock_active is False
+        assert session.get(Batch, replacement["id"]).lock_active is True
+
+
+def test_confirm_upgrades_legacy_digest_and_preserves_old_record(upload_client: TestClient) -> None:
+    client = upload_client
+    batch = create(client, body(size=4))
+    assert chunk(client, batch, 0, b"abcd").status_code == 200
+    assert finish(client, batch).status_code == 200
+    file_id = batch["files"][0]["id"]
+    with client.app.state.database.session() as session:
+        row = session.get(BatchFile, file_id)
+        row.fingerprint, row.fingerprint_kind = "f" * 64, "quick"
+    confirmed = client.post(f'/api/batches/{batch["id"]}/confirm')
+    assert confirmed.status_code == 200
+    assert confirmed.json()["files"][0]["fingerprint"] == hashlib.sha256(b"abcd").hexdigest()
+    with client.app.state.database.session() as session:
+        assert session.get(Batch, batch["id"]).payload["legacy_fingerprints"][str(file_id)] == {"value": "f" * 64, "kind": "quick"}
+        assert session.get(BatchFile, file_id).fingerprint_kind == "full"

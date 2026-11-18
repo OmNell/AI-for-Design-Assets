@@ -32,12 +32,12 @@ def login(client: TestClient, user: str = 'one') -> None:
     assert client.post('/api/auth/login', json={'username': user, 'password': 'fake'}).status_code == 200
 
 
-def uploaded(client: TestClient, paths: list[str], company: str = '企业') -> dict:
+def uploaded(client: TestClient, paths: list[str], company: str = '企业', project_code: str = 'P001') -> dict:
     source = BytesIO()
     with Image.new('RGB', (1200, 800), 'blue') as image:
         image.save(source, 'JPEG')
     content = source.getvalue()
-    response = client.post('/api/batches', json={'folder_name': f'P001_{company}_项目', 'won': True, 'acks': ['P08'],
+    response = client.post('/api/batches', json={'folder_name': f'{project_code}_{company}_项目', 'won': True, 'acks': ['P08'],
         'files': [{'rel_path': path, 'size': len(content), 'mtime': 1} for path in paths]})
     assert response.status_code == 200, response.text
     batch = response.json()
@@ -102,7 +102,7 @@ def test_all_failed_retry_owner_admin_and_unknown_location(client: TestClient) -
     assert client.post(f"/api/batches/{batch['id']}/retry-ai").status_code == 200
     assert client.app.state.jobs.wait_idle()
     assert client.post('/api/batches/999/retry-ai').status_code == 404
-    staged = uploaded(client, ['单品/未确认.jpg'])
+    staged = uploaded(client, ['单品/未确认.jpg'], '陌生企业', project_code='P002')
     assert client.post(f"/api/batches/{staged['id']}/retry-ai").status_code == 409
 
 
@@ -119,15 +119,15 @@ def test_cancel_pending_and_running_ai_does_not_publish_late_result(client: Test
     assert client.post(f"/api/batches/{batch['id']}/confirm").status_code == 200
     try:
         assert entered.wait(2)
-        response = client.post(f"/api/batches/{batch['id']}/cancel")
-        assert response.status_code == 200 and response.json()['status'] == '已撤回'
+        response = client.post(f"/api/batches/{batch['id']}/cancel", json={'reason': '本次无需继续'})
+        assert response.status_code == 200 and response.json()['status'] == '已终止'
     finally:
         release.set()
     assert client.app.state.jobs.wait_idle()
     with client.app.state.database.session() as session:
-        assert session.get(Batch, batch['id']).status == '已撤回'
+        assert session.get(Batch, batch['id']).status == '已终止'
         assert all(not product.tags for product in session.scalars(select(BatchProduct).where(BatchProduct.batch_id == batch['id'])))
-        assert any(job.status == 'failed' and job.error == '批次已撤回' for job in session.scalars(select(Job).where(Job.kind == 'ai_tag_product')))
+        assert any(job.status == 'failed' and job.error == '批次已终止' for job in session.scalars(select(Job).where(Job.kind == 'ai_tag_product')))
 
 
 def test_new_field_next_batch_and_stall_alert_is_deduplicated(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

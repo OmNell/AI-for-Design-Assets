@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Index
+from sqlalchemy import Computed, text, JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -90,8 +90,21 @@ class Project(Record, Base):
     ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class HCodeSequence(Base):
+    __tablename__ = "h_code_sequences"
+    year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_sequence: Mapped[int] = mapped_column(Integer)
+
+
 class Batch(Record, Base):
     __tablename__ = "batches"
+    __table_args__ = (Index("uq_batches_active_lock", "op_lock_key", unique=True, sqlite_where=text("lock_active = 1")),)
+    op_lock_key: Mapped[str | None] = mapped_column(Text, Computed(
+        "CASE WHEN kind = 'ingest' THEN 'ingest:' || project_code ELSE 'project:' || project_id END", persisted=False))
+    lock_active: Mapped[bool] = mapped_column(Boolean, Computed(
+        "CASE WHEN status IN ('已入库', '已撤回', '已终止') THEN 0 ELSE 1 END", persisted=False))
+    terminated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    termination_reason: Mapped[str | None] = mapped_column(Text)
     batch_no: Mapped[str] = mapped_column(String, unique=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
     project_code: Mapped[str] = mapped_column(String)
@@ -123,6 +136,7 @@ class BatchFile(Record, Base):
     upload_status: Mapped[str] = mapped_column(String, default="pending")
     bytes_received: Mapped[int] = mapped_column(Integer, default=0)
     fingerprint: Mapped[str | None] = mapped_column(String)
+    fingerprint_kind: Mapped[str | None] = mapped_column(String)
     thumb_status: Mapped[str | None] = mapped_column(String)
     thumb_error: Mapped[str | None] = mapped_column(Text)
     conflict: Mapped[str | None] = mapped_column(String)

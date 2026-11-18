@@ -23,7 +23,7 @@ jobs:
 upload:
   chunk_mb: 8
   parallel_files: 3
-  full_fingerprint_max_mb: 200
+  fingerprint_algorithm: sha256
 ai:
   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api_key_enc: ""

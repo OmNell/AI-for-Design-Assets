@@ -24,6 +24,7 @@ else:
     database = Database(load_settings().paths.data_dir)
     try:
         with database.engine.begin() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
             run(connection)
     finally:
         database.close()

@@ -35,6 +35,8 @@ function type(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
 }
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  HTMLDialogElement.prototype.showModal ??= function () { this.setAttribute('open', '') }
+  HTMLDialogElement.prototype.close ??= function () { this.removeAttribute('open') }
   vi.stubGlobal('CSS', { supports: () => false })
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   query = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } })
@@ -139,24 +141,34 @@ it('详情只读显示进度、字段标黄、图级标黄与套装推荐关系'
   expect(host.querySelector('input,textarea')).toBeNull()
 })
 
-it('整批失败可重试，恢复处理时显示新进度并可撤回', async () => {
+it('整批失败可重试，随后填写原因并确认终止', async () => {
   const calls: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  let reason: string | undefined
+  vi.stubGlobal('fetch', vi.fn(async (url: string, options: RequestInit) => {
     calls.push(url)
     if (url.endsWith('/retry-ai')) return response(batch())
-    if (url.endsWith('/cancel')) return response(batch('已撤回'))
+    if (url.endsWith('/cancel')) {
+      reason = (JSON.parse(String(options.body)) as { reason: string }).reason
+      return response({ ...batch('已终止'), termination_reason: reason })
+    }
     return response(batch('AI 处理失败'))
   }))
   detail()
   await until(() => !!button('重试整批 AI'))
   act(() => button('重试整批 AI').click())
-  await until(() => !!button('撤回批次'))
-  expect(host.textContent).toContain('正在按单品、套装的顺序处理')
-  act(() => button('撤回批次').click())
-  await until(() => host.textContent!.includes('已撤回'))
+  await until(() => host.textContent!.includes('正在按单品、套装的顺序处理'))
+  act(() => button('终止批次').click())
+  const dialog = document.querySelector('dialog')!
+  const submit = dialog.querySelector<HTMLButtonElement>('button[type="submit"]')!
+  expect(submit.disabled).toBe(true)
+  type(dialog.querySelector('textarea')!, '改用另一批素材')
+  expect(submit.disabled).toBe(false)
+  await act(async () => submit.click())
+  await until(() => host.textContent!.includes('已终止'))
   expect(calls).toContain('/api/batches/1/retry-ai')
   expect(calls).toContain('/api/batches/1/cancel')
-  expect(button('撤回批次')).toBeUndefined()
+  expect(reason).toBe('改用另一批素材')
+  expect(button('终止批次')).toBeUndefined()
 })
 
 it('AI 处理时轮询详情，结束后停止轮询', async () => {

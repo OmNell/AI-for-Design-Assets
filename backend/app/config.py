@@ -37,7 +37,9 @@ class NasConfig(Section):
 class UploadConfig(Section):
     chunk_mb: int = Field(default=8, gt=0)
     parallel_files: int = Field(default=3, gt=0)
-    full_fingerprint_max_mb: int = Field(default=200, gt=0)
+    fingerprint_algorithm: Literal["sha256"] = "sha256"
+    # 只接受旧配置键，计算逻辑始终使用完整 SHA-256。
+    full_fingerprint_max_mb: int | None = Field(default=None, gt=0, exclude=True)
 
 
 class JobsConfig(Section):
