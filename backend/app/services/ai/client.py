@@ -4,9 +4,11 @@ from __future__ import annotations
 import base64
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 import hashlib
 from io import BytesIO
+from importlib.resources import files
 import json
 import logging
 import re
@@ -24,6 +26,19 @@ from .parsing import FieldDefinition
 from .prompts import build_prompt
 
 logger = logging.getLogger("nas_workbench")
+
+
+_search_usage: ContextVar[list[dict[str, object]] | None] = ContextVar("search_usage", default=None)
+
+
+@contextmanager
+def collect_search_usage() -> Iterator[list[dict[str, object]]]:
+    calls: list[dict[str, object]] = []
+    token = _search_usage.set(calls)
+    try:
+        yield calls
+    finally:
+        _search_usage.reset(token)
 
 
 class AiCallError(Exception):
@@ -221,6 +236,10 @@ class AiClient:
             session.add(AiCall(model=model, kind=kind, batch_id=batch_id, batch_product_id=product_id,
                 duration_ms=milliseconds, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
                 total_tokens=total_tokens, success=success, error=error))
+        calls = _search_usage.get()
+        if calls is not None:
+            calls.append({"kind": kind, "model": model, "input_tokens": prompt_tokens,
+                          "output_tokens": completion_tokens, "success": success})
         logged_model = model.replace(self._secret, "[凭据已隐藏]") if self._secret else model
         logger.info("AI调用：模型=%s，用途=%s，耗时=%d毫秒，输入=%d，输出=%d，总计=%d，结果=%s",
                     logged_model, kind, milliseconds, prompt_tokens, completion_tokens, total_tokens, "成功" if success else "失败")
@@ -275,6 +294,16 @@ class AiClient:
             return _Result(json.dumps(vector), _usage(body))
 
         return json.loads(self._run(model, "embed", action, batch_id))
+
+    def search_chat(self, task: str, data: dict[str, object]) -> str:
+        path = {"query": "query_understanding.txt", "rank": "ranking.txt"}[task]
+        instruction = files("app").joinpath("prompts", path).read_text(encoding="utf-8")
+        model = self.config.model_text
+        payload = {"model": model, "temperature": 0, "max_tokens": 1600, "messages": [
+            {"role": "system", "content": instruction},
+            {"role": "user", "content": json.dumps(data, ensure_ascii=False)},
+        ]}
+        return self._run(model, "search_" + task, lambda: self._chat(model, payload))
 
     def test_models(self) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
@@ -335,6 +364,32 @@ class FakeAiClient(AiClient):
             vector = [byte / 127.5 - 1 for byte in hashlib.sha256(text.encode("utf-8")).digest()]
             return _Result(json.dumps(vector), {"prompt_tokens": 1, "total_tokens": 1})
         return json.loads(self._run(model, "embed", action, batch_id))
+
+    def search_chat(self, task: str, data: dict[str, object]) -> str:
+        model = self.config.model_text or "fake-text"
+
+        def action() -> _Result:
+            query = str(data["query"])
+            if f"假{task}失败" in query or "fail" in model.lower():
+                raise _AttemptError("假文本模型调用失败", retryable=False)
+            if task == "rank":
+                candidates = data["candidates"]
+                answer = {"items": [{"index": row["index"], "reason": "匹配已确认的商品属性"} for row in candidates[:10]]}
+            else:
+                # 假模型只供开发验收，正式字段值由人工填写并由真实模型解释。
+                fields = {}
+                remaining = query
+                for key, variants in {"festival": ["春节", "过年", "新年"], "audience": ["商务客户", "企业客户", "送领导"],
+                    "color": ["红色", "中国红", "红"], "material": ["陶瓷", "瓷器"],
+                    "style": ["极简", "简约"], "usage_scene": ["商务社交", "日常居家"]}.items():
+                    if any(term in query for term in variants):
+                        fields[key] = variants
+                        for term in variants:
+                            remaining = remaining.replace(term, " ")
+                answer = {"fields": fields, "keywords": [term for term in remaining.split() if len(term) >= 2][:12], "exclude": []}
+            return _Result(json.dumps(answer, ensure_ascii=False), {"prompt_tokens": 8, "completion_tokens": 8})
+
+        return self._run(model, "search_" + task, action)
 
     def test_models(self) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []

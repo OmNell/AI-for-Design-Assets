@@ -16,7 +16,10 @@ export function LoginPage() {
   const state: unknown = useLocation().state
   const returnTo = typeof state === 'object' && state !== null && 'returnTo' in state && typeof state.returnTo === 'string'
     && /^\/l\/[a-zA-Z0-9_-]+$/.test(state.returnTo) ? state.returnTo : '/'
-  if (user) return <Navigate to={returnTo} replace />
+  if (user) {
+    const uploadRole = user.roles.some(role => ['uploader', 'first_reviewer', 'final_reviewer'].includes(role))
+    return <Navigate to={returnTo === '/' && !uploadRole ? '/search' : returnTo} replace />
+  }
   const submit = handleSubmit(async values => {
     setError('')
     try { useAuthStore.getState().setUser(await login(values.username, values.password)) }

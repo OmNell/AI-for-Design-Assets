@@ -73,6 +73,7 @@ class AiConfig(Section):
     api_key_enc: SecretStr = SecretStr("")
     model_vision: str = ""
     model_text: str = ""
+    model_text_version: str = ""
     model_embed: str = ""
     model_embed_version: str = ""
     concurrency: int = Field(default=3, gt=0)

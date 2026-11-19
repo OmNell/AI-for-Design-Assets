@@ -49,6 +49,7 @@ it('设置页不回填密钥，提交立即清空，保存内容只含可写字�
   let submitted: AiSettingsInput | undefined
   let finish: ((value: Response) => void) | undefined
   vi.stubGlobal('fetch', vi.fn((url: string, options: RequestInit) => {
+    if (url === '/api/admin/vector-indexes') return Promise.resolve(response({ backend: 'numpy', indexes: [] }))
     if (url === '/api/admin/ai-alerts') return Promise.resolve(response([]))
     if (options?.method === 'PUT') { submitted = JSON.parse(String(options.body)) as AiSettingsInput; return new Promise<Response>(resolve => { finish = resolve }) }
     return Promise.resolve(response(settings))
@@ -71,6 +72,7 @@ it('设置页不回填密钥，提交立即清空，保存内容只含可写字�
 it('测试连接逐项展示成功和厂商错误，并显示停滞批次入口', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     if (url === '/api/settings/ai/test') return response({ results: [{ kind: 'vision', model: 'vision', success: true, error: null }, { kind: 'text', model: 'text', success: false, error: 'Invalid model name' }, { kind: 'embed', model: 'embed', success: true, error: null }] })
+    if (url === '/api/admin/vector-indexes') return Promise.resolve(response({ backend: 'numpy', indexes: [] }))
     if (url === '/api/admin/ai-alerts') return response([{ id: 1, batch_id: 2, run_id: 1, reason: 'AI 处理长时间没有进展', detected_at: '2026-01-01' }])
     return response(settings)
   }))

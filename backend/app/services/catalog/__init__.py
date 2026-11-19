@@ -72,33 +72,37 @@ class CatalogService:
             files=session.scalar(select(func.count()).select_from(CatalogFile).where(
                 CatalogFile.project_id == project.id, CatalogFile.status == "active")))
 
-    def list(self, filters: ProjectFilters, login: LoginContext, host: str) -> ProjectPage:
+    def selection(self, session: Session, filters: ProjectFilters) -> list[Project]:
         sort = {"newest": Project.ingested_at.desc(), "oldest": Project.ingested_at.asc(),
                 "name": Project.project_name.asc(), "code": Project.project_code.asc()}
+        query = select(Project).where(Project.status == "active")
+        if filters.won is not None:
+            query = query.where(Project.won == filters.won)
+        companies = list(session.scalars(select(CompanyIndustryMap)))
+        matching = []
+        term = filters.q.strip().casefold()
+        company_term = filters.company.strip().casefold()
+        industry_term = filters.industry.strip().casefold()
+        for project in session.scalars(query.order_by(sort[filters.sort], Project.id)):
+            names = {project.company_name.casefold()}
+            for row in companies:
+                company_names = {item.casefold() for item in [row.company_name, *row.aliases]}
+                if row.id == project.company_id or names.intersection(company_names):
+                    names.update(company_names)
+                    break
+            if term and not any(term in value for value in (project.project_code.casefold(), project.project_name.casefold(), *names)):
+                continue
+            if company_term and str(project.company_id) != company_term and not any(company_term in value for value in names):
+                continue
+            if industry_term and str(project.industry_id) != industry_term and industry_term not in self._industry(session, project).casefold():
+                continue
+            matching.append(project)
+        return matching
+
+    def list(self, filters: ProjectFilters, login: LoginContext, host: str) -> ProjectPage:
         with self.auth.database.session() as session:
             self.media._check_login(session, login)
-            query = select(Project).where(Project.status == "active")
-            if filters.won is not None:
-                query = query.where(Project.won == filters.won)
-            companies = list(session.scalars(select(CompanyIndustryMap)))
-            matching = []
-            term = filters.q.strip().casefold()
-            company_term = filters.company.strip().casefold()
-            industry_term = filters.industry.strip().casefold()
-            for project in session.scalars(query.order_by(sort[filters.sort], Project.id)):
-                names = {project.company_name.casefold()}
-                for row in companies:
-                    company_names = {item.casefold() for item in [row.company_name, *row.aliases]}
-                    if row.id == project.company_id or names.intersection(company_names):
-                        names.update(company_names)
-                        break
-                if term and not any(term in value for value in (project.project_code.casefold(), project.project_name.casefold(), *names)):
-                    continue
-                if company_term and str(project.company_id) != company_term and not any(company_term in value for value in names):
-                    continue
-                if industry_term and str(project.industry_id) != industry_term and industry_term not in self._industry(session, project).casefold():
-                    continue
-                matching.append(project)
+            matching = self.selection(session, filters)
         visible = []
         for project in matching:
             try:

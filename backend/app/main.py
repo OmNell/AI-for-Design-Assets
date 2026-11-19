@@ -13,6 +13,10 @@ from fastapi.responses import FileResponse
 from starlette.exceptions import HTTPException
 
 from app import __version__
+from app.api.search import router as search_router
+from app.services.search import SearchService
+from app.services.search.indexes import INDEX_JOB, IndexService
+from app.services.search.store import VectorStore
 from app.api.catalog import router as catalog_router
 from app.services.catalog import CatalogService
 from app.api.ingest import router as ingest_router
@@ -97,6 +101,14 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             ingest = IngestService(application.state.auth, jobs, ai, application.state.notify)
             application.state.ingest = ingest
             application.state.catalog = CatalogService(application.state.auth)
+            store = VectorStore()
+            with database.session() as session:
+                logger.info("向量计算后端：%s", store.backend(session))
+            indexes = IndexService(ai, store)
+            application.state.indexes = indexes
+            application.state.search = SearchService(ai, application.state.catalog, store)
+            ingest.on_published = indexes.sync_after_publish
+            jobs.register(INDEX_JOB, indexes.handle, concurrency=1, retries=0, recoverable=True)
             application.state.links = LinkService(application.state.auth, application.state.catalog)
             application.state.audit = AuditService(application.state.auth, application.state.review, application.state.notify, ingest)
             jobs.register("ingest", ingest.handle, concurrency=1, retries=1, recoverable=False, state_callback=ingest.on_job_state)
@@ -153,6 +165,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
     application.include_router(audit_router)
     application.include_router(ingest_router)
     application.include_router(catalog_router)
+    application.include_router(search_router)
     static_root = static_dir.resolve()
     application.state.static_index = static_root / "index.html"
 

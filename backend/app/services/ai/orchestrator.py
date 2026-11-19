@@ -12,6 +12,7 @@ from collections.abc import Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import AiConfig
 from app.db.models import AiAlert, Batch, BatchFile, BatchProduct, CompanyIndustryMap, Job, User, utcnow
 from app.errors import AppError
 from app.services.auth.service import AuthService
@@ -53,10 +54,10 @@ class AiService:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
-    def client(self) -> AiClient | FakeAiClient:
-        config = self.settings.effective()
+    def client(self, config: AiConfig | None = None) -> AiClient | FakeAiClient:
+        config = config if config is not None else self.settings.effective()
         signature = (self.auth.config.mode, config.base_url, config.api_key_enc.get_secret_value(), config.model_vision,
-                     config.model_text, config.model_embed, config.model_embed_version, config.concurrency, config.timeout_s, config.retries)
+                     config.model_text, config.model_text_version, config.model_embed, config.model_embed_version, config.concurrency, config.timeout_s, config.retries)
         with self.auth.lock:
             if signature not in self._clients:
                 factory = FakeAiClient if self.auth.config.mode == "dev" else AiClient
