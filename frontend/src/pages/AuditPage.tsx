@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { changePath, claimAudit, getAudit, passAudit, rejectAudit, releaseAudit, savePins, type AuditData, type PinInput } from '../api/audit'
+import { OperationDiff } from '../components/ops/OperationDiff'
+import { OperationExecution } from '../components/ops/OperationExecution'
 import { useAuthStore } from '../stores/auth'
 import { IngestPanel } from '../components/IngestPanel'
 import { GlassSurface } from '../components/glass/GlassSurface'
@@ -52,7 +54,7 @@ export function AuditPage() {
   const items = products.filter(product => product.kind === 'item')
   const mine = data.claimed_by_me
   const allChecked = Object.keys(data.checklist).every(item => checks[item])
-  const pathBlocked = stage === 'final' && !path.effective
+  const pathBlocked = stage === 'final' && !path.effective && !data.operation
   const pinCounts = pins.reduce<Record<number, number>>((counts, pin) => ({ ...counts, [pin.batch_product_id]: (counts[pin.batch_product_id] ?? 0) + 1 }), {})
   const run = async (action: () => Promise<AuditData>, after?: (result: AuditData) => void) => {
     setBusy(true); setError('')
@@ -80,13 +82,16 @@ export function AuditPage() {
         {stage && data.claimed_by && (mine || user?.roles.includes('admin')) && <GlassButton primary={false} disabled={busy} onClick={() => void run(() => releaseAudit(id, data.version))}>释放领取</GlassButton>}</div>
     </div></GlassSurface>
 
-    {['入库中', '入库异常', '已入库'].includes(batch.status) && <IngestPanel batchId={id} />}
+    {['入库中', '入库异常', '已入库'].includes(batch.status) && (data.operation
+      ? <OperationExecution batchId={id} projectId={data.operation.before.project.id} kind={data.operation.kind} />
+      : <IngestPanel batchId={id} />)}
+    {data.operation && <OperationDiff operation={data.operation} />}
 
-    <div className="grid h-[calc(100vh-300px)] min-h-[560px] grid-cols-[270px_minmax(0,1fr)_420px] gap-4">
-      <GlassSurface radius={24} priority="secondary" className="glass-fill min-h-0 p-3"><div data-testid="product-list" className="h-full overflow-y-auto pr-1">
-        <ProductList batchId={batch.id} products={products} fields={fields} selectedId={selected?.id} onSelect={setCurrent} pinCounts={pinCounts} /></div></GlassSurface>
+    <div className={data.operation && !products.length ? "grid grid-cols-1" : "grid h-[calc(100vh-300px)] min-h-[560px] grid-cols-[270px_minmax(0,1fr)_420px] gap-4"}>
+      {(!data.operation || products.length > 0) && <GlassSurface radius={24} priority="secondary" className="glass-fill min-h-0 p-3"><div data-testid="product-list" className="h-full overflow-y-auto pr-1">
+        <ProductList batchId={batch.id} products={products} fields={fields} selectedId={selected?.id} onSelect={setCurrent} pinCounts={pinCounts} /></div></GlassSurface>}
 
-      <GlassSurface radius={24} priority="secondary" className="glass-fill min-h-0 p-3">{selected ? <div className="flex h-full flex-col">
+      {(!data.operation || products.length > 0) && <GlassSurface radius={24} priority="secondary" className="glass-fill min-h-0 p-3">{selected ? <div className="flex h-full flex-col">
         <div className="mb-2 flex items-center justify-between gap-3 text-sm"><span className="truncate font-medium">{selected.display_name}</span>
           {selected.kind === 'set' && <label className="flex shrink-0 items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={sideBySide} onChange={event => setSideBySide(event.target.checked)} />并排显示包含的单品</label>}</div>
         <div className={`min-h-0 flex-1 ${selected.kind === 'set' && sideBySide ? 'grid grid-cols-2 gap-3' : ''}`}>
@@ -96,7 +101,7 @@ export function AuditPage() {
             <button type="button" key={item.id} className="rounded-xl bg-white/30 p-1.5 text-left hover:bg-white/50" onClick={() => setCurrent(item.id)}>
               <Thumb batchId={batch.id} fileId={item.batch_file_id} version={item.fingerprint ?? ''} size={1024} alt={`${item.display_name} 图片`} className="aspect-square w-full" />
               <span className="mt-1 block truncate text-xs">{item.display_name}</span></button>)}</div></div>}
-        </div></div> : <p className="p-6 text-sm text-slate-500">本批次没有主图。</p>}</GlassSurface>
+        </div></div> : <p className="p-6 text-sm text-slate-500">本批次没有主图。</p>}</GlassSurface>}
 
       <GlassSurface radius={24} priority="secondary" className="glass-fill min-h-0 p-3"><div className="flex h-full flex-col">
         <div role="tablist" className="mb-2 flex gap-1 rounded-full bg-white/30 p-1 text-sm">{([['info', '审核信息'], ['tags', '标签（只读）']] as const).map(([value, label]) =>

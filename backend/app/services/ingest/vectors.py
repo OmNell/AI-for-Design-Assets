@@ -6,7 +6,7 @@ import hashlib
 import math
 import re
 import struct
-from typing import Iterable
+from collections.abc import Callable, Iterable
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -142,11 +142,15 @@ def dimension_for(session: Session, model: Model) -> int | None:
         func.length(ProductEmbedding.embedding) == ProductEmbedding.dimension * 4).limit(1))
 
 
-def store_vector(session: Session, model: Model, product_id: int, vector: list[float],
-                 digest: str, dimension: int | None) -> None:
+def validate_vector(vector: list[float], dimension: int | None) -> None:
     if (not 1 <= len(vector) <= 8192 or (dimension is not None and len(vector) != dimension)
             or not any(vector) or not all(-1e30 < value < 1e30 for value in vector)):
         raise AiCallError("向量值或维度与索引不一致")
+
+
+def store_vector(session: Session, model: Model, product_id: int, vector: list[float],
+                 digest: str, dimension: int | None) -> None:
+    validate_vector(vector, dimension)
     row = session.get(ProductEmbedding, model.key(product_id))
     if row is None:
         row = ProductEmbedding(product_id=product_id, model_id=model.name, model_version=model.version,
@@ -156,13 +160,18 @@ def store_vector(session: Session, model: Model, product_id: int, vector: list[f
     row.embedding, row.dimension = struct.pack(f"<{len(vector)}f", *vector), len(vector)
 
 
-def generate(ai: AiService, batch_id: int | None, model: Model, inputs: dict[int, str]) -> None:
+def generate(ai: AiService, batch_id: int | None, model: Model, inputs: dict[int, str],
+             fence: Callable[[Session, int, str], bool] | None = None) -> None:
     client = client_for(ai, model)
     failures = 0
     for product_id, text in inputs.items():
         digest = text_hash(text)
         key = model.key(product_id)
         with ai.auth.database.session() as session:
+            if fence is not None:
+                session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                if not fence(session, product_id, digest):
+                    continue
             row = session.get(ProductEmbedding, key)
             if _valid(row, digest, dimension_for(session, model)):
                 continue
@@ -175,10 +184,18 @@ def generate(ai: AiService, batch_id: int | None, model: Model, inputs: dict[int
         try:
             vector = client.embed(text, batch_id)
             with ai.auth.database.session() as session:
+                if fence is not None:
+                    session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                    if not fence(session, product_id, digest):
+                        continue
                 store_vector(session, model, product_id, vector, digest, dimension_for(session, model))
         except (AiCallError, OverflowError, struct.error):
             failures += 1
             with ai.auth.database.session() as session:
+                if fence is not None:
+                    session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                    if not fence(session, product_id, digest):
+                        continue
                 row = session.get(ProductEmbedding, key)
                 row.state, row.error = "failed", "向量生成或维度校验失败"
     if failures:

@@ -103,18 +103,18 @@ class CatalogService:
         with self.auth.database.session() as session:
             self.media._check_login(session, login)
             matching = self.selection(session, filters)
-        visible = []
+        visible: dict[int, str] = {}
         for project in matching:
             try:
                 self.authorize_project(project, login, host)
             except (NasNotFound, NasPermissionDenied):
                 continue
-            visible.append(project.id)
+            visible[project.id] = project.current_path
         offset = (filters.page - 1) * filters.page_size
         with self.auth.database.session() as session:
             self.media._check_login(session, login)
-            rows = [self._row(session, row) for pid in visible[offset:offset + filters.page_size]
-                    if (row := session.get(Project, pid)) and row.status == "active"]
+            rows = [self._row(session, row) for pid in list(visible)[offset:offset + filters.page_size]
+                    if (row := session.get(Project, pid)) and row.status == "active" and row.current_path == visible[pid]]
             OplogService(session).write(login.user.id, ",".join(login.user.roles), "查找项目", "project", None, None,
                                         {"filters": filters.model_dump(), "matches": len(visible)}, "成功", host)
             return ProjectPage(items=rows, total=len(visible), page=filters.page, page_size=filters.page_size)
@@ -128,16 +128,25 @@ class CatalogService:
                             kind=product.kind, status=product.status, link_id=link, link_url=self.url(link),
                             related=related, tags=tags)
 
-    def _project_read(self, project_id: int, login: LoginContext, host: str) -> None:
+    def _project_read(self, project_id: int, login: LoginContext, host: str) -> Project:
         with self.auth.database.session() as session:
             self.media._check_login(session, login)
             project = self.load_project(session, project_id)
         self.authorize_project(project, login, host, relocate=True)
+        return project
+
+    def _current_project(self, session: Session, authorized: Project, login: LoginContext, host: str) -> Project:
+        project = self.load_project(session, authorized.id)
+        if project.current_path != authorized.current_path:
+            # 发布可能在两次读取之间切换到权限不同的 NAS 位置。
+            self.authorize_project(project, login, host)
+        return project
 
     def project(self, project_id: int, login: LoginContext, host: str) -> ProjectDetail:
-        self._project_read(project_id, login, host)
+        authorized = self._project_read(project_id, login, host)
         with self.auth.database.session() as session:
-            project = self.load_project(session, project_id)
+            session.connection().exec_driver_sql("BEGIN")
+            project = self._current_project(session, authorized, login, host)
             products = list(session.scalars(select(Product).where(Product.project_id == project.id,
                 Product.status == "active").order_by(Product.product_code)))
             ids = {row.id for row in products}
@@ -164,9 +173,10 @@ class CatalogService:
     def files(self, project_id: int, category: str | None, login: LoginContext, host: str) -> list[FileRow]:
         if category is not None and category not in [*REQUIRED, "套装", "单品", "other"]:
             raise AppError("invalid_category", "资料夹不存在", 422)
-        self._project_read(project_id, login, host)
+        authorized = self._project_read(project_id, login, host)
         with self.auth.database.session() as session:
-            self.load_project(session, project_id)
+            session.connection().exec_driver_sql("BEGIN")
+            self._current_project(session, authorized, login, host)
             query = select(CatalogFile).where(CatalogFile.project_id == project_id, CatalogFile.status == "active")
             if category is not None:
                 query = query.where(CatalogFile.category == category)
@@ -182,9 +192,10 @@ class CatalogService:
         file_id = self.media.main_image_id(product_id)
         with self.auth.database.session() as session:
             product = session.get(Product, product_id)
-        self._project_read(product.project_id, login, host)
+        authorized = self._project_read(product.project_id, login, host)
         with self.auth.database.session() as session:
-            project = self.load_project(session, product.project_id)
+            session.connection().exec_driver_sql("BEGIN")
+            project = self._current_project(session, authorized, login, host)
             product = session.get(Product, product_id)
             if product is None or product.status != "active" or product.file_id != file_id:
                 raise AppError("product_not_found", "商品不存在或已作废", 404)

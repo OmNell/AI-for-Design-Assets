@@ -75,7 +75,15 @@ class Job(Record, Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class Project(Record, Base):
+class Lifecycle:
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    void_reason: Mapped[str | None] = mapped_column(Text)
+    void_batch_id: Mapped[int | None] = mapped_column(Integer)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delete_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class Project(Record, Lifecycle, Base):
     __tablename__ = "projects"
     project_code: Mapped[str] = mapped_column(String, unique=True)
     code_source: Mapped[str] = mapped_column(String, default="company")
@@ -90,6 +98,9 @@ class Project(Record, Base):
     ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     archive_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     archive_review: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    asset_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    canonical_path: Mapped[str | None] = mapped_column(String)
+    restore_path: Mapped[str | None] = mapped_column(String)
 
 
 class HCodeSequence(Base):
@@ -267,9 +278,10 @@ class ReviewPin(Record, Base):
     x: Mapped[float] = mapped_column(Float)
     y: Mapped[float] = mapped_column(Float)
     text: Mapped[str] = mapped_column(Text)
-class CatalogFile(Record, Base):
+class CatalogFile(Record, Lifecycle, Base):
     __tablename__ = "files"
     physical_rel_path: Mapped[str | None] = mapped_column(String)
+    void_prior_status: Mapped[str | None] = mapped_column(String)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     rel_path: Mapped[str] = mapped_column(String)
     size: Mapped[int] = mapped_column(Integer)
@@ -281,7 +293,7 @@ class CatalogFile(Record, Base):
     first_batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"))
 
 
-class Product(Record, Base):
+class Product(Record, Lifecycle, Base):
     __tablename__ = "products"
     product_code: Mapped[str] = mapped_column(String, unique=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
@@ -431,3 +443,41 @@ class EmbeddingIndex(Base):
     revision: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PostopPlan(Base):
+    __tablename__ = "postop_plans"
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), primary_key=True)
+    previous_path: Mapped[str] = mapped_column(String)
+    target_path: Mapped[str] = mapped_column(String)
+    baseline: Mapped[dict] = mapped_column(JSON)
+    manifest: Mapped[dict] = mapped_column(JSON)
+    sources: Mapped[dict] = mapped_column(JSON)
+    purge: Mapped[list[dict]] = mapped_column(JSON)
+    progress: Mapped[dict] = mapped_column(JSON)
+
+
+class ProductEmbeddingHistory(Base):
+    __tablename__ = "product_embedding_history"
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), primary_key=True)
+    model_id: Mapped[str] = mapped_column(String, primary_key=True)
+    model_version: Mapped[str] = mapped_column(String, primary_key=True)
+    index_generation: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dimension: Mapped[int] = mapped_column(Integer)
+    embedding: Mapped[bytes] = mapped_column(LargeBinary)
+    text_hash: Mapped[str] = mapped_column(String(64))
+
+
+class ExpectedDeletion(Base):
+    __tablename__ = "expected_deletions"
+    __table_args__ = (UniqueConstraint("batch_id", "file_id", "path"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), index=True)
+    file_id: Mapped[int] = mapped_column(ForeignKey("files.id"))
+    path: Mapped[str] = mapped_column(String)
+    size: Mapped[int] = mapped_column(Integer)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    intent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    quarantined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

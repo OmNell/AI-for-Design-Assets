@@ -27,13 +27,15 @@ import { ProjectsPage } from '../pages/ProjectsPage'
 import { ProjectPage } from '../pages/ProjectPage'
 import { ProductPage } from '../pages/ProductPage'
 import { AssetLinkPage, FilePage, FindingsPage } from '../pages/AssetLinkPage'
-import { canAccess, navigation, type NavigationItem } from './navigation'
+import { ProjectOperationsPage, VoidedProjectsPage } from '../pages/ProjectOperationsPage'
+import { OperationPage } from '../pages/OperationPage'
+import { safeLoginReturn, canAccess, navigation, type NavigationItem } from './navigation'
 
 
 function Guard() {
   const user = useAuthStore(state => state.user)
   const location = useLocation()
-  const returnTo = /^\/l\/[a-zA-Z0-9_-]+$/.test(location.pathname) ? location.pathname : undefined
+  const returnTo = safeLoginReturn(location.pathname) ? location.pathname : undefined
   return user ? <Outlet /> : <Navigate to="/login" state={{ returnTo }} replace />
 }
 function RoleGuard({ item, children }: { item: NavigationItem; children: React.ReactNode }) {
@@ -87,6 +89,9 @@ function AuthBootstrap() {
       </RoleGuard>} />)}
       <Route path="/admin/tag-fields" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><TagFieldsPage /></RoleGuard>} />
       <Route path="/projects/:id" element={<ProjectPage />} />
+      <Route path="/projects/voided" element={<VoidedProjectsPage />} />
+      <Route path="/projects/:id/operations" element={<ProjectOperationsPage />} />
+      <Route path="/batches/:id/operation" element={<OperationPage />} />
       <Route path="/products/:id" element={<ProductPage />} />
       <Route path="/files/:id" element={<FilePage />} />
       <Route path="/l/:linkId" element={<AssetLinkPage />} />

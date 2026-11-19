@@ -22,6 +22,7 @@ export function ProductPage() {
       <div className="my-4 flex flex-wrap gap-2">
         <CopyLink url={product.product_url} label="复制商品链接" /><CopyLink url={product.project.link_url} label="复制项目链接" />
         <Link to={`/files/${product.file_id}`} className="self-center text-sm underline">查看主图文件</Link>
+        <Link to={`/projects/${product.project.id}/operations?product=${product.id}`} className="self-center text-sm text-emerald-800 underline">商品操作</Link>
       </div>
       <h2 className="font-semibold">已确认标签</h2>
       <dl className="my-3 space-y-2 text-sm">{product.tags.map(tag => <div key={tag.key} className="grid grid-cols-[5.5rem_1fr] gap-2">

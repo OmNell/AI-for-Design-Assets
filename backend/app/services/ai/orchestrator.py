@@ -9,7 +9,7 @@ import logging
 import re
 from collections.abc import Callable
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.config import AiConfig
@@ -40,7 +40,8 @@ HUMAN_SOURCES = ("manual", "ai_confirmed")
 def active_products(session: Session, batch_id: int, kind: str | None = None) -> list[BatchProduct]:
     """核对阶段移除的主图保留记录但不再参与打标、展示与提交。"""
     query = select(BatchProduct).join(BatchFile, BatchFile.id == BatchProduct.batch_file_id).where(
-        BatchProduct.batch_id == batch_id, BatchFile.removed.is_not(True)).order_by(BatchProduct.id)
+        BatchProduct.batch_id == batch_id, BatchFile.removed.is_not(True),
+        or_(BatchFile.conflict.is_(None), BatchFile.conflict != "duplicate")).order_by(BatchProduct.id)
     if kind is not None:
         query = query.where(BatchProduct.kind == kind)
     return list(session.scalars(query))
@@ -94,11 +95,13 @@ class AiService:
         run = secrets.token_hex(16)
         batch.payload = {**batch.payload, "ai_run": run, "ai_initialized": False, "ai_jobs": {}, "ai_single": {},
                          "ai_last_progress": utcnow().isoformat()}
-        batch.recommended_path = None
+        if batch.kind == "ingest":
+            batch.recommended_path = None
         for product in session.scalars(select(BatchProduct).where(BatchProduct.batch_id == batch.id)):
             product.ai_status, product.ai_error = "pending", None
         for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id, BatchFile.upload_status == "done")):
-            self.thumbs.enqueue(session, batch, file)
+            if file.conflict != "duplicate":
+                self.thumbs.enqueue(session, batch, file)
         self.queue.enqueue("ai_tag_batch", {"batch_id": batch.id, "run_id": run}, session=session)
         self._log(session, batch, "开始 AI 打标")
 
@@ -121,9 +124,10 @@ class AiService:
             if not batch.payload.get("ai_initialized"):
                 fields = [{"key": row.key, "label": row.label, "hint": row.hint} for row in fixed_fields(session)]
                 batch.payload = {**batch.payload, "ai_fields": fields, "ai_initialized": True}
-                batch.recommended_path = self._recommend(session, batch)
+                if batch.kind == "ingest":
+                    batch.recommended_path = self._recommend(session, batch)
                 for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id).order_by(BatchFile.id)):
-                    if not is_main_image(file) or file.removed:
+                    if not is_main_image(file) or file.removed or file.conflict == "duplicate":
                         continue
                     product = session.scalar(select(BatchProduct).where(BatchProduct.batch_id == batch.id, BatchProduct.batch_file_id == file.id))
                     if product is None:

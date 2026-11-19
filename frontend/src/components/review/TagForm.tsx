@@ -15,8 +15,8 @@ function SourceBadge({ tag }: { tag: ProductTag | undefined }) {
     className={`shrink-0 cursor-default rounded-full px-2 py-0.5 text-[11px] ${manual ? 'bg-emerald-800 text-white' : 'bg-white/50 text-slate-600'}`}>{sourceLabels[tag.source] ?? tag.source}</span>
 }
 
-interface FieldProps { batchId: number; field: ReviewField; tag: ProductTag | undefined; editable: boolean; canConfirm: boolean; onChange: (patch: ProductPatch, immediate?: boolean) => void }
-function FieldEditor({ batchId, field, tag, editable, canConfirm, onChange }: FieldProps) {
+interface FieldProps { batchId: number; showAi?: boolean; field: ReviewField; tag: ProductTag | undefined; editable: boolean; canConfirm: boolean; onChange: (patch: ProductPatch, immediate?: boolean) => void }
+export function FieldEditor({ batchId, field, tag, editable, canConfirm, onChange, showAi = true }: FieldProps) {
   const id = useId()
   const server = tag?.value ?? ''
   const [text, setText] = useState(server)
@@ -72,8 +72,19 @@ function FieldEditor({ batchId, field, tag, editable, canConfirm, onChange }: Fi
       </>}
     </div>
     {tag?.flag && <p className="mt-2 text-xs text-amber-900">{flagReasons[tag.flag] ?? '该字段需要核对。'}</p>}
-    <p className="mt-1 text-xs text-slate-600">AI 原值：{tag?.ai_value || '（空）'}
-      {tag?.previous_value != null && <> · 替换前：{tag.previous_value || '（空）'} {editable && <button type="button" className="underline" onClick={() => update(tag.previous_value ?? '')}>沿用旧值</button>}</>}</p>
+    {showAi && <div className={tag?.previous_value == null ? 'mt-2 text-xs text-slate-600' : 'mt-2 grid grid-cols-2 gap-2 text-xs text-slate-600'}>
+      {tag?.previous_value != null && <div><p>替换前</p><p className="mt-1 break-words">{tag.previous_value || '（空）'}</p>
+        {editable && <button type="button" className="mt-1 underline disabled:opacity-40" disabled={!canConfirm} onClick={() => {
+          const value = tag.previous_value ?? ''
+          setText(value)
+          onChange({ tags: { [field.key]: value }, confirmations: { [field.key]: value.trim() ? 'confirmed_value' : 'confirmed_unknown' } }, true)
+        }}>沿用旧值</button>}</div>}
+      <div><p>AI 原值</p><p className="mt-1 break-words">{tag?.ai_value || '（空）'}</p>
+        {tag?.previous_value != null && editable && <button type="button" className="mt-1 underline disabled:opacity-40" disabled={!canConfirm || !tag.ai_value.trim() || tag.ai_value === '无法判断'} onClick={() => {
+          setText(tag.ai_value)
+          onChange({ tags: { [field.key]: tag.ai_value }, confirmations: { [field.key]: 'confirmed_value' } }, true)
+        }}>采用 AI 新值</button>}</div>
+    </div>}
   </div>
 }
 

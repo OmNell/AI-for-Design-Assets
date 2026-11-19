@@ -1,4 +1,5 @@
 """正式入库进度与永久链接解析。"""
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel
@@ -23,3 +24,5 @@ class ResolvedLink(BaseModel):
     url: str
     status: str
     image_file_id: int | None = None
+    deleted_at: datetime | None = None
+    delete_reason: str | None = None

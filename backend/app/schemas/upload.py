@@ -30,6 +30,7 @@ class PrecheckResponse(BaseModel):
     company_name: str
     project_name: str
     code_status: Literal["new", "exists", "need_h_code"]
+    project_id: int | None = None
     issues: list[Issue]
     path_prefix_length: int = 0
 
@@ -49,6 +50,7 @@ class ResumeRequest(PrecheckRequest):
 class TerminateBatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     reason: str = Field(min_length=1, max_length=500)
+    confirmed: bool = False
 
     @field_validator("reason", mode="before")
     @classmethod
@@ -68,12 +70,16 @@ class UploadFileResponse(BaseModel):
     fingerprint_kind: str | None = None
     thumb_status: str | None = None
     thumb_error: str | None = None
+    conflict: str | None = None
+    conflict_choice: str | None = None
 
 
 class BatchResponse(BaseModel):
     id: int
     batch_no: str
     project_code: str
+    kind: str = "ingest"
+    project_id: int | None = None
     folder_name: str
     original_folder_name: str
     status: str

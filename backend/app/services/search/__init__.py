@@ -117,6 +117,7 @@ class SearchService:
 
     def _snapshot(self, body: SearchRequest, login: LoginContext):
         with self.auth.database.session() as session:
+            session.connection().exec_driver_sql("BEGIN")
             self.catalog.media._check_login(session, login)
             redactor = self._redactor(session)
             query = body.query.casefold()
@@ -145,7 +146,11 @@ class SearchService:
                     if tag.field_key in FIXED_FIELDS and tag.value.strip() and tag.value.strip() not in ("无法判断", "无法确定"):
                         candidates[tag.product_id].tags[tag.field_key] = tag.value
                         candidates[tag.product_id].terms[tag.field_key] = tag.terms
-            return exact, matched_projects, products, candidates, redactor
+            model = vectors.formal_model(self.ai, session) if not exact else None
+            dimension = vectors.dimension_for(session, model) if model else None
+            digests = {pid: vectors.text_hash(text) for pid, text in
+                       inputs_for(self.ai, session, list(products.values())).items()} if model else {}
+            return exact, matched_projects, project_map, products, candidates, redactor, model, dimension, digests
 
     def _authorized(self, product: Product, login: LoginContext) -> bool:
         try:
@@ -176,19 +181,20 @@ class SearchService:
                 break
         return visible, denied
 
-    def _vectors(self, query: str, products: dict[int, Product], warnings: list[str]):
-        with self.auth.database.session() as session:
-            model = vectors.formal_model(self.ai, session)
-            if model is None:
-                warnings.append("正式向量索引尚未建立，已使用关键词检索")
-                return {}, None
-            dimension = vectors.dimension_for(session, model)
-            digests = {pid: vectors.text_hash(text) for pid, text in inputs_for(self.ai, session, list(products.values())).items()}
+    def _vectors(self, query: str, model: vectors.Model | None, dimension: int | None,
+                 digests: dict[int, str], warnings: list[str]):
+        if model is None:
+            warnings.append("正式向量索引尚未建立，已使用关键词检索")
+            return {}, None
         try:
             if dimension is None:
                 raise ValueError("正式向量维度未登记")
             embedding = vectors.client_for(self.ai, model).embed(query, None)
             with self.auth.database.session() as session:
+                session.connection().exec_driver_sql("BEGIN")
+                if vectors.formal_model(self.ai, session) != model:
+                    warnings.append("检索期间正式索引已切换，已使用关键词检索")
+                    return {}, None
                 matches, _ = self.store.top(session, model, dimension, embedding, digests, len(digests))
             return {pid: score for pid, score in matches if score >= 0.45}, model.generation
         except (AiCallError, JobFailure, ValueError, TypeError, OverflowError):
@@ -224,14 +230,20 @@ class SearchService:
 
     def _hits(self, ids: list[int], products: dict[int, Product], candidates: dict[int, Candidate],
               lexical_scores: dict[int, tuple[float, list[str], float]], similarities: dict[int, float],
-              reasons: dict[int, str], login: LoginContext, limit: int) -> list[SearchHit]:
+              reasons: dict[int, str], projects: dict[int, Project], login: LoginContext, limit: int) -> list[SearchHit]:
         results = []
         with self.auth.database.session() as session:
+            session.connection().exec_driver_sql("BEGIN")
             for pid in ids:
                 product, candidate = products[pid], candidates[pid]
                 if not self._authorized(product, login):
                     continue
                 project = session.get(Project, product.project_id)
+                before = projects[product.project_id]
+                # 这一行的标签、向量和关系必须来自同一资产版本。
+                if (project is None or project.status != "active"
+                        or (project.asset_version, project.current_path) != (before.asset_version, before.current_path)):
+                    continue
                 left, right = ((ProductRelation.set_product_id, ProductRelation.item_product_id) if product.kind == "set"
                                else (ProductRelation.item_product_id, ProductRelation.set_product_id))
                 related = list(session.scalars(active_products().where(
@@ -251,7 +263,7 @@ class SearchService:
 
     def search(self, body: SearchRequest, login: LoginContext, host: str) -> SearchResult:
         start = time.perf_counter()
-        exact, projects, products, candidates, redactor = self._snapshot(body, login)
+        exact, projects, project_map, products, candidates, redactor, model, dimension, digests = self._snapshot(body, login)
         query = redactor.clean(body.query)
         projects, denied = self._project_hits(projects, login, host)
         warnings: list[str] = []
@@ -275,7 +287,9 @@ class SearchService:
                 vector_query = rewritten if body.remove else private_query
                 vector_pool = {pid: row for pid, row in products.items() if pid in scores}
                 if vector_query and vector_pool:
-                    similarities, generation = self._vectors(vector_query, vector_pool, warnings)
+                    similarities, generation = self._vectors(vector_query, model, dimension,
+                                                              {pid: digests[pid] for pid in vector_pool if pid in digests},
+                                                              warnings)
                 allowed: dict[int, bool] = {}
 
                 def accessible(pid: int) -> bool:
@@ -308,7 +322,7 @@ class SearchService:
                 local = sorted(shortlist, key=lambda pid: (-scores[pid][0], -scores[pid][2], -similarities.get(pid, -1), pid))
                 # 召回融合约束候选集合，降级结果严格按关键词优先。
                 order, reasons = self._rank(local, candidates, vector_query if body.remove else private_query, redactor, warnings) if local else ([], {})
-        hits = self._hits(order, products, candidates, scores, similarities, reasons, login, body.limit)
+        hits = self._hits(order, products, candidates, scores, similarities, reasons, project_map, login, body.limit)
         elapsed = round((time.perf_counter() - start) * 1000)
         with self.auth.database.session() as session:
             self.catalog.media._check_login(session, login)

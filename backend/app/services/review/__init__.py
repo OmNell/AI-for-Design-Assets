@@ -5,7 +5,7 @@ NAS 文件操作一律使用当前操作人本人的会话；所有修改写字�
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, ExitStack
 from uuid import uuid4
 import hashlib
@@ -29,6 +29,7 @@ from app.services.auth.service import AuthService, LoginContext
 from app.services.nas import NasAlreadyExists, NasUnavailable, NasPermissionDenied, Region, safe_join
 from app.services.nas.factory import create_paths
 from app.services.oplog import OplogService
+from app.services.postops.supplement import catalog_files, classify_file, invalidate_review
 from app.services.preflight import REQUIRED, RESERVED
 from app.services.thumbs import ThumbService, is_main_image
 from app.services.upload.fingerprint import fingerprint
@@ -65,6 +66,7 @@ class ReviewService:
     def __init__(self, auth: AuthService, thumbs: ThumbService, ai: AiService) -> None:
         self.auth, self.thumbs, self.ai = auth, thumbs, ai
         self.paths = create_paths(auth.config)
+        self.operation_snapshot: Callable[[Session, Batch, dict], dict] | None = None
 
     # ---- 权限与读取 ----
     @staticmethod
@@ -93,6 +95,8 @@ class ReviewService:
             raise AppError("batch_not_found", "批次不存在", 404)
         if user.id != batch.owner_id or not set(user.roles) & UPLOAD_ROLES:
             raise AppError("forbidden", "只有当前批次责任人可以核对", 403)
+        if batch.kind not in {"ingest", "supplement"}:
+            raise AppError("invalid_operation", "请通过入库后操作页面编辑此批次", 409)
         if batch.status not in REVIEWING:
             raise AppError("invalid_batch_state", "批次不在待核对或已驳回状态，不能修改", 409)
         return batch, user
@@ -101,7 +105,7 @@ class ReviewService:
     def _product(session: Session, batch: Batch, product_id: int) -> tuple[BatchProduct, BatchFile]:
         product = session.get(BatchProduct, product_id)
         file = session.get(BatchFile, product.batch_file_id) if product is not None else None
-        if product is None or product.batch_id != batch.id or file is None or file.batch_id != batch.id or file.removed:
+        if product is None or product.batch_id != batch.id or file is None or file.batch_id != batch.id or file.removed or file.conflict == "duplicate":
             raise AppError("product_not_found", "主图不存在或已移除", 404)
         return product, file
 
@@ -113,7 +117,7 @@ class ReviewService:
     def _pending(session: Session, batch: Batch, products: list[BatchProduct]) -> Pending:
         files = {f.id: f for f in session.scalars(select(BatchFile).where(
             BatchFile.batch_id == batch.id, BatchFile.removed.is_not(True)))}
-        mains = {f.id for f in files.values() if is_main_image(f) and f.size > 0}
+        mains = {f.id for f in files.values() if is_main_image(f) and f.size > 0 and f.conflict != "duplicate"}
         invalid = sum(is_main_image(f) and f.size <= 0 for f in files.values())
         for f in files.values():
             if (f.upload_status != "done" or f.bytes_received != f.size or f.fingerprint_kind != "full"
@@ -187,12 +191,14 @@ class ReviewService:
         parts = str(batch.payload["folder_name"]).split("_")
         return ReviewResponse(history=round_history(session, batch.id),
             batch=ReviewBatch(id=batch.id, batch_no=batch.batch_no, project_code=batch.project_code,
+                kind=batch.kind, project_id=batch.project_id,
                 folder_name=str(batch.payload["folder_name"]), company_name=parts[1] if len(parts) == 3 else "",
                 project_name=parts[2] if len(parts) == 3 else "", status=batch.status, won=batch.won, round=batch.round,
                 owner_id=batch.owner_id, owner_name=(owner.display_name or owner.username) if owner else "",
                 uploader_id=batch.uploader_id, recommended_path=batch.recommended_path, note_to_reviewer=batch.note_to_reviewer,
                 review_snapshot_hash=batch.review_snapshot_hash,
-                editable=batch.status in REVIEWING and user.id == batch.owner_id and bool(set(user.roles) & UPLOAD_ROLES)),
+                editable=batch.kind in {"ingest", "supplement"} and batch.status in REVIEWING
+                    and user.id == batch.owner_id and bool(set(user.roles) & UPLOAD_ROLES)),
             fields=[ReviewField(key=field.key, label=field.label, hint=field.hint) for field in fields],
             products=[self._view(session, product, keys) for product in products],
             pending=self._pending(session, batch, products),
@@ -431,6 +437,11 @@ class ReviewService:
             file.size, file.mtime, file.bytes_received, file.fingerprint = len(data), stamp, len(data), digest
             file.upload_status, file.removed, file.thumb_status, file.thumb_error = "done", False, None, None
             file.fingerprint_kind, file.thumb_fingerprint = "full", None
+            if batch.kind == "supplement":
+                file.conflict = file.conflict_choice = None
+                classify_file(file, catalog_files(session, batch.project_id).get(rel_path.casefold()))
+                if file.conflict == "duplicate":
+                    raise AppError("duplicate_file", "正式项目中已有同路径、同内容的主图", 409)
             session.add(file)
             session.flush()
             batch.payload = {**batch.payload, "fingerprint_kinds": {**batch.payload.get("fingerprint_kinds", {}), str(file.id): "full"}}
@@ -446,6 +457,9 @@ class ReviewService:
             product.tags, product.free_text, product.free_text_source, product.ai_free_text = {}, "", "ai", ""
             product.flags, product.relation_items, product.relation_confirmed = [], [], False
             session.flush()
+            if batch.kind == "supplement":
+                invalidate_review(batch, file.id, product.id, kind)
+                product.existing_product_id = None
             rechecked: list[int] = []
             if kind == "item":
                 # 已确认的关系不自动改变，但要求责任人重新复核。
@@ -484,6 +498,8 @@ class ReviewService:
             rollback.callback(fs.rename, target_dir + "/" + candidate, source)
             recycled = f"{RECYCLE}/{directory}/{candidate}"
             file.removed = True
+            if batch.kind == "supplement":
+                invalidate_review(batch, file.id, product.id, product.kind)
             self.ai.cancel_single(session, batch, product, "主图已移除", user.id, host)
             affected: list[int] = []
             if product.kind == "item":
@@ -522,7 +538,7 @@ class ReviewService:
         view.batch.status, view.batch.editable = SUBMITTED, False
         view.batch.note_to_reviewer, view.batch.review_snapshot_hash = note or None, None
         view.pending.can_submit = False
-        return {"schema": 1, "submitted_by": user.id, "kind": batch.kind, "project_id": batch.project_id,
+        content = {"schema": 1, "submitted_by": user.id, "kind": batch.kind, "project_id": batch.project_id,
                 "review": view.model_dump(mode="json"), "evidence": evidence, "confirmation_oplog_ids": actions,
                 "directories": batch.payload.get("directories", []),
                 "preflight_acks": list(session.scalars(select(PreflightAck.rule_code).where(
@@ -530,6 +546,11 @@ class ReviewService:
                 "files": [{"id": f.id, "rel_path": f.rel_path, "size": f.size, "mtime": f.mtime,
                            "fingerprint": f.fingerprint, "fingerprint_kind": f.fingerprint_kind,
                            "conflict": f.conflict, "conflict_choice": f.conflict_choice} for f in files]}
+        if batch.kind == "supplement":
+            if self.operation_snapshot is None:
+                raise AppError("operation_unavailable", "补充批次审核不可用", 503)
+            content["operation"] = self.operation_snapshot(session, batch, content)
+        return content
 
     def submit(self, batch_id: int, note: str, login: LoginContext, host: str) -> ReviewResponse:
         note = note.strip()

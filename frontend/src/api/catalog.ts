@@ -32,7 +32,7 @@ export interface DownloadItem { file_id: number; name: string | null; size: numb
 export interface DownloadProgress { status: 'pending' | 'sending' | 'sent' | 'interrupted' | 'failed'; message: string | null }
 export interface ResolvedLink {
   link_id: string; kind: 'file' | 'product' | 'project'; target_id: number; project_id: number
-  url: string; status: string; image_file_id: number | null
+  url: string; status: string; image_file_id: number | null; deleted_at?: string | null; delete_reason?: string | null
 }
 export interface AssetFinding { id: number; project_id: number; file_id: number; kind: string; detail: string; created_at: string }
 

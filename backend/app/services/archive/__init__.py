@@ -29,6 +29,7 @@ RELATION_FIELDS = ("set_product_id", "item_product_id", "source", "confirmed_by"
 HISTORY_FIELDS = ("id", "project_id", "file_id", "product_id", "old_fingerprint", "old_rel_path", "new_rel_path",
                   "reason", "expected_missing")
 LINK_FIELDS = ("kind", "target_id", "link_id")
+LIFECYCLE_FIELDS = ("voided_at", "void_reason", "void_batch_id", "deleted_at", "delete_reason")
 # JSON 恢复数据在这一层保持为普通字典，进入卡片柜前核对身份及各对象间的引用。
 Manifest = dict[str, Any]
 
@@ -46,6 +47,10 @@ def _row(record: object, names: tuple[str, ...]) -> dict:
     return {key: utc_text(value) if isinstance(value, datetime) else value for key, value in values.items()}
 
 
+def _optional(record: object, names: tuple[str, ...]) -> dict:
+    return {key: value for key, value in _row(record, names).items() if value is not None}
+
+
 def from_catalog(session: Session, project: Project) -> Manifest:
     products = list(session.scalars(select(Product).where(Product.project_id == project.id)))
     files = list(session.scalars(select(CatalogFile).where(CatalogFile.project_id == project.id)))
@@ -60,8 +65,15 @@ def from_catalog(session: Session, project: Project) -> Manifest:
     links = []
     for kind, targets in (("project", [project.id]), ("product", ids), ("file", [f.id for f in files])):
         links.extend(_row(row, LINK_FIELDS) for row in session.scalars(select(Link).where(Link.kind == kind, Link.target_id.in_(targets))))
-    return {"version": 2, "project": _row(project, PROJECT_FIELDS), "files": [_row(r, FILE_FIELDS) for r in files],
-            "products": [_row(r, PRODUCT_FIELDS) for r in products], "tags": [_row(r, TAG_FIELDS) for r in tags],
+    metadata = _row(project, PROJECT_FIELDS)
+    if project.asset_version:
+        metadata.update(_optional(project, (*LIFECYCLE_FIELDS, "asset_version", "status", "canonical_path", "restore_path")))
+    # 保持旧档案的序列化格式，发布新版本时才记录独立物理位置及生命周期。
+    return {"version": 2, "project": metadata,
+            "files": [{**_row(r, FILE_FIELDS), **(_optional(r, (*LIFECYCLE_FIELDS, "physical_rel_path", "void_prior_status"))
+                       if project.asset_version else {})} for r in files],
+            "products": [{**_row(r, PRODUCT_FIELDS), **_optional(r, LIFECYCLE_FIELDS)} for r in products],
+            "tags": [_row(r, TAG_FIELDS) for r in tags],
             "relations": relations, "history": [_row(r, HISTORY_FIELDS) for r in history],
             "links": links}
 
@@ -92,6 +104,8 @@ def validate(data: Manifest) -> None:
             if row["project_id"] != project["id"]:
                 raise ArchiveError("档案含其他项目的对象")
         for row in files.values():
+            if "physical_rel_path" in row and safe_join(row["physical_rel_path"]) != row["physical_rel_path"]:
+                raise ArchiveError("文件物理路径不合法")
             if safe_join(row["rel_path"]) != row["rel_path"] or not re.fullmatch(r"[0-9a-f]{64}", row["fingerprint"]) or row["fingerprint_kind"] != "full":
                 raise ArchiveError("文件路径或完整 SHA-256 不合法")
         for row in products.values():
@@ -137,6 +151,8 @@ def documents(data: Manifest) -> dict[str, str]:
                "自由描述": row["free_text"], "识图模型": row["vision_model"], "状态": row["status"],
                "入库时间": row["ingested_at"], "历史版本": [{**h, "文件永久链接ID": links["file", h["file_id"]]} for h in data["history"] if h["product_id"] == row["id"]],
                "结束标记": "完"}
+        if row.get("voided_at") or row.get("deleted_at"):
+            doc["生命周期"] = {key: row[key] for key in LIFECYCLE_FIELDS if key in row}
         docs[row["archive_rel_path"]] = json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
     audit = project["archive_review"] or {}
     readable = [f"立项编号：{project['project_code']}  项目ID：{project['id']}  编号来源：{project['code_source']}",
@@ -157,10 +173,10 @@ def _read(fs: NasFs, path: str) -> str:
         return stream.read().decode("utf-8")
 
 
-def mkdir(fs: NasFs, path: str) -> None:
+def mkdir(fs: NasFs, path: str, *, recursive: bool = False) -> None:
     if not fs.exists(path):
         try:
-            fs.mkdir(path)
+            fs.mkdir(path, recursive=recursive)
         except NasAlreadyExists:
             pass
     if not fs.stat(path).is_dir:
@@ -231,7 +247,7 @@ def rebuild(session: Session, project: Project, fs: NasFs, root: str) -> None:
 
 
 def _with_dates(row: dict, *fields: str) -> dict:
-    return {**row, **{field: datetime.fromisoformat(row[field]) if row[field] else None for field in fields}}
+    return {**row, **{field: datetime.fromisoformat(row[field]) if row[field] else None for field in fields if field in row}}
 
 
 def matches_catalog(session: Session, project: Project, data: Manifest) -> bool:
@@ -241,15 +257,16 @@ def matches_catalog(session: Session, project: Project, data: Manifest) -> bool:
 def register(session: Session, data: Manifest, batch_id: int | None = None, *, current_path: str | None = None) -> Project:
     """由调用方在一个事务内登记。恢复时暂不公开，待重新生成向量。"""
     validate(data)
-    fields = _with_dates(data["project"], "ingested_at", "archive_updated_at")
+    fields = _with_dates(data["project"], "ingested_at", "archive_updated_at", "voided_at", "deleted_at")
     if current_path is not None:
         fields["current_path"] = current_path
-    project = Project(**fields, status="ingesting")
+    status = fields.pop("status", "active")
+    project = Project(**fields, status=status if status in {"voided", "deleted"} else "ingesting")
     session.add(project)
     session.flush()
-    session.add_all(CatalogFile(**row, first_batch_id=batch_id) for row in data["files"])
+    session.add_all(CatalogFile(**_with_dates(row, "voided_at", "deleted_at"), first_batch_id=batch_id) for row in data["files"])
     session.flush()
-    session.add_all(Product(**_with_dates(row, "ingested_at")) for row in data["products"])
+    session.add_all(Product(**_with_dates(row, "ingested_at", "voided_at", "deleted_at")) for row in data["products"])
     session.flush()
     session.add_all(ProductTag(**row) for row in data["tags"])
     for row in data["relations"]:
@@ -273,7 +290,7 @@ def restore(session: Session, fs: NasFs, root: str, current_path: str) -> Projec
         old = history.get(file["id"])
         if (old and old["expected_missing"]) or file["status"] == "deleted":
             continue
-        path = safe_join(root, old["new_rel_path"] if old else file["rel_path"])
+        path = safe_join(root, file.get("physical_rel_path") or (old["new_rel_path"] if old else file["rel_path"]))
         if fingerprint(fs, path, file["size"]) != file["fingerprint"]:
             raise ArchiveError("恢复时文件 SHA-256 与档案不一致")
     return register(session, data, current_path=safe_join(current_path))
