@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useThumbnail } from './Thumb'
+import { useThumbnail, type ThumbState } from './Thumb'
 
 interface View { scale: number; x: number; y: number }
 const INITIAL: View = { scale: 1, x: 0, y: 0 }
@@ -9,15 +9,20 @@ export interface ViewerPin { x: number; y: number; text: string }
 interface Props { batchId: number; fileId: number; version: string; name: string; pins?: ViewerPin[]; onPin?: (x: number, y: number) => void }
 
 /** 大图查看：滚轮以指针为中心缩放，按住拖动，双击还原；可显示钉在图上的意见，审核时可点击添加。 */
-export function ImageViewer({ batchId, fileId, version, name, pins = [], onPin }: Props) {
+export function ImageViewer({ batchId, fileId, version, name, pins, onPin }: Props) {
+  const image = useThumbnail(batchId, fileId, 1600, version)
+  return <ZoomImage key={`${fileId}:${version}`} image={image} name={name} pins={pins} onPin={onPin} />
+}
+
+interface ZoomProps { image: ThumbState; name: string; pins?: ViewerPin[]; onPin?: (x: number, y: number) => void }
+export function ZoomImage({ image, name, pins = [], onPin }: ZoomProps) {
   const picture = useRef<HTMLImageElement>(null)
   const [pinning, setPinning] = useState(false)
   const [box, setBox] = useState({ left: 0, top: 0, width: 0, height: 0 })
-  const image = useThumbnail(batchId, fileId, 1600, version)
   const frame = useRef<HTMLDivElement>(null)
   const drag = useRef<{ x: number; y: number } | null>(null)
   const [view, setView] = useState<View>(INITIAL)
-  useEffect(() => { setView(INITIAL) }, [fileId, version])
+
   useEffect(() => {
     const element = frame.current
     if (!element) return
