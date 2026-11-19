@@ -39,7 +39,7 @@ def create_system_fs(config: Settings) -> BaseFs:
     encrypted = config.nas.system_password_enc.get_secret_value()
     if not encrypted:
         raise NasPermissionDenied("尚未配置加密的系统账号密码")
-    password = SecretCipher(config.paths.data_dir).decrypt(encrypted)
+    password = SecretCipher(config.paths.data_dir, read_only=True).decrypt(encrypted)
     try:
         return SmbFs(config.nas.host, config.nas.share, config.nas.system_user, password,
                      paths, config.nas.timeout_s, SYSTEM_PERMISSIONS)

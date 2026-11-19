@@ -474,3 +474,9 @@ python scripts/restore_backup.py wb-backup-20261119-0300.zip --service-stopped
 ```
 
 默认目标为系统临时目录。也可传 `--target` 指定尚不存在的目录，其父目录需要已存在。工具核验归档结构、配置、密钥、SQLite 完整性及原有资产身份。在隔离实例启动前，将 `NASWB_PATHS__DATA_DIR` 指向目标的 `data/`，核对配置路径、外部证书、环境变量及 NAS 环境。
+
+## Windows 候选版本与上线验收
+
+从仓库构建候选 ZIP，请使用 Python 3.12、与锁文件兼容的 Node 22.12+ 及 npm 10+，运行 `scripts/build_release.ps1` 或 `python scripts/build_release.py`。候选包包含 Vite 产物，目标 Windows 主机无需 Node。
+
+部署、升级、回滚、自检和两类恢复操作详见 [Windows 部署运维手册](deploy/README.md)。自动化范围、性能和现场待验项见 [V1 候选验收报告](docs/V1-验收报告.md) 与 [50 项确认规则覆盖矩阵](docs/V1-规则覆盖矩阵.md)。

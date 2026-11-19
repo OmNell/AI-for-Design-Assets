@@ -30,7 +30,12 @@ def inventory(db_path: Path) -> dict[str, dict[str, int | str]]:
         if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)] or db.execute("PRAGMA foreign_key_check").fetchone():
             raise ValueError("数据库完整性或外键检查失败")
         data = {}
+        revision = db.execute("SELECT version_num FROM alembic_version").fetchone()
+        number = int(revision[0].split("_", 1)[0]) if revision else 0
         for table, columns in IDENTITY_TABLES.items():
+            if table != "projects" and 0 < number < 16:
+                # 正式资产卡片柜在 0016 建立，升级前快照也需要可核验。
+                continue
             select = db.execute(f"SELECT {columns} FROM {table} ORDER BY {columns}")
             count = 0
             digest = hashlib.sha256()

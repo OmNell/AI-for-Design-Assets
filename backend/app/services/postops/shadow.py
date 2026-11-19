@@ -8,6 +8,7 @@ from contextlib import AbstractContextManager
 
 from app.db.models import PostopPlan
 from app.services import archive
+from app.services.archive.publication import RECEIPT
 from app.services.ingest import IngestService
 from app.services.jobs import JobFailure
 from app.services.nas import NasFs, Region, safe_join
@@ -17,7 +18,7 @@ from app.services.upload.fingerprint import fingerprint
 WORKSPACE = "_工作台准备"
 VERSIONS = "_工作台版本"
 MARKER = "_工作台版本标记"
-RESERVED = {archive.PROJECT_FILE, MARKER, *archive.PRODUCT_DIR.values()}
+RESERVED = {archive.PROJECT_FILE, MARKER, RECEIPT, *archive.PRODUCT_DIR.values()}
 CopyGuard = Callable[[], AbstractContextManager[None]]
 
 
