@@ -8,11 +8,11 @@ import re
 import struct
 from typing import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import AiConfig
-from app.db.models import ProductEmbedding, Setting
+from app.db.models import CompanyIndustryMap, ProductEmbedding, ReviewSnapshot, Setting
 from app.services.ai.field_catalog import FIXED_FIELDS
 from app.services.ai.orchestrator import AiService
 from app.services.ai.client import AiCallError
@@ -27,6 +27,7 @@ class Model:
     name: str
     version: str
     generation: int = 1
+    revision: str = ""
 
     def key(self, product_id: int) -> tuple[int, str, str, int]:
         return product_id, self.name, self.version, self.generation
@@ -38,16 +39,56 @@ def _model_identity(config: AiConfig, dev: bool) -> tuple[str, str]:
     return name, text_hash(signature)
 
 
-def model_for(ai: AiService, session: Session) -> Model:
+def formal_model(ai: AiService, session: Session) -> Model | None:
     config = ai.settings._effective(session)
-    dev = ai.auth.config.mode == "dev"
-    name, version = _model_identity(config, dev)
+    formal = session.scalar(select(Setting).where(Setting.key == FORMAL_MODEL))
+    if formal is None:
+        return None
+    revision = formal.value.get("revision")
+    if revision is None:
+        # WP09 指针未单独记录声明版本，优先验证原默认版本或当前部署声明。
+        default = config.model_copy(update={"model_embed": formal.value["name"], "model_embed_version": ""})
+        revision = "" if _model_identity(default, ai.auth.config.mode == "dev")[1] == formal.value["version"] else config.model_embed_version
+    return Model(formal.value["name"], formal.value["version"], formal.value["generation"], revision)
+
+
+def model_for(ai: AiService, session: Session) -> Model:
+    formal = formal_model(ai, session)
+    if formal is not None:
+        return formal
+    config = ai.settings._effective(session)
+    name, version = _model_identity(config, ai.auth.config.mode == "dev")
     if not name:
         raise JobFailure("尚未配置正式向量模型", retryable=False)
-    formal = session.scalar(select(Setting).where(Setting.key == FORMAL_MODEL))
-    if formal and (formal.value["name"], formal.value["version"]) != (name, version):
-        raise JobFailure("向量模型设置与当前正式索引不同，需先完成索引迁移", retryable=False)
-    return Model(name, version, formal.value["generation"] if formal else 1)
+    return Model(name, version, revision=config.model_embed_version)
+
+
+def client_for(ai: AiService, model: Model):
+    config = ai.settings.effective()
+    if (config.model_embed.strip() or "fake-embed", config.model_embed_version) == (model.name, model.revision):
+        client = ai.client()
+    else:
+        client = ai.client(config.model_copy(update={"model_embed": model.name, "model_embed_version": model.revision}))
+    if _model_identity(client.config, ai.auth.config.mode == "dev") != (model.name, model.version):
+        raise JobFailure("向量服务配置与索引身份不一致", retryable=False)
+    return client
+
+
+def project_inputs(ai: AiService, session: Session, data: Manifest) -> dict[int, str]:
+    nas = ai.auth.config.nas
+    project = data["project"]
+    metadata = project["archive_review"] or {}
+    source_company = metadata.get("source_company")
+    if not source_company and metadata.get("snapshot_id") is not None:
+        snapshot = session.get(ReviewSnapshot, metadata["snapshot_id"])
+        source_company = snapshot.content["review"]["batch"]["company_name"] if snapshot else None
+    private = [project["project_code"], nas.host, nas.share, nas.root_path.strip("/"), nas.temp_path.strip("/"),
+               nas.backup_path.strip("/"), source_company or project["company_name"],
+               project["company_name"], *metadata.get("actors", {}).values()]
+    row = session.get(CompanyIndustryMap, project["company_id"]) if project["company_id"] is not None else None
+    if row:
+        private.extend([row.company_name, *row.aliases])
+    return _inputs(data, private)
 
 
 def _inputs(data: Manifest, sensitive: Iterable[str]) -> dict[int, str]:
@@ -89,27 +130,41 @@ def _valid(row: ProductEmbedding | None, digest: str, dimension: int | None) -> 
         value != 0 for value, in struct.iter_unpack("<f", row.embedding))
 
 
-def _dimension(session: Session, model: Model) -> int | None:
+def dimension_for(session: Session, model: Model) -> int | None:
     formal = session.scalar(select(Setting).where(Setting.key == FORMAL_MODEL))
-    if formal is not None:
+    if formal is not None and (formal.value["name"], formal.value["version"], formal.value["generation"]) == (
+        model.name, model.version, model.generation
+    ):
         return formal.value["dimension"]
     return session.scalar(select(ProductEmbedding.dimension).where(ProductEmbedding.model_id == model.name,
         ProductEmbedding.model_version == model.version, ProductEmbedding.index_generation == model.generation,
-        ProductEmbedding.state == "ready").limit(1))
+        ProductEmbedding.state == "ready", ProductEmbedding.dimension.between(1, 8192),
+        func.length(ProductEmbedding.embedding) == ProductEmbedding.dimension * 4).limit(1))
 
 
-def generate(ai: AiService, batch_id: int, model: Model, inputs: dict[int, str]) -> None:
-    client = ai.client()
-    # 配置可能在客户端取用前修改；条件不符时由终审重新开始门禁。
-    if _model_identity(client.config, ai.auth.config.mode == "dev") != (model.name, model.version):
-        raise JobFailure("向量模型配置已变化，请重新继续入库", retryable=False)
+def store_vector(session: Session, model: Model, product_id: int, vector: list[float],
+                 digest: str, dimension: int | None) -> None:
+    if (not 1 <= len(vector) <= 8192 or (dimension is not None and len(vector) != dimension)
+            or not any(vector) or not all(-1e30 < value < 1e30 for value in vector)):
+        raise AiCallError("向量值或维度与索引不一致")
+    row = session.get(ProductEmbedding, model.key(product_id))
+    if row is None:
+        row = ProductEmbedding(product_id=product_id, model_id=model.name, model_version=model.version,
+                               index_generation=model.generation)
+        session.add(row)
+    row.text_hash, row.state, row.error = digest, "ready", None
+    row.embedding, row.dimension = struct.pack(f"<{len(vector)}f", *vector), len(vector)
+
+
+def generate(ai: AiService, batch_id: int | None, model: Model, inputs: dict[int, str]) -> None:
+    client = client_for(ai, model)
     failures = 0
     for product_id, text in inputs.items():
         digest = text_hash(text)
         key = model.key(product_id)
         with ai.auth.database.session() as session:
             row = session.get(ProductEmbedding, key)
-            if _valid(row, digest, _dimension(session, model)):
+            if _valid(row, digest, dimension_for(session, model)):
                 continue
             if row is None:
                 row = ProductEmbedding(product_id=product_id, model_id=model.name, model_version=model.version,
@@ -119,15 +174,8 @@ def generate(ai: AiService, batch_id: int, model: Model, inputs: dict[int, str])
             row.attempts = (row.attempts or 0) + 1
         try:
             vector = client.embed(text, batch_id)
-            binary = struct.pack(f"<{len(vector)}f", *vector)
-            if not vector or not any(vector) or not all(math.isfinite(value) for value in vector):
-                raise AiCallError("向量值不合法")
             with ai.auth.database.session() as session:
-                dimension = _dimension(session, model)
-                if dimension is not None and len(vector) != dimension:
-                    raise AiCallError("向量维度与正式索引不一致")
-                row = session.get(ProductEmbedding, key)
-                row.state, row.embedding, row.dimension = "ready", binary, len(vector)
+                store_vector(session, model, product_id, vector, digest, dimension_for(session, model))
         except (AiCallError, OverflowError, struct.error):
             failures += 1
             with ai.auth.database.session() as session:
@@ -139,12 +187,12 @@ def generate(ai: AiService, batch_id: int, model: Model, inputs: dict[int, str])
 
 def publish_gate(ai: AiService, session: Session, model: Model, inputs: dict[int, str]) -> None:
     if model_for(ai, session) != model:
-        raise JobFailure("向量模型配置已变化，请重新继续入库", retryable=False)
-    dimension = _dimension(session, model)
+        raise JobFailure("正式向量索引已切换，需重新验证入库向量")
+    dimension = dimension_for(session, model)
     if not inputs or not dimension or not all(
         _valid(session.get(ProductEmbedding, model.key(pid)), text_hash(text), dimension) for pid, text in inputs.items()
     ):
         raise JobFailure("正式向量校验未通过", retryable=False)
     if session.scalar(select(Setting).where(Setting.key == FORMAL_MODEL)) is None:
         session.add(Setting(key=FORMAL_MODEL, value={"name": model.name, "version": model.version,
-                                                   "dimension": dimension, "generation": model.generation}, encrypted=False))
+                                                   "dimension": dimension, "generation": model.generation, "revision": model.revision}, encrypted=False))

@@ -9,11 +9,12 @@ description = "内网设计资产工作台"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "SQLAlchemy>=2.0,<2.1",
-  "alembic>=1.15,<2", "smbprotocol==1.16.1", "httpx==0.28.1", "pydantic-settings[yaml]==2.12.0", "cryptography>=44,<51", "Pillow>=12,<13", "python-multipart>=0.0.20,<1",
+  "alembic>=1.15,<2", "smbprotocol==1.16.1", "httpx==0.28.1", "pydantic-settings[yaml]==2.12.0", "cryptography>=44,<51", "Pillow>=12,<13", "python-multipart>=0.0.20,<1", "numpy>=1.26,<3",
 ]
 
 [project.optional-dependencies]
 test = ["pytest==9.0.2", "httpx==0.28.1"]
+vector = ["sqlite-vec==0.1.6"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

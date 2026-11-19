@@ -389,3 +389,45 @@ class AccessLog(Base):
     delivery: Mapped[str | None] = mapped_column(String)
     delivery_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     client_host: Mapped[str] = mapped_column(String)
+
+
+class QueryCache(Base):
+    __tablename__ = "query_cache"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conditions: Mapped[dict[str, object]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SearchLog(Base):
+    __tablename__ = "search_logs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    query: Mapped[str] = mapped_column(Text)
+    parsed: Mapped[dict[str, object]] = mapped_column(JSON)
+    result_count: Mapped[int] = mapped_column(Integer)
+    duration_ms: Mapped[int] = mapped_column(Integer)
+    index_generation: Mapped[int | None] = mapped_column(Integer)
+    ai_usage: Mapped[list[dict[str, object]]] = mapped_column(JSON)
+    warnings: Mapped[list[str]] = mapped_column(JSON)
+    targets: Mapped[dict[str, list[int]]] = mapped_column(JSON)
+
+
+class SearchClick(Base):
+    __tablename__ = "search_clicks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    search_id: Mapped[int] = mapped_column(ForeignKey("search_logs.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    target_kind: Mapped[str] = mapped_column(String)
+    target_id: Mapped[int] = mapped_column(Integer)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EmbeddingIndex(Base):
+    __tablename__ = "embedding_indexes"
+    generation: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    version: Mapped[str] = mapped_column(String)
+    revision: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

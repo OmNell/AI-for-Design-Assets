@@ -22,6 +22,7 @@ import { ReviewPage } from '../pages/ReviewPage'
 import { AuditPage } from '../pages/AuditPage'
 import { QueuePage } from '../pages/QueuePage'
 import { CompanyMapPage } from '../pages/CompanyMapPage'
+import { SearchPage } from '../pages/SearchPage'
 import { ProjectsPage } from '../pages/ProjectsPage'
 import { ProjectPage } from '../pages/ProjectPage'
 import { ProductPage } from '../pages/ProductPage'
@@ -82,7 +83,7 @@ function AuthBootstrap() {
     <Route element={<Guard />}><Route element={<Shell />}>
       <Route index element={<HomePage />} />
       {navigation.filter(item => item.path !== '/').map(item => <Route key={item.path} path={item.path} element={<RoleGuard item={item}>
-        {item.path === '/projects' ? <ProjectsPage /> : item.path === '/admin/roles' ? <RolesPage /> : item.path === '/upload' ? <UploadPage /> : item.path === '/settings' ? <AiSettingsPage /> : item.path === '/first-review' ? <QueuePage stage="first" /> : item.path === '/final-review' ? <QueuePage stage="final" /> : <PlaceholderPage title={item.label} />}
+        {item.path === '/search' ? <SearchPage /> : item.path === '/projects' ? <ProjectsPage /> : item.path === '/admin/roles' ? <RolesPage /> : item.path === '/upload' ? <UploadPage /> : item.path === '/settings' ? <AiSettingsPage /> : item.path === '/first-review' ? <QueuePage stage="first" /> : item.path === '/final-review' ? <QueuePage stage="final" /> : <PlaceholderPage title={item.label} />}
       </RoleGuard>} />)}
       <Route path="/admin/tag-fields" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><TagFieldsPage /></RoleGuard>} />
       <Route path="/projects/:id" element={<ProjectPage />} />

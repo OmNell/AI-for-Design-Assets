@@ -16,7 +16,7 @@ from app.db.models import AccessLog, IngestPlan, Product, Project, User, utcnow
 from app.errors import AppError
 from app.schemas.catalog import DownloadItem, DownloadProgress, FileCheck
 from app.services.auth.service import AuthService, LoginContext
-from app.services.nas import NasNotFound, NasPermissionDenied, NasSessionExpired, NasUnavailable
+from app.services.nas import NasNotFound, NasPermissionDenied, NasSessionExpired, NasUnavailable, Region
 from app.services.oplog import OplogService
 from app.services.thumbs.images import ImageDecodeError, VARIANT_SIZES, render_variants
 from app.services.upload.service import UploadService
@@ -114,6 +114,16 @@ class MediaService:
                     asset.stream.close()
             finally:
                 self.auth.pool.unpin(login.session_id)
+
+    def authorize_main_image(self, file_id: int, login: LoginContext) -> None:
+        with self.auth.database.session() as session:
+            self._check_login(session, login)
+            ref = reference(session, file_id)
+            if ref.project.status != "active" or ref.file.status != "active":
+                raise AppError("file_not_found", "文件不存在", 404)
+        fs = self.auth.pool.get(login.session_id)
+        with fs.open_read(self.locator.paths.join(Region.FORMAL, ref.project.current_path, ref.relative)) as stream:
+            stream.read(1)
 
     def record(self, login: LoginContext, kind: str, file_id: int, host: str, outcome: str,
                transfer: str | None = None, *, resume: bool = False, track: bool = True) -> None:

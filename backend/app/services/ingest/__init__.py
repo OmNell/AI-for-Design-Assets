@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
 from sqlalchemy import func, select
@@ -55,6 +55,7 @@ class IngestService:
     def __init__(self, auth: AuthService, queue: JobQueue, ai: AiService, notify: NotifyService) -> None:
         self.auth, self.queue, self.ai, self.notify = auth, queue, ai, notify
         self.paths = create_paths(auth.config)
+        self.on_published: Callable[[Session], None] | None = None
 
     def enqueue(self, session: Session, batch: Batch, reviewer_id: int, login_id: int) -> None:
         job = self.queue.enqueue("ingest", {"batch_id": batch.id}, reviewer_id, session=session, run_as_session_id=login_id)
@@ -309,7 +310,7 @@ class IngestService:
                     "uploader_id": batch.uploader_id, "submitted_by": snapshot.submitted_by,
                     "first_reviewer_id": batch.first_reviewer_id, "final_reviewer_id": batch.final_reviewer_id,
                     "actors": actors, "industry": segment[1][2:], "submitted_at": archive.utc_text(snapshot.submitted_at),
-                    "reviewed_at": archive.utc_text(execution.final_review.decided_at)}
+                    "reviewed_at": archive.utc_text(execution.final_review.decided_at), "source_company": review["batch"]["company_name"]}
         # 数据库内分配确定不重叠的区间，连同商品编号、档案映射一次提交。
         sequence = session.scalar(select(Setting).where(Setting.key == "catalog_identity_sequence"))
         maxima = [session.scalar(select(func.max(model.id))) or 0 for model in (Project, CatalogFile, Product)]
@@ -445,14 +446,7 @@ class IngestService:
         batch = execution.batch
         with self.auth.database.session() as session:
             model = vectors.model_for(self.ai, session)
-            nas = self.auth.config.nas
-            private = [batch.project_code, nas.host, nas.share, nas.root_path.strip("/"), nas.temp_path.strip("/"),
-                       nas.backup_path.strip("/"), execution.snapshot.content["review"]["batch"]["company_name"],
-                       data["project"]["company_name"], *data["project"]["archive_review"]["actors"].values()]
-            company = session.get(CompanyIndustryMap, data["project"]["company_id"])
-            if company:
-                private.extend([company.company_name, *company.aliases])
-        inputs = vectors._inputs(data, private)
+            inputs = vectors.project_inputs(self.ai, session, data)
         vectors.generate(self.ai, batch.id, model, inputs)
         # 终审阶段锁住的是工作台内容；SMB 客户端的直接改动需要在发布前再次检查。
         self._verify_files(fs, execution, execution.target, after_rename=True)
@@ -472,6 +466,8 @@ class IngestService:
             self._checkpoint(session, current, 9)
             self._log(session, current, "入库完成", {"status": INGESTING}, {"status": DONE, "project_id": project.id})
             self.notify.emit(session, "ingested", current)
+            if self.on_published:
+                self.on_published(session)
 
     def _cache_thumbs(self, batch: Batch, data: archive.Manifest, frozen_files: list[dict]) -> None:
         root = Path(self.auth.config.paths.data_dir) / "thumbs"
