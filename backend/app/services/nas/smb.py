@@ -107,7 +107,11 @@ class SmbFs(BaseFs):
         return NasStat(info.st_size, stat.S_ISDIR(info.st_mode), info.st_mtime)
 
     def _open_raw(self, path: str, mode: str) -> BinaryIO:
-        return cast(BinaryIO, smbclient.open_file(self._unc(path), mode=mode, **self._options()))
+        options = self._options()
+        if mode == "rb":
+            # 同一文件可以同时供多位访问者读取。传输期间拒绝更改或删除已打开的文件。
+            options["share_access"] = "r"
+        return cast(BinaryIO, smbclient.open_file(self._unc(path), mode=mode, **options))
 
     def _mkdir(self, path: str, recursive: bool) -> None:
         if recursive:

@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, Request
 
 from app.api.dependencies import client_host, require_login_context
-from app.schemas.ingest import IngestProgress, ResolvedLink
+from app.schemas.ingest import IngestProgress
 from app.services.auth.service import LoginContext
 
 router = APIRouter()
@@ -16,8 +16,3 @@ def progress(batch_id: int, request: Request, login: LoginContext = Depends(requ
 @router.post("/api/review/{batch_id}/resume-ingest", response_model=IngestProgress)
 def resume(batch_id: int, request: Request, login: LoginContext = Depends(require_login_context)) -> IngestProgress:
     return request.app.state.ingest.resume(batch_id, login, client_host(request))
-
-
-@router.get("/l/{link_id}", response_model=ResolvedLink)
-def resolve(link_id: str, request: Request, login: LoginContext = Depends(require_login_context)) -> ResolvedLink:
-    return request.app.state.links.resolve(link_id, login, client_host(request))

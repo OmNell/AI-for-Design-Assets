@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Batch, ReviewSnapshot, User, utcnow
+from app.db.models import InspectionFinding, Batch, ReviewSnapshot, User, utcnow
 from app.errors import AppError
 from app.schemas.audit import TodoBatch, TodoItem
 from app.services.admin.company_map import batch_company, match_company
@@ -92,4 +92,9 @@ class NotifyService:
             unfinished = [row for row in batches if row.status in ("入库中", "入库异常") and (
                 "admin" in roles or ("final_reviewer" in roles and row.final_reviewer_id == user.id))]
             add("ingest", "入库未完成", unfinished, single(unfinished, "/review/{id}"))
+            if "admin" in roles:
+                findings = session.scalar(select(func.count(InspectionFinding.id)).where(InspectionFinding.run_id.is_(None)))
+                if findings:
+                    items.append(TodoItem(key="asset_findings", label="正式文件异常待处理", count=findings,
+                                          link="/admin/asset-findings", batches=[]))
             return items

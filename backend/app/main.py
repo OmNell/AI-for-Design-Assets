@@ -13,6 +13,8 @@ from fastapi.responses import FileResponse
 from starlette.exceptions import HTTPException
 
 from app import __version__
+from app.api.catalog import router as catalog_router
+from app.services.catalog import CatalogService
 from app.api.ingest import router as ingest_router
 from app.services.ingest import IngestService
 from app.services.links import LinkService
@@ -94,7 +96,8 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             application.state.company_map = CompanyMapService(application.state.auth)
             ingest = IngestService(application.state.auth, jobs, ai, application.state.notify)
             application.state.ingest = ingest
-            application.state.links = LinkService(application.state.auth)
+            application.state.catalog = CatalogService(application.state.auth)
+            application.state.links = LinkService(application.state.auth, application.state.catalog)
             application.state.audit = AuditService(application.state.auth, application.state.review, application.state.notify, ingest)
             jobs.register("ingest", ingest.handle, concurrency=1, retries=1, recoverable=False, state_callback=ingest.on_job_state)
             jobs.start()
@@ -149,7 +152,9 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
     application.include_router(review_router)
     application.include_router(audit_router)
     application.include_router(ingest_router)
+    application.include_router(catalog_router)
     static_root = static_dir.resolve()
+    application.state.static_index = static_root / "index.html"
 
     @application.get("/{path:path}", include_in_schema=False)
     def frontend(path: str) -> FileResponse:

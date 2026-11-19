@@ -269,6 +269,7 @@ class ReviewPin(Record, Base):
     text: Mapped[str] = mapped_column(Text)
 class CatalogFile(Record, Base):
     __tablename__ = "files"
+    physical_rel_path: Mapped[str | None] = mapped_column(String)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     rel_path: Mapped[str] = mapped_column(String)
     size: Mapped[int] = mapped_column(Integer)
@@ -359,3 +360,32 @@ class ProductEmbedding(Base):
     state: Mapped[str] = mapped_column(String)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class InspectionFinding(Record, Base):
+    __tablename__ = "inspection_findings"
+    __table_args__ = (UniqueConstraint("kind", "file_id", "path"),)
+    run_id: Mapped[int | None] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String)
+    path: Mapped[str] = mapped_column(String)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    file_id: Mapped[int] = mapped_column(ForeignKey("files.id"))
+    auto_fixed: Mapped[bool] = mapped_column(Boolean, default=False)
+    detail: Mapped[str] = mapped_column(Text)
+
+
+class AccessLog(Base):
+    __tablename__ = "access_logs"
+    __table_args__ = (UniqueConstraint("session_id", "kind", "target_id", "logical_id"),
+                      Index("ix_access_session_file", "session_id", "kind", "target_id", "ts"))
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"))
+    kind: Mapped[str] = mapped_column(String)
+    target_id: Mapped[int] = mapped_column(Integer)
+    logical_id: Mapped[str] = mapped_column(String)
+    outcome: Mapped[str] = mapped_column(String)
+    delivery: Mapped[str | None] = mapped_column(String)
+    delivery_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    client_host: Mapped[str] = mapped_column(String)

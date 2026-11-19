@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
-import { Navigate } from 'react-router'
+import { Navigate, useLocation } from 'react-router'
 import { login } from '../api/auth'
 import { useAuthStore } from '../stores/auth'
 import { GlassPanel } from '../components/glass/GlassPanel'
@@ -13,7 +13,10 @@ export function LoginPage() {
   const notice = useAuthStore(state => state.notice)
   const [error, setError] = useState('')
   const { register, handleSubmit, resetField, formState: { isSubmitting, errors } } = useForm<FormValues>()
-  if (user) return <Navigate to="/" replace />
+  const state: unknown = useLocation().state
+  const returnTo = typeof state === 'object' && state !== null && 'returnTo' in state && typeof state.returnTo === 'string'
+    && /^\/l\/[a-zA-Z0-9_-]+$/.test(state.returnTo) ? state.returnTo : '/'
+  if (user) return <Navigate to={returnTo} replace />
   const submit = handleSubmit(async values => {
     setError('')
     try { useAuthStore.getState().setUser(await login(values.username, values.password)) }
