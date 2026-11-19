@@ -3,8 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-LightKind = Literal["rename", "retag", "void", "restore", "move", "purge"]
-OperationKind = Literal["supplement", "rename", "retag", "void", "restore", "move", "purge"]
+LightKind = Literal["rename", "retag", "void", "restore", "move", "purge", "archive_repair"]
+OperationKind = Literal["supplement", "rename", "retag", "void", "restore", "move", "purge", "archive_repair"]
 
 
 class OperationModel(BaseModel):

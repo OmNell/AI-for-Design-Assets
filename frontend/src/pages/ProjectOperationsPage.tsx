@@ -14,6 +14,7 @@ const summaries: Record<LightOperation, string> = {
   restore: '恢复已作废的项目、商品或文件。',
   move: '从目录树选择新的分类和存放位置。',
   purge: '对已作废满 30 天的对象发起物理删除审批。',
+  archive_repair: '按卡片柜数据生成档案修复清单并提交审核。',
 }
 
 export function ProjectOperationsPage() {

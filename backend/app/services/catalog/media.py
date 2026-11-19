@@ -231,12 +231,11 @@ class MediaService:
                     raise AppError("preview_unsupported", "该格式请下载后查看", 415)
                 if asset.warning and not allow_changed:
                     raise AppError("content_changed", asset.warning, 409)
-                picture = self._official_thumb(asset, product_id, size)
+                directory = self.cache / "catalog" / str(file_id) / asset.digest
+                target = directory / f"{size}.jpg"
+                picture = target.read_bytes() if target.is_file() else self._official_thumb(asset, product_id, size)
                 if picture is None:
-                    directory = self.cache / "catalog" / str(file_id) / asset.digest
-                    target = directory / f"{size}.jpg"
-                    if not target.is_file():
-                        render_variants(asset.stream, directory)
+                    render_variants(asset.stream, directory)
                     picture = target.read_bytes()
                 warning = bool(asset.warning)
         except ImageDecodeError:

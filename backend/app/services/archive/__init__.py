@@ -212,16 +212,24 @@ def write(fs: NasFs, root: str, docs: dict[str, str], *, replace: bool = False) 
             raise ArchiveError("档案发布后校验失败")
 
 
-def parse(fs: NasFs, root: str) -> Manifest:
+def parse_project(fs: NasFs, root: str) -> Manifest:
+    """核验项目 TXT 本身，供巡检在某份 SKU 档案损坏时定位项目身份。"""
     try:
         raw = _read(fs, safe_join(root, PROJECT_FILE))
         if not raw.endswith(END) or DATA_START not in raw:
             raise ArchiveError("项目档案缺少有效恢复数据或结束标记")
         payload = json.loads(raw.rsplit(DATA_START, 1)[1][:-len(END)])
-        expected = documents(payload)
-        if expected[PROJECT_FILE] != raw:
+        if documents(payload)[PROJECT_FILE] != raw:
             raise ArchiveError("项目档案与结构化数据不一致")
-        for path, doc in expected.items():
+        return payload
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ArchiveError("档案内容损坏") from exc
+
+
+def parse(fs: NasFs, root: str) -> Manifest:
+    payload = parse_project(fs, root)
+    try:
+        for path, doc in documents(payload).items():
             if path != PROJECT_FILE and json.loads(_read(fs, safe_join(root, path))) != json.loads(doc):
                 raise ArchiveError("商品档案与项目档案不一致")
         return payload

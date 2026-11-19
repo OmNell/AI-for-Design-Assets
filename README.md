@@ -462,3 +462,15 @@ python -m pytest backend/tests/bailian -m bailian -q -s --tb=short
 开发考卷可通过 `python -m pytest backend/tests/integration/test_hybrid_search.py::test_search_exam_demo -s` 重现。业务方填写真实题库后，使用 `python scripts/run_exam.py --url http://固定内网入口:8080 --user 验收账号 --exam 真实题库.yaml` 运行。脚本从终端读取密码，输出召回、Top 3、Top 10、平均/P95 耗时、调用和 token 统计。若提供每百万输入及输出 token 单价，则输出估算费用。
 
 Alembic 头为 `0018_search`。生产升级前沿用一致性数据库快照流程，保留原向量及正式模型指针。
+
+## 巡检与备份恢复（WP13）
+
+管理员可在「管理 → 运营管理」查看巡检、手动备份和核对清理清单。定时任务采用中国标准时间，默认为 02:00 巡检、03:00 备份。备份包包含恢复密钥，请限制备份目录读取和备份下载权限。
+
+确认目标实例已经停止后，可将一个备份包验证并解到新目录：
+
+```bash
+python scripts/restore_backup.py wb-backup-20261119-0300.zip --service-stopped
+```
+
+默认目标为系统临时目录。也可传 `--target` 指定尚不存在的目录，其父目录需要已存在。工具核验归档结构、配置、密钥、SQLite 完整性及原有资产身份。在隔离实例启动前，将 `NASWB_PATHS__DATA_DIR` 指向目标的 `data/`，核对配置路径、外部证书、环境变量及 NAS 环境。

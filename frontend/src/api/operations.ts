@@ -10,6 +10,7 @@ export const operationLabels = {
   restore: '恢复',
   move: '移动项目',
   purge: '物理删除',
+  archive_repair: '档案修复',
 }
 export type OperationKind = keyof typeof operationLabels
 export type LightOperation = Exclude<OperationKind, 'supplement'>

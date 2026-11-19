@@ -174,7 +174,7 @@ function LightDraft({ data }: { data: OperationData }) {
     await Promise.all([['batches'], ['batch', id], ['project-operations', data.project_id], ['operation', id], ['todos']].map(queryKey => cache.invalidateQueries({ queryKey })))
     navigate(`/batches/${id}`)
   }
-  const ready = kind === 'move' ? !!plan.company_id && !!plan.reason?.trim() : kind === 'rename' ? !!plan.project_name?.trim() || !!plan.products?.length
+  const ready = kind === 'archive_repair' ? true : kind === 'move' ? !!plan.company_id && !!plan.reason?.trim() : kind === 'rename' ? !!plan.project_name?.trim() || !!plan.products?.length
     : kind === 'retag' ? !!plan.products?.length : !!plan.reason?.trim() && !!(plan.project || plan.product_ids?.length || plan.file_ids?.length)
   return <div className="space-y-5">
     <GlassPanel><div className="space-y-4">

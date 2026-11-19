@@ -280,6 +280,7 @@ class ReviewPin(Record, Base):
     text: Mapped[str] = mapped_column(Text)
 class CatalogFile(Record, Lifecycle, Base):
     __tablename__ = "files"
+    inspection_probe: Mapped[dict | None] = mapped_column(JSON)
     physical_rel_path: Mapped[str | None] = mapped_column(String)
     void_prior_status: Mapped[str | None] = mapped_column(String)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
@@ -374,16 +375,49 @@ class ProductEmbedding(Base):
     error: Mapped[str | None] = mapped_column(Text)
 
 
+class InspectionRun(Record, Base):
+    __tablename__ = "inspection_runs"
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), unique=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
 class InspectionFinding(Record, Base):
     __tablename__ = "inspection_findings"
-    __table_args__ = (UniqueConstraint("kind", "file_id", "path"),)
-    run_id: Mapped[int | None] = mapped_column(Integer)
+    __table_args__ = (UniqueConstraint("kind", "file_id", "path", "run_id"),)
+    run_id: Mapped[int | None] = mapped_column(Integer, index=True)
     kind: Mapped[str] = mapped_column(String)
     path: Mapped[str] = mapped_column(String)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
-    file_id: Mapped[int] = mapped_column(ForeignKey("files.id"))
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    file_id: Mapped[int | None] = mapped_column(ForeignKey("files.id"))
     auto_fixed: Mapped[bool] = mapped_column(Boolean, default=False)
     detail: Mapped[str] = mapped_column(Text)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    acknowledged_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BackupRecord(Record, Base):
+    __tablename__ = "backup_records"
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), unique=True)
+    name: Mapped[str] = mapped_column(String, unique=True)
+    size: Mapped[int | None] = mapped_column(Integer)
+    fingerprint: Mapped[str | None] = mapped_column(String(64))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    local_retained: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class CleanupPlan(Record, Base):
+    __tablename__ = "cleanup_plans"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"))
+    batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"))
+    target: Mapped[str] = mapped_column(String)
+    entries: Mapped[list[dict]] = mapped_column(JSON)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AccessLog(Base):
