@@ -1,7 +1,10 @@
 import { useState } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useParams, useSearchParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getBatch, confirmBatch, retryAi, type Batch, type BatchProduct } from '../api/upload'
+import { getOperation, operationHref, operationLabels } from '../api/operations'
+import { OperationDiff } from '../components/ops/OperationDiff'
+import { OperationExecution } from '../components/ops/OperationExecution'
 import { useAuthStore } from '../stores/auth'
 import { IngestPanel } from '../components/IngestPanel'
 import { GlassPanel } from '../components/glass/GlassPanel'
@@ -28,11 +31,16 @@ function Product({ product, batch }: { product: BatchProduct; batch: Batch }) {
 
 export function BatchDetailPage() {
   const id = Number(useParams().id)
+  const [params] = useSearchParams()
+  const replace = Number(params.get('replace')) || null
   const user = useAuthStore(state => state.user)
   const query = useQueryClient()
   const batch = useQuery({ queryKey: ['batch', id], queryFn: () => getBatch(id), enabled: Number.isInteger(id) && id > 0, retry: false,
     refetchInterval: result => ['AI 处理中', '入库中'].includes(result.state.data?.status ?? '') ? 1000 : false,
   })
+  const isOperation = !!batch.data?.kind && batch.data.kind !== 'ingest'
+  const operation = useQuery({ queryKey: ['operation', id], queryFn: () => getOperation(id), retry: false, enabled: isOperation &&
+    ['待初审', '待终审', '入库中', '入库异常', '已入库', '已终止'].includes(batch.data?.status ?? '') })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const act = async (action: () => Promise<Batch>) => {
@@ -45,27 +53,39 @@ export function BatchDetailPage() {
   if (batch.isPending) return <GlassPanel><p>正在加载批次…</p></GlassPanel>
   if (batch.isError) return <GlassPanel><p role="alert" className="text-red-800">{batch.error.message}</p></GlassPanel>
   const value = batch.data
+  const kind = value.kind && value.kind !== 'ingest' ? value.kind : null
+  const light = kind !== null && kind !== 'supplement'
+  const reviewing = ['待核对', '已驳回', '待初审', '待终审'].includes(value.status)
+  const pending = ['待核对', '已驳回'].includes(value.status)
+  const reviewPath = pending ? operationHref(id, value.kind, value.status) : `/batches/${id}/${light ? 'operation' : 'review'}`
+  const suffix = replace && kind === 'supplement' ? `?replace=${replace}` : ''
   const progress = value.ai_progress ?? { items_total: 0, items_done: 0, sets_total: 0, sets_done: 0, failed: 0 }
   const canOperate = !!user && (value.uploader_id === undefined || value.uploader_id === user.id) && user.roles.some(role => ['uploader', 'first_reviewer', 'final_reviewer'].includes(role))
   const canRetry = canOperate || !!user?.roles.includes('admin')
   const products = value.products ?? []
   return <div className="space-y-6"><GlassPanel><div className="mb-6 flex items-start justify-between gap-6"><div><p className="text-xs text-slate-500">{value.batch_no}</p><h1 className="mt-3 break-all text-2xl font-semibold">{value.folder_name}</h1></div><Link className="shrink-0 text-sm text-emerald-800 underline underline-offset-4" to="/">返回首页</Link></div>
-    <p className="text-sm text-emerald-800">{value.status}</p><p className="mt-4 break-all text-sm">推荐位置：{value.recommended_path || '位置待定'}</p>
+    <p className="text-sm text-emerald-800">{kind ? `${operationLabels[kind]} · ` : ''}{value.status}</p>
+    {kind && value.project_id && <Link to={`/projects/${value.project_id}/operations`} className="mt-3 inline-block text-sm text-emerald-800 underline">查看正式资产与操作</Link>}
+    {!light && <p className="mt-4 break-all text-sm">推荐位置：{value.recommended_path || '位置待定'}</p>}
     {value.status === 'AI 处理中' && <p role="status" className="mt-4 text-sm text-slate-500">正在按单品、套装的顺序处理，请稍候…</p>}
     {error && <p role="alert" className="mt-4 text-red-800">{error}</p>}
-    <div className="mt-6 flex gap-4">{value.status === '已暂存' && canOperate && <GlassButton disabled={busy} onClick={() => void act(() => confirmBatch(id))}>确认，开始 AI 处理</GlassButton>}
-      {['AI 处理中', 'AI 处理失败', '待核对'].includes(value.status) && (value.status === '待核对' ? user?.id === value.owner_id : canRetry) && <GlassButton disabled={busy} onClick={() => void act(() => retryAi(id))}>重试整批 AI</GlassButton>}
+    <div className="mt-6 flex gap-4">{value.status === '已暂存' && canOperate && (kind ? <Link to={`/batches/${id}/operation${suffix}`} className="self-center text-emerald-800 underline">{kind === 'supplement' ? '核对补充文件' : '编辑操作草稿'}</Link>
+      : <GlassButton disabled={busy} onClick={() => void act(() => confirmBatch(id))}>确认，开始 AI 处理</GlassButton>)}
+      {!light && ['AI 处理中', 'AI 处理失败', '待核对'].includes(value.status) && (value.status === '待核对' ? user?.id === value.owner_id : canRetry) && <GlassButton disabled={busy} onClick={() => void act(() => retryAi(id))}>重试整批 AI</GlassButton>}
       {['上传中', '上传中断', '已暂存', 'AI 处理中', 'AI 处理失败', '待核对', '已驳回', '待初审', '待终审'].includes(value.status) && canOperate && <TerminateBatchButton id={id} disabled={busy} onTerminated={result => {
         query.setQueryData(['batch', id], result)
         void query.invalidateQueries({ queryKey: ['batches'] })
       }} />}
-      {['待核对', '已驳回', '待初审', '待终审'].includes(value.status) && <Link to={`/batches/${id}/review`} className="self-center text-emerald-800 underline">{['待核对','已驳回'].includes(value.status) ? '进入核对页' : '查看提交版本'}</Link>}
-      {['上传中', '上传中断'].includes(value.status) && canOperate && <Link to={`/upload?resume=${id}`} className="text-sm text-emerald-800 underline underline-offset-4">继续上传</Link>}</div>
+      {reviewing && <Link to={`${reviewPath}${suffix}`} className="self-center text-emerald-800 underline">{pending ? light ? '查看或编辑操作' : '进入核对页' : '查看提交版本'}</Link>}
+      {['上传中', '上传中断'].includes(value.status) && canOperate && <Link to={`/upload?resume=${id}${replace ? `&replace=${replace}` : ''}`} className="text-sm text-emerald-800 underline underline-offset-4">继续上传</Link>}</div>
   </GlassPanel>
-    {['入库中', '入库异常', '已入库'].includes(value.status) && <IngestPanel batchId={id} />}
-    <div className="grid grid-cols-3 gap-5"><GlassCard><p className="text-sm text-slate-500">单品完成</p><p className="mt-3 text-2xl">{progress.items_done} / {progress.items_total}</p></GlassCard><GlassCard><p className="text-sm text-slate-500">套装完成</p><p className="mt-3 text-2xl">{progress.sets_done} / {progress.sets_total}</p></GlassCard><GlassCard><p className="text-sm text-slate-500">失败</p><p className="mt-3 text-2xl">{progress.failed}</p></GlassCard></div>
+    {['入库中', '入库异常', '已入库'].includes(value.status) && (kind
+      ? <OperationExecution batchId={id} kind={kind} projectId={value.project_id} />
+      : <IngestPanel batchId={id} />)}
+    {operation.data && (operation.data.after || operation.data.purge) && <OperationDiff operation={operation.data} />}
+    {!light && <div className="grid grid-cols-3 gap-5"><GlassCard><p className="text-sm text-slate-500">单品完成</p><p className="mt-3 text-2xl">{progress.items_done} / {progress.items_total}</p></GlassCard><GlassCard><p className="text-sm text-slate-500">套装完成</p><p className="mt-3 text-2xl">{progress.sets_done} / {progress.sets_total}</p></GlassCard><GlassCard><p className="text-sm text-slate-500">失败</p><p className="mt-3 text-2xl">{progress.failed}</p></GlassCard></div>}
     {value.termination_reason && <p className="text-sm text-slate-600">终止原因：{value.termination_reason}</p>}
     {!['已撤回', '已终止'].includes(value.status) && !!products.length && <div className="grid grid-cols-2 gap-5">{products.map(product => <Product key={product.id} product={product} batch={value} />)}</div>}
-    {value.status === '待核对' && <p className="text-sm text-slate-500">AI 处理已结束。本页只展示结果，请进入核对页逐项确认。</p>}
+    {!light && value.status === '待核对' && <p className="text-sm text-slate-500">AI 处理已结束。本页只展示结果，请进入核对页逐项确认。</p>}
   </div>
 }

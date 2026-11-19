@@ -12,3 +12,7 @@ export const navigation: NavigationItem[] = [
 export function canAccess(roles: Role[], item: NavigationItem): boolean {
   return !item.roles || roles.some(role => item.roles!.includes(role))
 }
+
+export function safeLoginReturn(path: string): boolean {
+  return /^\/(?:l\/[a-zA-Z0-9_-]+|review\/\d+|batches\/\d+\/(?:operation|review)|projects\/\d+\/operations)$/.test(path)
+}

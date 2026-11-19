@@ -86,7 +86,7 @@ def pause(id: int, request: Request, login: LoginContext = Depends(upload_user))
 
 @router.post("/{id}/cancel", response_model=BatchResponse)
 def terminate(id: int, body: TerminateBatchRequest, request: Request, login: LoginContext = Depends(require_login_context)) -> BatchResponse:
-    return request.app.state.upload.terminate(id, login, body.reason, client_host(request))
+    return request.app.state.upload.terminate(id, login, body.reason, client_host(request), confirmed=body.confirmed)
 
 
 @router.post("/{id}/confirm", response_model=BatchResponse)

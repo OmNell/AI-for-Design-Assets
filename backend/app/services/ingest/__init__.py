@@ -75,7 +75,7 @@ class IngestService:
             return self.progress(session, batch, session.get(User, login.user.id))
 
     def progress(self, session: Session, batch: Batch, user: User) -> IngestProgress | None:
-        if batch.status not in (INGESTING, ERROR, DONE):
+        if batch.kind != "ingest" or batch.status not in (INGESTING, ERROR, DONE):
             return None
         allowed = (user.id in (batch.owner_id, batch.uploader_id)
                    or user.id == batch.first_reviewer_id and "first_reviewer" in user.roles

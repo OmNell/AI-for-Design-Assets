@@ -10,12 +10,12 @@ import { GlassButton } from '../components/glass/GlassButton'
 import { formatBytes } from '../lib/terms'
 import { describeError, triggerDownload } from '../lib/download'
 
-function Notice({ message }: { message: string }) {
+function Notice({ message, projectId }: { message: string; projectId?: number }) {
   return <GlassPanel><p role="alert" className="text-lg font-semibold">{message}</p>
-    <Link to="/projects" className="mt-4 inline-block text-sm text-emerald-800 underline">返回项目列表</Link></GlassPanel>
+    <Link to="/projects" className="mt-4 inline-block text-sm text-emerald-800 underline">返回项目列表</Link>{projectId && <Link to={`/projects/${projectId}/operations`} className="ml-4 text-sm text-emerald-800 underline">资产操作与历史</Link>}</GlassPanel>
 }
 
-function FileView({ id, url, historical }: { id: number; url?: string; historical?: boolean }) {
+function FileView({ id, url, historical, operations }: { id: number; url?: string; historical?: boolean; operations?: string }) {
   const query = useQuery({ queryKey: ['catalog-file', id], queryFn: () => checkFile(id) })
   const [show, setShow] = useState(false)
   const [error, setError] = useState('')
@@ -36,6 +36,7 @@ function FileView({ id, url, historical }: { id: number; url?: string; historica
       {file.is_image && <GlassButton primary={false} onClick={() => setShow(value => !value)}>{show ? '关闭预览' : '预览图片'}</GlassButton>}
       <GlassButton onClick={download}>下载文件</GlassButton>
       {url && <CopyLink url={url} />}
+      {operations && <Link to={operations} className="text-sm text-emerald-800 underline">资产操作与历史</Link>}
     </div>
     {error && <p role="alert" className="mt-3 text-red-800">{error}</p>}
   </GlassPanel>{show && <GlassPanel><AssetPreview fileId={id} name={file.name} warning={file.warning} /></GlassPanel>}</div>
@@ -54,11 +55,14 @@ export function AssetLinkPage() {
   if (query.isPending) return <GlassPanel><p role="status">正在打开永久链接…</p></GlassPanel>
   if (query.isError) return <Notice message={query.error.message} />
   const target = query.data
-  if (target.status === 'deleted') return <Notice message="该资产已物理删除" />
-  if (target.kind === 'file') return <FileView key={target.target_id} id={target.target_id} url={target.url} historical={target.status === 'voided'} />
+  if (target.status === 'deleted') {
+    const date = target.deleted_at ? ` · ${new Date(target.deleted_at).toLocaleString('zh-CN')}` : ''
+    return <Notice message={`该资产已物理删除${date}${target.delete_reason ? ` · ${target.delete_reason}` : ''}`} />
+  }
+  if (target.kind === 'file') return <FileView key={target.target_id} id={target.target_id} url={target.url} historical={target.status === 'voided'} operations={`/projects/${target.project_id}/operations?file=${target.target_id}`} />
   if (target.status === 'voided') {
-    if (target.image_file_id) return <FileView key={target.image_file_id} id={target.image_file_id} url={target.url} historical />
-    return <Notice message="该项目已作废，可使用已有的文件永久链接访问获准的历史文件。" />
+    if (target.image_file_id) return <FileView key={target.image_file_id} id={target.image_file_id} url={target.url} historical operations={`/projects/${target.project_id}/operations${target.kind === 'product' ? `?product=${target.target_id}` : ''}`} />
+    return <Notice message="该项目已作废，可使用已有的文件永久链接访问获准的历史文件。" projectId={target.project_id} />
   }
   return <Navigate to={`/${target.kind === 'project' ? 'projects' : 'products'}/${target.target_id}`} replace />
 }

@@ -62,6 +62,7 @@ class PersonView(BaseModel):
 
 class QueueItem(BaseModel):
     id: int
+    kind: str
     batch_no: str
     folder_name: str
     round: int
@@ -137,6 +138,7 @@ class AuditResponse(BaseModel):
     history: list[RoundView]
     pins: list[PinView]
     checklist: dict[str, str]
+    operation: dict | None = None
 
 
 class PathRequest(BaseModel):

@@ -98,7 +98,9 @@ def test_precheck_acks_existing_code_and_tampered_path(upload_client: TestClient
     with client.app.state.database.session() as session:
         session.add(Project(project_code="P001", company_name="企业", project_name="项目", won=True, folder_name="P001_企业_项目"))
     result = client.post('/api/batches/precheck', json=body()).json()
-    assert result["code_status"] == "exists" and "补充功能尚未开放" in result["issues"][0]["message"]
+    assert result["code_status"] == "exists" and result["project_id"] > 0
+    assert result["issues"][0]["rule_code"] == "P02"
+    assert result["issues"][0]["message"] == "该项目已入库，请从项目页发起补充"
     assert client.post('/api/batches', json=body()).status_code == 422
 
 

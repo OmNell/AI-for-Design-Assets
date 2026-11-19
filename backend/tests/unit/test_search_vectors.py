@@ -58,7 +58,7 @@ def test_keyword_exclusion_relaxation_and_fusion_are_deterministic():
 def test_upgrade_preserves_wp09_embedding_and_formal_pointer(tmp_path):
     from alembic import command
     from alembic.config import Config
-    from sqlalchemy import select, text
+    from sqlalchemy import MetaData, Table, select, text
 
     from app.db.database import BACKEND_DIR, Database
     from app.db.models import Setting
@@ -74,23 +74,30 @@ def test_upgrade_preserves_wp09_embedding_and_formal_pointer(tmp_path):
             command.upgrade(cfg, "0017_asset_access")
         model = Model("legacy", "original-version")
         with db.session() as session:
-            project = Project(project_code="P2", company_name="企业", project_name="项目", folder_name="P2_企业_项目", won=True)
-            session.add(project)
-            session.flush()
-            file = CatalogFile(project_id=project.id, rel_path="单品/杯.jpg", size=1, mtime=1,
-                               fingerprint="b" * 64, category="单品")
-            session.add(file)
-            session.flush()
-            product = Product(project_id=project.id, product_code="P2-001", kind="item", file_id=file.id,
-                              display_name="杯", archive_rel_path="档案.json", ingested_at=utcnow())
-            session.add(product)
-            session.flush()
-            VectorStore.upsert(session, model, product.id, [0.2, 0.8], text_hash("杯"), 2)
+            # 使用旧版迁移的实际列写入样本，避免新 ORM 字段影响升级前数据。
+            meta = MetaData()
+            stamp = utcnow()
+            projects, files, products = [Table(name, meta, autoload_with=session.connection())
+                                         for name in ("projects", "files", "products")]
+            project_id, file_id, product_id = 77, 78, 79
+            timestamps = {"created_at": stamp, "updated_at": stamp}
+            session.execute(projects.insert().values(id=project_id, project_code="P2", code_source="company",
+                company_name="企业", project_name="项目", folder_name="P2_企业_项目", status="active",
+                current_path="设计资产样本", won=True, **timestamps))
+            session.execute(files.insert().values(id=file_id, project_id=project_id, rel_path="单品/杯.jpg", size=1,
+                mtime=1, fingerprint="b" * 64, fingerprint_kind="full", category="单品", status="active", **timestamps))
+            session.execute(products.insert().values(id=product_id, project_id=project_id, product_code="P2-001",
+                kind="item", file_id=file_id, display_name="杯", archive_rel_path="档案.json", status="active",
+                free_text="", vision_model="", ingested_at=stamp, **timestamps))
+            VectorStore.upsert(session, model, product_id, [0.2, 0.8], text_hash("杯"), 2)
             setting = {"name": model.name, "version": model.version, "dimension": 2, "generation": 1}
             session.add(Setting(key=FORMAL_MODEL, value=setting, encrypted=False))
         db.migrate()
         with db.session() as session:
-            assert session.get(ProductEmbedding, model.key(product.id)).text_hash == text_hash("杯")
+            assert session.get(ProductEmbedding, model.key(product_id)).text_hash == text_hash("杯")
+            assert session.get(Project, project_id).asset_version == 0
+            assert session.get(Product, product_id).file_id == file_id
+            assert session.get(CatalogFile, file_id).fingerprint == "b" * 64
             assert session.scalar(select(Setting).where(Setting.key == FORMAL_MODEL)).value == setting
             assert list(session.execute(text("PRAGMA foreign_key_check"))) == []
     finally:

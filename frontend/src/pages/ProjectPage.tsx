@@ -100,14 +100,16 @@ export function ProjectPage() {
       <h1 className="mt-2 break-all text-3xl font-semibold">{project.project_name}</h1>
       <p className="mt-3 text-sm text-slate-600">{project.company_name}{project.industry_name && ` · ${project.industry_name}`}
         {project.ingested_at && ` · 入库于 ${new Date(project.ingested_at).toLocaleDateString('zh-CN')}`}</p>
-    </div><CopyLink url={project.link_url} label="复制项目链接" /></div></GlassPanel>
+    </div><div className="flex shrink-0 items-center gap-3">
+      <Link to={`/projects/${id}/operations`} className="text-sm text-emerald-800 underline">资产操作与作废记录</Link>
+      <CopyLink url={project.link_url} label="复制项目链接" /></div></div></GlassPanel>
     <section><h2 className="mb-4 text-xl font-semibold">商品 · {project.products}</h2>
       {products_list.length ? <div className="grid grid-cols-3 gap-4">{products_list.map(item =>
         <ProductCard key={item.id} item={item} related={item.related.flatMap(id => { const row = products.get(id); return row ? [row] : [] })} />)}</div> :
         <GlassPanel><p className="text-slate-500">暂无有效商品。</p></GlassPanel>}</section>
     <FilesSection key={id} projectId={id} folders={folders} />
     {!!history.length && <GlassPanel><h2 className="text-lg font-semibold">历史版本</h2><ul className="mt-3 space-y-2 text-sm">{history.map(row =>
-      <li key={row.id}><Link to={`/files/${row.file_id}`} className="underline">{row.old_rel_path}</Link> · {new Date(row.created_at).toLocaleDateString('zh-CN')}</li>)}</ul></GlassPanel>}
+      <li key={row.id}><Link to={`/files/${row.file_id}`} className="underline">{row.old_rel_path}</Link> · {new Date(row.created_at).toLocaleDateString('zh-CN')} <Link to={`/projects/${id}/operations?file=${row.file_id}`} className="ml-3 text-emerald-800 underline">版本操作</Link></li>)}</ul></GlassPanel>}
     {!!logs.length && <GlassPanel><details><summary className="cursor-pointer font-semibold">操作记录</summary>
       <ul className="mt-3 space-y-2 text-sm">{logs.map((row, index) => <li key={index}>{new Date(row.ts).toLocaleString('zh-CN')} · {row.user} · {row.action} · {row.result}</li>)}</ul></details></GlassPanel>}
   </div>

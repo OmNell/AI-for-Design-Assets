@@ -22,7 +22,7 @@ def check(folder: str, files: list[ManifestEntry], exists: bool = False, prefix_
     if len(parts) != 3 or any(not value for value in parts):
         add("P01", "block", folder, "项目文件夹名必须为 编号_企业_项目名 三段")
     if exists:
-        add("P02", "block", folder, "该项目已入库，补充功能尚未开放")
+        add("P02", "block", folder, "该项目已入库，请从项目页发起补充")
     seen: set[str] = set()
     kinds: dict[str, bool] = {}
     for path, entry in [(folder, None), *((item.rel_path, item) for item in files)]:

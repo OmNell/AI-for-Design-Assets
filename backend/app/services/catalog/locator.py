@@ -18,7 +18,7 @@ from app.services.upload.service import UploadService
 
 CHUNK_SIZE = 1024 * 1024
 VISIBLE_PROJECTS = ("active", "voided", "deleted")
-ARCHIVES = {"单品档案", "套装档案", "_项目档案.txt", "_工作台入库校验"}
+ARCHIVES = {"单品档案", "套装档案", "_项目档案.txt", "_工作台入库校验", "_工作台版本标记"}
 DRIFT = "NAS 上的文件内容与正式登记不一致。当前文件未经审核确认。"
 
 
@@ -183,6 +183,9 @@ class AssetLocator:
         old_root = self.paths.join(Region.FORMAL, ref.project.current_path)
         if fs.exists(old_root):
             roots = [ref.project.current_path]
+        elif ref.project.asset_version:
+            # 版本目录缺失时不能用旧版本中的相同 SHA-256 误接当前公开对象。
+            return None
         else:
             roots = list(dict.fromkeys(_roots(fs, self.paths, ref.project.project_code)))
         matched: list[tuple[str, str]] = []

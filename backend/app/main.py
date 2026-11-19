@@ -20,6 +20,10 @@ from app.services.search.store import VectorStore
 from app.api.catalog import router as catalog_router
 from app.services.catalog import CatalogService
 from app.api.ingest import router as ingest_router
+from app.api.postops import router as postops_router
+from app.api.postop_execution import router as postop_execution_router
+from app.services.postops.drafts import DraftService
+from app.services.postops.executor import PostopExecutor
 from app.services.ingest import IngestService
 from app.services.links import LinkService
 from app.api.health import router
@@ -110,7 +114,11 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             ingest.on_published = indexes.sync_after_publish
             jobs.register(INDEX_JOB, indexes.handle, concurrency=1, retries=0, recoverable=True)
             application.state.links = LinkService(application.state.auth, application.state.catalog)
-            application.state.audit = AuditService(application.state.auth, application.state.review, application.state.notify, ingest)
+            application.state.postops = DraftService(upload, application.state.review)
+            executor = PostopExecutor(application.state.auth, jobs, ai, application.state.notify, indexes)
+            application.state.postop_executor = executor
+            jobs.register("postop", executor.handle, concurrency=1, retries=1, recoverable=False, state_callback=executor.on_job_state)
+            application.state.audit = AuditService(application.state.auth, application.state.review, application.state.notify, ingest, executor)
             jobs.register("ingest", ingest.handle, concurrency=1, retries=1, recoverable=False, state_callback=ingest.on_job_state)
             jobs.start()
             ai.start()
@@ -164,6 +172,8 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
     application.include_router(review_router)
     application.include_router(audit_router)
     application.include_router(ingest_router)
+    application.include_router(postops_router)
+    application.include_router(postop_execution_router)
     application.include_router(catalog_router)
     application.include_router(search_router)
     static_root = static_dir.resolve()

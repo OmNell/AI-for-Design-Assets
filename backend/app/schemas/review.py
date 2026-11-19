@@ -75,6 +75,8 @@ class ReviewBatch(BaseModel):
     id: int
     batch_no: str
     project_code: str
+    kind: str = "ingest"
+    project_id: int | None = None
     folder_name: str
     company_name: str
     project_name: str

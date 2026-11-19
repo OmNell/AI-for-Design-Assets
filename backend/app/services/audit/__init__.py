@@ -8,7 +8,7 @@ import json
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.db.models import (Batch, BatchProduct, CompanyIndustryMap, Oplog, ReviewPin, ReviewRound,
+from app.db.models import (Batch, BatchProduct, CompanyIndustryMap, Oplog, Project, ReviewPin, ReviewRound,
                            User, utcnow)
 from app.errors import AppError
 from app.schemas.review import ReviewResponse
@@ -19,6 +19,8 @@ from app.services.auth.service import AuthService, LoginContext
 from app.services.upload.service import UploadService
 from app.services.notify import NotifyService, stage_since, recused
 from app.services.ingest import IngestService
+from app.services.nas import Region
+from app.services.postops.executor import PostopExecutor
 from app.services.oplog import OplogService
 from app.services.preflight import REQUIRED
 from app.services.review import ReviewService
@@ -35,8 +37,9 @@ def _name(user: User | None) -> str:
 
 
 class AuditService:
-    def __init__(self, auth: AuthService, review: ReviewService, notify: NotifyService, ingest: IngestService) -> None:
-        self.auth, self.review, self.notify, self.ingest = auth, review, notify, ingest
+    def __init__(self, auth: AuthService, review: ReviewService, notify: NotifyService,
+                 ingest: IngestService, postop: PostopExecutor) -> None:
+        self.auth, self.review, self.notify, self.ingest, self.postop = auth, review, notify, ingest, postop
 
     # ---- 取数与权限 ----
     @staticmethod
@@ -90,9 +93,30 @@ class AuditService:
         OplogService(session).write(user.id, ",".join(user.roles), action, "batch", str(batch.id), before, after, "成功", host)
 
     @staticmethod
-    def _path(session: Session, batch: Batch) -> PathInfo:
+    def _operation_params(session: Session, batch: Batch) -> dict:
+        if batch.kind == "ingest" or batch.review_snapshot_hash is None:
+            return {}
+        return ReviewService.submitted_snapshot(session, batch).content["operation"]["params"]
+
+    @classmethod
+    def _can_change_path(cls, session: Session, batch: Batch) -> bool:
+        return batch.kind in ("ingest", "rename", "move") or (
+            batch.kind == "restore" and cls._operation_params(session, batch).get("project", False))
+
+    @classmethod
+    def _path(cls, session: Session, batch: Batch) -> PathInfo:
         company = batch_company(batch)
         recommended = recommend(session, batch)
+        if batch.kind != "ingest":
+            project = session.get(Project, batch.project_id)
+            params = cls._operation_params(session, batch)
+            if batch.kind == "move":
+                mapped = session.get(CompanyIndustryMap, params.get("company_id")) if params.get("company_id") else None
+                recommended = company_path(params["won"], mapped) if mapped else None
+            elif project is not None:
+                restore = batch.kind == "restore" and params.get("project")
+                path = project.restore_path if restore else (project.canonical_path or project.current_path)
+                recommended = (path.rpartition("/")[0] or path) if path else None
         if batch.status in (INGESTING, "入库异常", "已入库"):
             return PathInfo(recommended=batch.recommended_path, final=batch.final_path, effective=batch.final_path,
                             company_name=company, company_in_tree=recommended is not None)
@@ -103,7 +127,7 @@ class AuditService:
             if row and company_path(selection["won"], row) == selection["path"]:
                 chosen = selection["path"]
         effective = chosen if selection else recommended
-        return PathInfo(recommended=recommended, final=chosen, effective=effective if recommended else None,
+        return PathInfo(recommended=recommended, final=chosen, effective=effective if recommended or batch.kind != "ingest" else None,
                         company_name=company, company_in_tree=recommended is not None)
 
     def _version(self, session: Session, batch: Batch) -> str:
@@ -131,7 +155,7 @@ class AuditService:
                 files = snapshot.content["files"]
                 claimer = session.get(User, getattr(batch, field)) if getattr(batch, field) else None
                 since = stage_since(batch)
-                items.append(QueueItem(id=batch.id, batch_no=batch.batch_no, folder_name=str(batch.payload["folder_name"]),
+                items.append(QueueItem(id=batch.id, kind=batch.kind, batch_no=batch.batch_no, folder_name=str(batch.payload["folder_name"]),
                     round=batch.round, uploader_name=_name(session.get(User, batch.uploader_id)),
                     products=len(snapshot.content["review"]["products"]), files=len(files), total_size=sum(file["size"] for file in files),
                     waiting_since=since, waiting_seconds=max(0, int((now - since).total_seconds())),
@@ -224,7 +248,7 @@ class AuditService:
             ReviewRound.stage == stage, ReviewRound.decision.is_(None))) if stage else None
         return AuditResponse(version=self._version(session, batch), review=review, stage=stage,
             claimed_by=PersonView(id=claimer.id, name=_name(claimer)) if claimer else None, claimed_by_me=mine,
-            can_claim=has_role and claimer is None and not blocked, blocked=blocked, can_edit_path=mine and stage == "final",
+            can_claim=has_role and claimer is None and not blocked, blocked=blocked, can_edit_path=mine and stage == "final" and self._can_change_path(session, batch),
             path=self._path(session, batch), acks=acks,
             stats=AuditStats(manual_edits=sum(tag.source == "manual" for tag in tags),
                 ai_confirmed=sum(tag.source == "ai_confirmed" for tag in tags),
@@ -233,7 +257,8 @@ class AuditService:
             relations=relations, note=review.batch.note_to_reviewer,
             folder_counts=[FolderCount(name=folder.name, count=len(folder.files)) for folder in review.folders],
             history=round_history(session, batch.id),
-            pins=pin_views(session, draft.id) if draft is not None and mine else [], checklist=dict(CHECKLIST_LABELS))
+            pins=pin_views(session, draft.id) if draft is not None and mine else [], checklist=dict(CHECKLIST_LABELS),
+            operation={"kind": batch.kind, **snapshot.content["operation"]} if "operation" in snapshot.content else None)
 
     def read(self, batch_id: int, actor: User) -> AuditResponse:
         with self.auth.lock, self.auth.database.session() as session:
@@ -276,6 +301,8 @@ class AuditService:
             if batch.status != FINAL or "final_reviewer" not in user.roles:
                 raise AppError("forbidden", "只有终审在终审阶段可以修改存放位置", 403)
             batch, user, _ = self._claimed(session, batch_id, actor)
+            if not self._can_change_path(session, batch):
+                raise AppError("operation_path_locked", "此操作的审核不能调整项目位置", 409)
             self._check_version(session, batch, version)
             company = session.get(CompanyIndustryMap, company_id)
             if company is None:
@@ -289,13 +316,16 @@ class AuditService:
             return self._response(session, batch, user)
 
     def dispatch_ingest(self, session: Session, batch: Batch, reviewer: User, login_id: int) -> None:
-        self.ingest.enqueue(session, batch, reviewer.id, login_id)
+        if batch.kind == "ingest":
+            self.ingest.enqueue(session, batch, reviewer.id, login_id)
+        elif batch.kind != "purge":
+            self.postop.enqueue(session, batch, reviewer.id, login_id)
 
     def approve(self, batch_id: int, checklist: dict[str, bool], login: LoginContext, host: str, version: str) -> AuditResponse:
         with self.auth.lock, self.auth.database.session() as session:
             session.connection().exec_driver_sql("BEGIN IMMEDIATE")
             UploadService._check_login(session, login)
-            self.auth.pool.get(login.session_id)
+            fs = self.auth.pool.get(login.session_id)
             batch, user, stage = self._claimed(session, batch_id, login.user)
             self._check_version(session, batch, version)
             missing = [CHECKLIST_LABELS[key] for key in CHECKLIST if checklist.get(key) is not True]
@@ -309,14 +339,23 @@ class AuditService:
                     info = self._path(session, batch)
                     raise AppError("path_pending", "位置待定，请先从目录树选择存放位置" if info.company_in_tree
                                    else "位置待定：等待管理员在对照表中录入该企业", 409, {"company_in_tree": info.company_in_tree})
+                if batch.kind == "restore" and self._operation_params(session, batch).get("project") and not row.path_change:
+                    project = session.get(Project, batch.project_id)
+                    mapped = session.get(CompanyIndustryMap, project.company_id) if project.company_id else None
+                    if mapped is None or company_path(project.won, mapped) != path or not fs.exists(
+                            self.ingest.paths.join(Region.FORMAL, path)):
+                        raise AppError("path_pending", "原恢复位置已变化，请终审从目录树核定有效位置", 409)
                 first = session.scalar(select(ReviewRound).where(ReviewRound.snapshot_id == row.snapshot_id,
                     ReviewRound.stage == "first", ReviewRound.decision == "pass"))
                 if first is None or first.reviewer_id != batch.first_reviewer_id or first.reviewer_id == user.id:
                     raise AppError("first_review_required", "本轮缺少独立初审通过记录", 409)
                 row.execution_session_id = login.session_id
                 if not row.path_change:
-                    row.path_change = {"after": {"path": path, "won": batch.won,
-                                                "company_id": match_company(session, batch_company(batch)).id}}
+                    params = self._operation_params(session, batch)
+                    matched = match_company(session, batch_company(batch))
+                    row.path_change = {"after": {"path": path, "won": params.get("won", batch.won),
+                                                "company_id": params.get("company_id") if batch.kind == "move"
+                                                else (matched.id if matched else None)}}
                 batch.status, batch.final_path, batch.final_reviewer_id = INGESTING, path, user.id
             else:
                 batch.status = FINAL

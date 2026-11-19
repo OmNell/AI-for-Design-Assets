@@ -51,4 +51,6 @@ class LinkService:
             OplogService(session).write(login.user.id, ",".join(login.user.roles), "解析永久链接", link.kind,
                                         str(link.target_id), None, {"project_id": project.id}, "成功", host)
         return ResolvedLink(kind=link.kind, link_id=link_id, target_id=link.target_id, project_id=project.id,
-            url=self.catalog.url(link_id), status=state, image_file_id=product.file_id if product else None)
+            url=self.catalog.url(link_id), status=state, image_file_id=product.file_id if product else None,
+            deleted_at=next((row.deleted_at for row in (product, file, project) if row and row.deleted_at), None),
+            delete_reason=next((row.delete_reason for row in (product, file, project) if row and row.delete_reason), None))

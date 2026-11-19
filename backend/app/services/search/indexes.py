@@ -192,7 +192,15 @@ class IndexService:
             model = self.profile(row)
             products = list(session.scalars(active_products().order_by(Product.id)))
             inputs = inputs_for(self.ai, session, products)
-        vectors.generate(self.ai, None, model, inputs)
+        def still_current(session: Session, product_id: int, digest: str) -> bool:
+            index = session.get(EmbeddingIndex, generation)
+            if index is None or index.status not in ("candidate", "rollback") or self.profile(index) != model:
+                return False
+            product = session.scalar(active_products().where(Product.id == product_id))
+            text = inputs_for(self.ai, session, [product]).get(product_id) if product else None
+            return text is not None and vectors.text_hash(text) == digest
+
+        vectors.generate(self.ai, None, model, inputs, fence=still_current)
 
     @staticmethod
     def _log(session: Session, user_id: int, action: str, generation: int, host: str,

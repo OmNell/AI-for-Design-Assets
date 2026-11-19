@@ -17,7 +17,7 @@ export function ProjectsPage() {
   const companies = industries.find(item => String(item.id) === query.industry)?.companies ?? industries.flatMap(item => item.companies)
   const update = (patch: Partial<ProjectQuery>) => setQuery(current => ({ ...current, ...patch, page: patch.page ?? 1 }))
   const pages = list.data ? Math.max(1, Math.ceil(list.data.total / list.data.page_size)) : 1
-  return <GlassPanel><h1 className="text-2xl font-semibold">项目</h1><p className="mt-3 text-sm text-slate-500">已入库的项目。按立项编号、项目名或企业名查找；下载时使用你本人的 NAS 权限。</p>
+  return <GlassPanel><div className="flex items-center justify-between"><h1 className="text-2xl font-semibold">项目</h1><Link to="/projects/voided" className="text-sm text-emerald-800 underline">查看作废项目</Link></div><p className="mt-3 text-sm text-slate-500">已入库的项目。按立项编号、项目名或企业名查找；下载时使用你本人的 NAS 权限。</p>
     <form className="mt-6 flex flex-wrap items-center gap-3" onSubmit={event => { event.preventDefault(); update({ q: text }) }}>
       <input aria-label="搜索项目" className="field max-w-sm !py-2.5 text-sm" placeholder="立项编号 / 项目名 / 企业名" value={text} onChange={event => setText(event.target.value)} />
       <select aria-label="中标状态" className="field !w-36 !py-2.5 text-sm" value={query.won} onChange={event => update({ won: event.target.value as ProjectQuery['won'] })}>

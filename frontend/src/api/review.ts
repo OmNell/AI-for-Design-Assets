@@ -1,3 +1,4 @@
+import type { OperationKind } from './operations'
 import { request } from './client'
 import type { ProductTag } from './upload'
 
@@ -12,7 +13,7 @@ export interface ReviewField { key: string; label: string; hint: string }
 export interface Pending { fields_unconfirmed: number; invalid_files: number; missing_main_image: boolean; yellow: number; relations_unconfirmed: number; failed: number; processing: number; can_submit: boolean }
 export interface FolderGroup { name: string; files: { name: string; size: number }[] }
 export interface ReviewBatch {
-  id: number; batch_no: string; project_code: string; folder_name: string; company_name: string; project_name: string
+  id: number; kind?: OperationKind | 'ingest'; project_id?: number | null; batch_no: string; project_code: string; folder_name: string; company_name: string; project_name: string
   status: string; won: boolean; round: number; owner_id: number; owner_name: string; uploader_id: number
   recommended_path: string | null; note_to_reviewer: string | null; editable: boolean; review_snapshot_hash: string | null
 }

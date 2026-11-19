@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { Navigate, useLocation } from 'react-router'
 import { login } from '../api/auth'
+import { safeLoginReturn } from '../app/navigation'
 import { useAuthStore } from '../stores/auth'
 import { GlassPanel } from '../components/glass/GlassPanel'
 import { GlassButton } from '../components/glass/GlassButton'
@@ -15,7 +16,7 @@ export function LoginPage() {
   const { register, handleSubmit, resetField, formState: { isSubmitting, errors } } = useForm<FormValues>()
   const state: unknown = useLocation().state
   const returnTo = typeof state === 'object' && state !== null && 'returnTo' in state && typeof state.returnTo === 'string'
-    && /^\/l\/[a-zA-Z0-9_-]+$/.test(state.returnTo) ? state.returnTo : '/'
+    && safeLoginReturn(state.returnTo) ? state.returnTo : '/'
   if (user) {
     const uploadRole = user.roles.some(role => ['uploader', 'first_reviewer', 'final_reviewer'].includes(role))
     return <Navigate to={returnTo === '/' && !uploadRole ? '/search' : returnTo} replace />

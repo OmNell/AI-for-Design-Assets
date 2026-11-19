@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams, useNavigate } from 'react-router'
+import { Link, useParams, useNavigate, useSearchParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { appendProduct, bulkUpdate, changeOwner, getReview, patchProduct, removeProduct, retryProductAi, setRelations, submitReview,
   type Pending, type ProductPatch, type ProductUpdate, type ReviewData, type ReviewProduct } from '../api/review'
+import { getOperation, updateOperation, type OperationInput } from '../api/operations'
+import { SupplementReviewPanel } from '../components/ops/SupplementWorkspace'
+import { AssetPreview } from '../components/AssetPreview'
 import { DraftSaver, type SaveStatus } from '../lib/draftSaver'
 import { formatBytes, splitTerms } from '../lib/terms'
 import { useAuthStore } from '../stores/auth'
@@ -59,11 +62,15 @@ export function ReviewPage() {
 
 function ReviewWorkspace({ id }: { id: number }) {
   const navigate = useNavigate()
+  const [params] = useSearchParams()
+  const preferredProduct = Number(params.get('replace')) || null
   const valid = Number.isInteger(id) && id > 0
   const user = useAuthStore(state => state.user)
   const client = useQueryClient()
   const key = useMemo(() => ['review', id], [id])
   const [save, setSave] = useState<{ state: SaveStatus; message?: string }>({ state: 'saved' })
+  const [supplementDirty, setSupplementDirty] = useState(false)
+  const [compareOriginal, setCompareOriginal] = useState(false)
   const [current, setCurrent] = useState<number | null>(null)
   const [checked, setChecked] = useState<Set<number>>(new Set())
   const [drafts, setDrafts] = useState<Record<number, number[]>>({})
@@ -99,6 +106,10 @@ function ReviewWorkspace({ id }: { id: number }) {
   useEffect(() => { try { if (note) localStorage.setItem(`review-note-${user?.id}-${id}`, note); else localStorage.removeItem(`review-note-${user?.id}-${id}`) } catch { /* 存储不可用时备注只保留在本页。 */ } }, [note, id, user?.id])
 
   const data = review.data
+  const isSupplement = data?.batch.kind === 'supplement'
+  const supplement = useQuery({ queryKey: ['operation', id], queryFn: () => getOperation(id), enabled: isSupplement, retry: false })
+  const supplementData = supplement.data
+  const assignments = (supplementData?.params.products ?? []) as { id: number; existing_product_id: number | null }[]
   const products = data?.products ?? []
   const selected = products.find(product => product.id === current) ?? products[0]
   const items = useMemo(() => products.filter(product => product.kind === 'item'), [products])
@@ -113,7 +124,13 @@ function ReviewWorkspace({ id }: { id: number }) {
     const draft = drafts[p.id]
     return draft && (draft.length !== p.relation_items.length || p.relation_items.some(r => !draft.includes(r.batch_product_id)))
   })
-  const todo = [...pendingText(pending), ...(unsavedRelations ? ['请保存已调整的套装关系'] : [])]
+  const supplementaryTodo = !isSupplement ? [] : [
+    !supplementData ? '等待载入补充核对' : '',
+    supplementDirty ? '保存补充的身份和关系复核' : '',
+    supplementData && products.some(product => !assignments.some(item => item.id === product.id)) ? '为每张补充主图选择商品身份' : '',
+    supplementData?.required_relation_reviews?.some(id => supplementData.params.relation_reviews?.[String(id)] === undefined) ? '原套装关系待复核' : '',
+  ].filter(Boolean)
+  const todo = [...pendingText(pending), ...supplementaryTodo, ...(unsavedRelations ? ['请保存已调整的套装关系'] : [])]
   const change = (productId: number) => (patch: ProductPatch, immediate = false) => {
     client.setQueryData<ReviewData>(key, value => value && { ...value, products: value.products.map(product => product.id === productId ? applyPatch(product, patch) : product) })
     saver.change(productId, patch)
@@ -140,6 +157,16 @@ function ReviewWorkspace({ id }: { id: number }) {
       done?.()
     } catch (reason: unknown) { setError(message(reason)) } finally { setBusy(false) }
   }
+  const saveSupplement = async (input: OperationInput) => {
+    if (!(await saver.flush())) throw new Error('还有修改没有保存成功，请先重试保存')
+    const operation = await updateOperation(id, input)
+    await client.cancelQueries({ queryKey: key })
+    client.setQueryData(['operation', id], operation)
+    writes.current++
+    client.setQueryData(key, await getReview(id))
+    setDrafts({})
+  }
+  const original = selected ? supplementData?.before.products.find(product => product.id === assignments.find(item => item.id === selected.id)?.existing_product_id) : undefined
   const close = () => { setModal(null); setError('') }
   const draft = selected ? drafts[selected.id] ?? selected.relation_items.map(item => item.batch_product_id) : []
   const toggle = (productId: number, on: boolean) => setChecked(value => { const next = new Set(value); if (on) next.add(productId); else next.delete(productId); return next })
@@ -174,12 +201,16 @@ function ReviewWorkspace({ id }: { id: number }) {
           <div className="flex items-center gap-3">
             <span role="status" data-testid="save-status" className={`text-xs ${save.state === 'error' ? 'text-red-800' : 'text-slate-500'}`}>{saveLabels[save.state]}{save.state === 'error' && save.message ? `：${save.message}` : ''}
               {save.state === 'error' && <button type="button" className="ml-2 underline underline-offset-4" onClick={() => void saver.flush()}>重试</button>}</span>
-            <GlassButton disabled={busy || !pending.can_submit || unsavedRelations || save.state !== 'saved'} title={todo.length ? `提交前还需处理：${todo.join('、')}` : undefined}
+            <GlassButton disabled={busy || !pending.can_submit || supplementaryTodo.length > 0 || unsavedRelations || save.state !== 'saved'} title={todo.length ? `提交前还需处理：${todo.join('、')}` : undefined}
               onClick={() => void run(() => submitReview(id, note), () => { setNote(''); void client.invalidateQueries({ queryKey: ['batches'] }); void client.invalidateQueries({ queryKey: ['batch', id] }) })}>提交审核</GlassButton></div>
         </div>}
       </div>
       {error && !modal && <p role="alert" className="mt-2 text-sm text-red-800">{error}</p>}
     </GlassSurface>
+
+    {isSupplement && supplement.isError && <GlassPanel><p role="alert" className="text-red-800">{supplement.error.message}</p></GlassPanel>}
+    {supplementData && <SupplementReviewPanel data={supplementData} products={products} editable={editable} busy={busy}
+      preferredProduct={preferredProduct} save={saveSupplement} onDirty={setSupplementDirty} />}
 
     {/* 三栏内部各自滚动：用次级玻璃，lite 模式下不挂实时滤镜，60 张以上主图滚动才流畅。 */}
     <div className="grid h-[calc(100vh-345px)] min-h-[560px] grid-cols-[270px_minmax(0,1fr)_400px] gap-4">
@@ -195,10 +226,14 @@ function ReviewWorkspace({ id }: { id: number }) {
 
       <GlassSurface radius={24} priority="secondary" className="glass-fill min-h-0 p-3">{selected ? <div className="flex h-full flex-col">
         <div className="mb-2 flex items-center justify-between gap-3 text-sm"><span className="truncate font-medium">{selected.display_name}</span>
+          {original && <label className="flex shrink-0 items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={compareOriginal} onChange={event => setCompareOriginal(event.target.checked)} />对比原主图</label>}
           {selected.kind === 'set' && <label className="flex shrink-0 items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={sideBySide} onChange={event => setSideBySide(event.target.checked)} />并排显示包含的单品</label>}</div>
-        <div className={`min-h-0 flex-1 ${selected.kind === 'set' && sideBySide ? 'grid grid-cols-2 gap-3' : ''}`}>
+        <div className={`min-h-0 flex-1 ${original && compareOriginal || selected.kind === 'set' && sideBySide ? 'grid grid-cols-2 gap-3' : ''}`}>
           <ImageViewer key={selected.id} batchId={batch.id} fileId={selected.batch_file_id} version={selected.fingerprint ?? ''} name={selected.display_name} pins={rejectPins.filter(pin => pin.batch_product_id === selected.id)} />
-          {selected.kind === 'set' && sideBySide && <div data-testid="side-items" className="min-h-0 overflow-y-auto rounded-2xl bg-white/20 p-2">
+          {original && compareOriginal && <div className="min-h-0 overflow-y-auto rounded-2xl bg-white/25 p-2">
+            <p className="mb-2 text-xs text-slate-600">原主图 · {original.product_code}</p><AssetPreview fileId={original.file_id} name={original.display_name} />
+          </div>}
+          {selected.kind === 'set' && sideBySide && !(original && compareOriginal) && <div data-testid="side-items" className="min-h-0 overflow-y-auto rounded-2xl bg-white/20 p-2">
             <div className="grid grid-cols-2 gap-2">{items.filter(item => draft.includes(item.id)).map(item => <button type="button" key={item.id} className="rounded-xl bg-white/30 p-1.5 text-left hover:bg-white/50" onClick={() => setCurrent(item.id)}>
               <Thumb batchId={batch.id} fileId={item.batch_file_id} version={item.fingerprint ?? ''} size={1024} alt={`${item.display_name} 图片`} className="aspect-square w-full" />
               <span className="mt-1 block truncate text-xs">{item.display_name}</span></button>)}</div>
