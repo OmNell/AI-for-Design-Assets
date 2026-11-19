@@ -8,11 +8,12 @@ from contextlib import contextmanager
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Batch, ExpectedDeletion, Job, PostopPlan, Project, ReviewRound, ReviewSnapshot, User, UserSession, utcnow
+from app.db.models import Batch, ExpectedDeletion, InspectionFinding, Job, PostopPlan, Project, ReviewRound, ReviewSnapshot, User, UserSession, utcnow
 from app.errors import AppError
 from app.schemas.audit import CHECKLIST
 from app.schemas.postop_execution import DeleteFileView, OperationExecution
 from app.services import archive
+from app.services.archive import repair
 from app.services.ai.orchestrator import AiService
 from app.services.auth.service import AuthService, LoginContext
 from app.services.jobs import JobContext, JobFailure, JobQueue
@@ -344,10 +345,38 @@ class PostopExecutor:
                       {"step": batch.ingest_step, "error": job.error}, result="失败")
             self.notify.emit(session, "ingest_error", batch)
 
+    def _repair(self, context: JobContext, fs: NasFs) -> None:
+        with self.auth.lock, self.auth.database.session() as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            batch, snapshot = self._for_job(session, context)
+            project = session.get(Project, batch.project_id)
+            operation = snapshot.content["operation"]
+            if project is None:
+                raise JobFailure("待修复项目不存在", retryable=False)
+            data = archive.from_catalog(session, project)
+            if manifest.digest(data) != operation["before_digest"]:
+                raise JobFailure("正式档案依据已变化，无法修复", retryable=False)
+            root = self.paths.join(Region.FORMAL, project.current_path)
+            repair.check(fs, root, data, operation["repair"])
+            archive.rebuild(session, project, fs, root)
+            if archive.verify(session, project, fs, root):
+                raise JobFailure("修复后档案仍与卡片柜不一致", retryable=False)
+            batch.status, batch.ingest_error, batch.ingest_step = DONE, None, len(STEPS)
+            for row in session.scalars(select(InspectionFinding).where(InspectionFinding.project_id == project.id,
+                    InspectionFinding.kind == "archive_broken", InspectionFinding.resolved_at.is_(None))):
+                row.resolved_at = utcnow()
+            self._log(session, batch, "档案修复并核验", None, {"project_id": project.id, "paths": list(operation["repair"])})
+            self.notify.emit(session, "ingested", batch)
+
     def handle(self, context: JobContext) -> None:
         if context.fs is None:
             raise JobFailure("缺少终审本人 NAS 会话", retryable=False)
         try:
+            with self.auth.database.session() as session:
+                batch = self._actor_batch(session, context)
+            if batch.kind == "archive_repair":
+                self._repair(context, context.fs)
+                return
             plan = self._plan(context, context.fs)
             with self.auth.database.session() as session:
                 batch, _ = self._for_job(session, context)

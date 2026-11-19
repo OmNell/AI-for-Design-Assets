@@ -312,8 +312,11 @@ class JobQueue:
                 raise AppError("job_not_found", "任务不存在", 404)
             if job.status != "failed":
                 raise AppError("job_not_failed", "只有失败任务可以重试", 409)
-            if job.kind in ("ingest", "postop"):
+            if job.kind in ("ingest", "postop", "catalog_thumb"):
                 raise AppError("ingest_resume_required", "入库须由本轮终审本人从批次继续", 409)
+            if job.kind in ("inspection", "backup") and session.scalar(select(Job.id).where(
+                    Job.kind == job.kind, Job.status.in_(("queued", "running"))).limit(1)):
+                raise AppError("maintenance_busy", "同类维护任务尚未结束", 409)
             if job.kind not in self._registry:
                 raise AppError("job_kind_unregistered", "该任务类型尚未开放", 409)
             before = {"status": job.status, "attempts": job.attempts, "error": job.error}

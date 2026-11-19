@@ -131,7 +131,9 @@ def _purge_preview(session: Session, data: archive.Manifest, params: Row, now: d
         dates.append(max(started, published))
     if not dates:
         raise _error("purge_void_time_missing", "没有可核对的作废资产")
-    earliest = max(dates) + COOLING_PERIOD
+    runtime = session.scalar(select(Setting).where(Setting.key == "system_runtime"))
+    cooling_days = runtime.value["cooling_days"] if runtime else COOLING_PERIOD.days
+    earliest = max(dates) + timedelta(days=max(COOLING_PERIOD.days, cooling_days))
     paths = physical_paths(data)
     file_ids = {row["id"] for row in files}
     project_path = _path(project["current_path"])

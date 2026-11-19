@@ -43,8 +43,8 @@ class UploadService:
         self.ai = ai
         self.database = auth.database
         self.lock = auth.lock
-        self.paths = create_paths(auth.config)
         self.chunk_bytes = auth.config.upload.chunk_mb * 1024 * 1024
+        self.paths = create_paths(auth.config)
         self._hashes: dict[tuple[int, int], tuple[int, HashState]] = {}
         self._pinned: dict[int, int] = {}
         self._activity: dict[int, float] = {}
@@ -148,6 +148,15 @@ class UploadService:
             raise AppError("acks_required", "请逐类勾选我已知晓", 422, sorted(missing))
         return result
 
+    def _chunk_size(self, batch: Batch) -> int:
+        return int(batch.payload.get("chunk_bytes", self.chunk_bytes))
+
+    def body_limit(self, batch_id: int, login: LoginContext) -> int:
+        with self.database.session() as session:
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login, batch)
+            return self._chunk_size(batch)
+
     def _snapshot(self, session: Session, batch: Batch, token: str | None = None,
                   differences: dict[str, list[str]] | None = None) -> BatchResponse:
         session.flush()
@@ -161,8 +170,8 @@ class UploadService:
             status=batch.status, queued=bool(batch.payload.get("queued")), won=batch.won, updated_at=batch.updated_at,
             terminated_at=batch.terminated_at, termination_reason=batch.termination_reason,
             files=[UploadFileResponse.model_validate(file) for file in files], kind=batch.kind, project_id=batch.project_id,
-            directories=list(batch.payload.get("directories", [])), chunk_bytes=self.chunk_bytes,
-            parallel_files=self.auth.config.upload.parallel_files, upload_token=token, differences=differences,
+            directories=list(batch.payload.get("directories", [])), chunk_bytes=self._chunk_size(batch),
+            parallel_files=batch.payload.get("parallel_files", self.auth.config.upload.parallel_files), upload_token=token, differences=differences,
             owner_id=batch.owner_id, uploader_id=batch.uploader_id, recommended_path=batch.recommended_path,
             tag_labels={field["key"]: field["label"] for field in batch.payload.get("ai_fields", [])},
             products=[BatchProductResponse.model_validate(product).model_copy(update={"visual_ai_succeeded":
@@ -322,6 +331,8 @@ class UploadService:
                 session.add(batch); session.flush()
                 batch.batch_no = f"B{utcnow():%Y%m%d}-{batch.id:06d}"
                 batch.temp_path = batch.batch_no + "/" + folder
+                batch.payload = {**batch.payload, "chunk_bytes": self.chunk_bytes,
+                                 "parallel_files": self.auth.config.upload.parallel_files}
                 for item in body.files:
                     if not item.is_dir and not ignored(item):
                         session.add(BatchFile(batch_id=batch.id, rel_path=item.rel_path, size=item.size, mtime=item.mtime))
@@ -366,10 +377,10 @@ class UploadService:
         self._activity[batch.id] = time.monotonic()
         return batch, file, self._fs(batch)
 
-    async def read_body(self, stream: AsyncIterator[bytes]) -> bytes:
+    async def read_body(self, stream: AsyncIterator[bytes], limit: int) -> bytes:
         data = bytearray()
         async for block in stream:
-            if len(data) + len(block) > self.chunk_bytes:
+            if len(data) + len(block) > limit:
                 raise AppError("chunk_too_large", "分片超过配置大小", 413)
             data.extend(block)
         return bytes(data)
@@ -380,7 +391,7 @@ class UploadService:
         expected = file.bytes_received
         if actual != expected:
             if actual < expected:
-                file.bytes_received = min(actual // self.chunk_bytes * self.chunk_bytes, file.size)
+                file.bytes_received = min(actual // self._chunk_size(batch) * self._chunk_size(batch), file.size)
                 file.upload_status = "partial" if file.bytes_received else "pending"
                 file.fingerprint = None
                 file.fingerprint_kind = None
@@ -412,8 +423,9 @@ class UploadService:
             with self._transfer(login, host) as session:
                 batch, file, fs = self._receiving(session, batch_id, login, file_id)
                 self._repair(session, batch, file, fs, host)
-                offset = index * self.chunk_bytes
-                length = min(self.chunk_bytes, file.size - offset)
+                chunk_size = self._chunk_size(batch)
+                offset = index * chunk_size
+                length = min(chunk_size, file.size - offset)
                 if index < 0 or length <= 0 or len(data) != length:
                     raise AppError("invalid_chunk", "分片长度或序号不正确", 422)
                 path = self._file_path(batch, file)

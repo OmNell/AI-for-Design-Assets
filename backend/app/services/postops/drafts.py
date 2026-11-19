@@ -10,10 +10,11 @@ from sqlalchemy.orm import Session
 from app.db.models import Batch, BatchFile, CatalogFile, CompanyIndustryMap, Product, Project, ReviewSnapshot, User, utcnow
 from app.errors import AppError
 from app.schemas.postops import (LightKind, MoveParams, OperationBody, OperationFile, OperationKind, OperationResponse,
-                                 ProjectOperations, RenameParams, RetagParams, SupplementParams, TargetParams)
+                                 ProjectOperations, RenameParams, RetagParams, SupplementParams, TargetParams, OperationModel)
 from app.schemas.review import ReviewResponse
 from app.schemas.upload import PrecheckRequest, PrecheckResponse
 from app.services import archive
+from app.services.archive import repair
 from app.services.ai.field_catalog import FIXED_FIELDS
 from app.services.ai.orchestrator import REVIEWING, active_products
 from app.services.auth.service import LoginContext
@@ -25,9 +26,9 @@ from .manifest import digest, prevalidate, purge_preview
 from .supplement import active_batch_id, catalog_files, project_for_supplement
 
 DRAFT = "待核对"
-LIGHT_KINDS = {"rename", "retag", "void", "restore", "move", "purge"}
+LIGHT_KINDS = {"rename", "retag", "void", "restore", "move", "purge", "archive_repair"}
 PARAMS = {"rename": RenameParams, "retag": RetagParams, "move": MoveParams, "void": TargetParams,
-          "restore": TargetParams, "purge": TargetParams, "supplement": SupplementParams}
+          "restore": TargetParams, "purge": TargetParams, "supplement": SupplementParams, "archive_repair": OperationModel}
 
 
 class DraftService:
@@ -48,11 +49,13 @@ class DraftService:
 
     @staticmethod
     def _kinds(project: Project, user: User) -> list[OperationKind]:
-        if not set(user.roles) & UPLOAD_ROLES or project.status == "deleted":
+        if project.status == "deleted":
+            return ["archive_repair"] if "final_reviewer" in user.roles else []
+        if not set(user.roles) & UPLOAD_ROLES:
             return []
         kinds: list[OperationKind] = ["supplement", "rename", "retag", "void"] if project.status == "active" else []
         if "final_reviewer" in user.roles:
-            kinds.extend(["restore", "purge"])
+            kinds.extend(["restore", "purge", "archive_repair"])
             if project.status == "active":
                 kinds.append("move")
         return kinds
@@ -229,7 +232,11 @@ class DraftService:
     def read(self, batch_id: int, login: LoginContext, *, preview: bool = False) -> OperationResponse:
         with self.auth.database.session() as session:
             batch, project, user = self._batch(session, batch_id, login)
-            return self._response(session, batch, project, user, preview=preview)
+            response = self._response(session, batch, project, user, preview=preview)
+            if preview and batch.kind == "archive_repair" and response.editable:
+                fs = self.auth.pool.get(login.session_id)
+                response.after = {"files": repair.changes(fs, self.upload.paths.join(Region.FORMAL, project.current_path), response.before)}
+            return response
 
     def create(self, project_id: int, kind: LightKind, body: OperationBody, login: LoginContext, host: str) -> OperationResponse:
         with self.auth.lock, self.auth.database.session() as session:
@@ -299,7 +306,20 @@ class DraftService:
             content = {"schema": 1, "submitted_by": user.id, "kind": batch.kind, "project_id": project.id,
                        "review": view.model_dump(mode="json"), "evidence": {}, "confirmation_oplog_ids": [],
                        "directories": [], "preflight_acks": [], "files": [], "operation": operation}
-            operation["after"] = self._difference(prevalidate(session, batch, content))
+            if batch.kind == "archive_repair":
+                fs = self.auth.pool.get(login.session_id)
+                root = self.upload.paths.join(Region.FORMAL, project.current_path)
+                scope = repair.changes(fs, root, operation["before"])
+                if all(entry["before"] == entry["after"] for entry in scope.values()):
+                    try:
+                        if not archive.verify(session, project, fs, root):
+                            raise AppError("archive_intact", "档案完整，无需发起修复", 409)
+                    except archive.ArchiveError:
+                        pass
+                operation["repair"] = scope
+                operation["after"] = {"files": scope}
+            else:
+                operation["after"] = self._difference(prevalidate(session, batch, content))
             digest = self.review._digest(content)
             before = {"status": batch.status, "round": batch.round}
             batch.round, batch.note_to_reviewer = view.batch.round, view.batch.note_to_reviewer

@@ -87,7 +87,7 @@ class ReviewConfig(Section):
 
 
 class PurgeConfig(Section):
-    cooling_days: int = Field(default=30, gt=0)
+    cooling_days: int = Field(default=30, ge=30)
 
 
 class ScheduleConfig(Section):

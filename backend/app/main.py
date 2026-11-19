@@ -27,6 +27,12 @@ from app.services.postops.executor import PostopExecutor
 from app.services.ingest import IngestService
 from app.services.links import LinkService
 from app.api.health import router
+from app.api.maintenance import router as maintenance_router
+from app.services.backup import BackupService
+from app.services.inspection import InspectionService
+from app.services.maintenance.admin import AdminService
+from app.services.maintenance.cleanup import CleanupService
+from app.services.maintenance.settings import SystemService
 from app.api.auth import router as auth_router
 from app.api.admin import router as admin_router
 from app.api.upload import router as upload_router
@@ -59,11 +65,12 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
-               log_dir: Path | None = None) -> FastAPI:
+               log_dir: Path | None = None, *, config_file: Path | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        config = settings or load_settings()
-        directory = log_dir or Path(os.environ.get("NASWB_CONFIG", "config.yaml")).resolve().parent / "logs"
+        source = (config_file or Path(os.environ.get("NASWB_CONFIG", "config.yaml"))).resolve()
+        config = settings or load_settings(source)
+        directory = log_dir or source.parent / "logs"
         handler = configure_logging(directory)
         logger = logging.getLogger("nas_workbench")
         database: Database | None = None
@@ -71,6 +78,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
         upload = None
         jobs = None
         ai = None
+        system = None
         try:
             database = Database(config.paths.data_dir)
             application.state.settings = config
@@ -82,6 +90,8 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             application.state.roles = RoleService(application.state.auth)
             jobs = JobQueue(database, pool, workers=config.jobs.workers, auth_lock=application.state.auth.lock)
             application.state.jobs = jobs
+            system = SystemService(application.state.auth, jobs)
+            application.state.system = system
             thumbs = ThumbService(application.state.auth, jobs)
             application.state.thumbs = thumbs
             application.state.ai_settings = AiSettingsService(application.state.auth, application.state.cipher)
@@ -98,6 +108,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             application.state.auth.on_login = thumbs.resume_for_user
             upload = UploadService(application.state.auth, thumbs, ai)
             application.state.upload = upload
+            system.upload = upload
             application.state.review = ReviewService(application.state.auth, thumbs, ai)
             application.state.auth.on_close = upload.session_closed
             application.state.notify = NotifyService(application.state.auth)
@@ -120,8 +131,17 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             jobs.register("postop", executor.handle, concurrency=1, retries=1, recoverable=False, state_callback=executor.on_job_state)
             application.state.audit = AuditService(application.state.auth, application.state.review, application.state.notify, ingest, executor)
             jobs.register("ingest", ingest.handle, concurrency=1, retries=1, recoverable=False, state_callback=ingest.on_job_state)
+            inspection = InspectionService(application.state.auth)
+            backup = BackupService(application.state.auth, source)
+            admin = AdminService(application.state.auth, jobs, application.state.postops, application.state.catalog.media)
+            application.state.maintenance = admin
+            application.state.cleanup = CleanupService(application.state.auth)
+            jobs.register("inspection", inspection.handle, concurrency=1, retries=1, recoverable=True, state_callback=inspection.changed)
+            jobs.register("backup", backup.handle, concurrency=1, retries=1, recoverable=True)
+            jobs.register("catalog_thumb", admin.rebuild_worker, concurrency=1, retries=0, recoverable=False)
             jobs.start()
             ai.start()
+            system.start()
             logger.info("工作台启动完成，模式：%s", config.mode)
             yield
         finally:
@@ -129,6 +149,8 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
                 try:
                     try:
                         try:
+                            if system is not None:
+                                system.shutdown()
                             if ai is not None:
                                 ai.shutdown()
                         finally:
@@ -166,6 +188,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
     application.include_router(router)
     application.include_router(auth_router)
     application.include_router(admin_router)
+    application.include_router(maintenance_router)
     application.include_router(upload_router)
     application.include_router(ai_settings_router)
     application.include_router(ai_runtime_router)

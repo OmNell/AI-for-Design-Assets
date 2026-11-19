@@ -144,7 +144,7 @@ class AssetLocator:
     def _finding(self, session: Session, ref: Reference, kind: str, path: str, detail: str,
                  login: LoginContext, host: str, *, fixed: bool = False, before: object = None) -> None:
         prior = session.scalar(select(InspectionFinding).where(
-            InspectionFinding.kind == kind, InspectionFinding.file_id == ref.file.id, InspectionFinding.path == path))
+            InspectionFinding.run_id.is_(None), InspectionFinding.kind == kind, InspectionFinding.file_id == ref.file.id, InspectionFinding.path == path))
         if prior is not None and not fixed:
             return
         if prior is None:

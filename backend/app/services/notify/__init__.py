@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import InspectionFinding, Batch, ReviewSnapshot, User, utcnow
+from app.db.models import Batch, InspectionFinding, InspectionRun, Job, ReviewSnapshot, User, utcnow
 from app.errors import AppError
 from app.schemas.audit import TodoBatch, TodoItem
 from app.services.admin.company_map import batch_company, match_company
@@ -93,8 +93,23 @@ class NotifyService:
                 "admin" in roles or ("final_reviewer" in roles and row.final_reviewer_id == user.id))]
             add("ingest", "入库未完成", unfinished, single(unfinished, "/review/{id}"))
             if "admin" in roles:
-                findings = session.scalar(select(func.count(InspectionFinding.id)).where(InspectionFinding.run_id.is_(None)))
+                findings = session.scalar(select(func.count(InspectionFinding.id)).where(
+                    InspectionFinding.acknowledged_at.is_(None), InspectionFinding.resolved_at.is_(None)))
                 if findings:
                     items.append(TodoItem(key="asset_findings", label="正式文件异常待处理", count=findings,
-                                          link="/admin/asset-findings", batches=[]))
+                                          link="/admin/maintenance?tab=inspection", batches=[]))
+                latest = session.scalar(select(InspectionRun).order_by(InspectionRun.id.desc()).limit(1))
+                if latest and latest.status == "done":
+                    items.append(TodoItem(key="inspection_report", label=f"最近巡检报告 · {latest.summary.get('count', 0)} 项异常",
+                                          count=1, link="/admin/maintenance", batches=[]))
+                failed = session.scalar(select(func.count(Job.id)).where(
+                    Job.kind.in_(("inspection", "backup")), Job.status == "failed"))
+                if failed:
+                    items.append(TodoItem(key="maintenance_failures", label="巡检或备份任务异常", count=failed,
+                                          link="/admin/maintenance", batches=[]))
+            if "final_reviewer" in roles:
+                repairs = session.scalar(select(func.count(func.distinct(InspectionFinding.project_id))).where(
+                    InspectionFinding.kind == "archive_broken", InspectionFinding.resolved_at.is_(None)))
+                if repairs:
+                    items.append(TodoItem(key="archive_repairs", label="项目档案待修复", count=repairs, link="/archive/repairs", batches=[]))
             return items

@@ -69,7 +69,8 @@ def state(id: int, request: Request, login: LoginContext = Depends(upload_user))
 
 @router.put("/{id}/files/{file_id}/chunks/{index}", response_model=ChunkResponse)
 async def chunk(id: int, file_id: int, index: int, request: Request, login: LoginContext = Depends(upload_user)) -> ChunkResponse:
-    data = await request.app.state.upload.read_body(request.stream())
+    limit = await run_in_threadpool(request.app.state.upload.body_limit, id, login)
+    data = await request.app.state.upload.read_body(request.stream(), limit)
     result = await run_in_threadpool(request.app.state.upload.chunk, id, file_id, index, data, login, client_host(request))
     return ChunkResponse(**result)
 

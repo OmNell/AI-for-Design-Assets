@@ -61,7 +61,7 @@ def test_upgrade_preserves_wp09_embedding_and_formal_pointer(tmp_path):
     from sqlalchemy import MetaData, Table, select, text
 
     from app.db.database import BACKEND_DIR, Database
-    from app.db.models import Setting
+    from app.db.models import InspectionFinding, Setting
     from app.services.ingest.vectors import FORMAL_MODEL
 
     db = Database(tmp_path)
@@ -92,9 +92,14 @@ def test_upgrade_preserves_wp09_embedding_and_formal_pointer(tmp_path):
             VectorStore.upsert(session, model, product_id, [0.2, 0.8], text_hash("杯"), 2)
             setting = {"name": model.name, "version": model.version, "dimension": 2, "generation": 1}
             session.add(Setting(key=FORMAL_MODEL, value=setting, encrypted=False))
+            findings = Table("inspection_findings", meta, autoload_with=session.connection())
+            session.execute(findings.insert().values(id=80, kind="modified", path="旧位置",
+                project_id=project_id, file_id=file_id, auto_fixed=False, detail="已有告警", **timestamps))
         db.migrate()
         with db.session() as session:
             assert session.get(ProductEmbedding, model.key(product_id)).text_hash == text_hash("杯")
+            finding = session.get(InspectionFinding, 80)
+            assert finding.file_id == file_id and finding.detail == "已有告警" and finding.acknowledged_at is None
             assert session.get(Project, project_id).asset_version == 0
             assert session.get(Product, product_id).file_id == file_id
             assert session.get(CatalogFile, file_id).fingerprint == "b" * 64
