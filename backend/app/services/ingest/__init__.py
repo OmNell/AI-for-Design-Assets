@@ -18,6 +18,7 @@ from app.errors import AppError
 from app.schemas.audit import CHECKLIST
 from app.schemas.ingest import IngestProgress
 from app.services import archive
+from app.services.archive import publication
 from app.services.admin.company_map import WON_FOLDERS
 from app.services.ai.field_catalog import FIXED_FIELDS
 from app.services.ai.orchestrator import AiService
@@ -468,6 +469,7 @@ class IngestService:
             self.notify.emit(session, "ingested", current)
             if self.on_published:
                 self.on_published(session)
+        publication.seal(self.auth, context, batch.id, execution.target)
 
     def _cache_thumbs(self, batch: Batch, data: archive.Manifest, frozen_files: list[dict]) -> None:
         root = Path(self.auth.config.paths.data_dir) / "thumbs"

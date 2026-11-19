@@ -13,6 +13,7 @@ from app.errors import AppError
 from app.schemas.audit import CHECKLIST
 from app.schemas.postop_execution import DeleteFileView, OperationExecution
 from app.services import archive
+from app.services.archive import publication
 from app.services.archive import repair
 from app.services.ai.orchestrator import AiService
 from app.services.auth.service import AuthService, LoginContext
@@ -334,6 +335,7 @@ class PostopExecutor:
                       {"path": plan.target_path, "version": project.asset_version, "kind": batch.kind})
             self.notify.emit(session, "ingested", batch)
             self.indexes.sync_after_publish(session)
+        publication.seal(self.auth, context, plan.batch_id, tree.target)
 
     def on_job_state(self, session: Session, job: Job) -> None:
         if job.status != "failed":
@@ -367,6 +369,7 @@ class PostopExecutor:
                 row.resolved_at = utcnow()
             self._log(session, batch, "档案修复并核验", None, {"project_id": project.id, "paths": list(operation["repair"])})
             self.notify.emit(session, "ingested", batch)
+        publication.seal(self.auth, context, batch.id, root)
 
     def handle(self, context: JobContext) -> None:
         if context.fs is None:

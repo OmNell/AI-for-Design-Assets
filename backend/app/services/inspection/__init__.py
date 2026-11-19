@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.db.models import (Batch, CatalogFile, ExpectedDeletion, HistoryVersion, IngestPlan, InspectionFinding,
                            InspectionRun, Job, PostopPlan, Project, utcnow)
 from app.services import archive
+from app.services.archive.publication import RECEIPT
 from app.services.admin.company_map import WON_FOLDERS
 from app.services.auth.service import AuthService
 from app.services.catalog.locator import VISIBLE_PROJECTS
@@ -200,7 +201,7 @@ class InspectionService:
         with self.auth.database.session() as session:
             data = archive.from_catalog(session, project)
             docs = {archive.PROJECT_FILE, *(row["archive_rel_path"] for row in data["products"])}
-            known.update(safe_join(root, doc) for doc in docs | {MARKER, "_工作台入库校验"})
+            known.update(safe_join(root, doc) for doc in docs | {MARKER, RECEIPT, "_工作台入库校验"})
             problems = archive.verify(session, project, fs, self.paths.join(Region.FORMAL, root))
         for issue in problems:
             finding("archive_broken", root, issue)
@@ -296,7 +297,7 @@ class InspectionService:
                     found.append(Finding("missing", root, "已保留历史版本目录丢失", data["project"]["id"]))
                 continue
             known.update(safe_join(root, path) for path in
-                         {MARKER, archive.PROJECT_FILE, *(row["archive_rel_path"] for row in data["products"])})
+                         {MARKER, RECEIPT, archive.PROJECT_FILE, *(row["archive_rel_path"] for row in data["products"])})
             cutoff = datetime.fromisoformat(published).timestamp() if published else float("inf")
             for row in data["files"]:
                 path = safe_join(root, physical(data, row))

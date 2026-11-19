@@ -15,19 +15,20 @@ class CryptoError(Exception):
 
 
 class SecretCipher:
-    def __init__(self, data_dir: Path) -> None:
-        data_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, data_dir: Path, *, read_only: bool = False) -> None:
         key_path = data_dir / "secret.key"
-        try:
-            # 独占创建，不能覆盖已有密钥。单进程部署，不支持多个实例同时初始化。
-            with key_path.open("xb") as stream:
-                restrict_key_permissions(key_path)
-                stream.write(Fernet.generate_key())
-                stream.flush()
-                os.fsync(stream.fileno())
-        except FileExistsError:
-            pass
-        restrict_key_permissions(key_path)
+        if not read_only:
+            data_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                # 独占创建，不能覆盖已有密钥。单进程部署，不支持多个实例同时初始化。
+                with key_path.open("xb") as stream:
+                    restrict_key_permissions(key_path)
+                    stream.write(Fernet.generate_key())
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except FileExistsError:
+                pass
+            restrict_key_permissions(key_path)
         try:
             self._fernet = Fernet(key_path.read_bytes())
         except (OSError, ValueError):
