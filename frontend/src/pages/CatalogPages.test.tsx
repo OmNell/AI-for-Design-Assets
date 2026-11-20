@@ -8,7 +8,6 @@ import { AssetLinkPage } from './AssetLinkPage'
 import { ProductPage } from './ProductPage'
 import { ProjectPage } from './ProjectPage'
 import { ProjectsPage } from './ProjectsPage'
-import { GlassProvider } from '../components/glass/GlassProvider'
 import { sequentialDownload } from '../lib/download'
 
 let host: HTMLElement
@@ -18,13 +17,10 @@ const domain = 'http://assets.example.local:8080'
 const project = { id: 42, project_code: 'P001', project_name: '节日礼盒', company_name: '企业', industry_name: '酒业',
   won: true, status: 'active', ingested_at: '2026-11-18T12:00:00Z', link_url: domain + '/l/project', products: 1, files: 2 }
 const brief = { id: 55, kind: 'set', product_code: 'P001-001', display_name: '红色套装', tags: ['丝绸'], status: 'active', related: [] }
-const file = { id: 72, name: '中文设计.pdf', rel_path: '01定稿文件/中文设计.pdf', size: 1024, mtime: 1720000000000, is_image: false }
+const file = { id: 72, name: '中文设计.pdf', rel_path: '01定稿文件/中文设计.pdf', size: 1024, mtime: 1720000000000, status: 'active', link_url: domain + '/l/file', is_image: false }
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
-  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
-  vi.stubGlobal('CSS', { supports: () => false })
-  localStorage.setItem('naswb.glass.mode', 'lite')
   query = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   host = document.createElement('div')
   document.body.append(host)
@@ -47,14 +43,14 @@ function mockFetch(fn: (url: string) => unknown) {
   return fetcher
 }
 function mount(path: string, view: ReactNode) {
-  act(() => root.render(<QueryClientProvider client={query}><GlassProvider><MemoryRouter initialEntries={[path]}>
+  act(() => root.render(<QueryClientProvider client={query}><MemoryRouter initialEntries={[path]}>
     <Routes>
       <Route path="/l/:linkId" element={view} />
       <Route path="/projects" element={view} />
       <Route path="/projects/:id" element={path.startsWith('/l/') ? <p>已打开项目详情</p> : view} />
       <Route path="/products/:id" element={path.startsWith('/l/') ? <p>已打开商品详情</p> : view} />
     </Routes>
-  </MemoryRouter></GlassProvider></QueryClientProvider>))
+  </MemoryRouter></QueryClientProvider>))
 }
 async function seen(text: string) {
   for (let i = 0; i < 80; i++) {
@@ -74,17 +70,52 @@ it('项目列表显示永久链接，支持翻页与排序', async () => {
   expect(fetcher.mock.calls.some(([url]) => url.includes('sort=code'))).toBe(true)
 })
 
-it('项目页展示商品及标准资料夹，切换资料夹时重新加载清单', async () => {
+it('项目页能进入资料夹、查看文件详情、选择文件并切换商品和历史', async () => {
   const folders = ['01定稿文件', '02设计方案', '03拍摄照片及视频', '04授权文件', '05 详情页']
-  mockFetch(url => url.startsWith('/api/projects/42/files?') ? (url.includes(encodeURIComponent(folders[0])) ? [file] : []) :
-    { project, products_list: [brief], folders: folders.map((name, i) => ({ name, count: i ? 0 : 1 })), history: [], logs: [] })
+  const nested = { ...file, id: 73, name: '印刷说明.ai', rel_path: '01定稿文件/设计交付/印刷说明.ai' }
+  const mock = mockFetch(url => url === '/api/catalog/tree' ? [] : url === '/api/projects/42/files' ? [file, nested] :
+    url === '/api/files/72/check' ? { ...file, warning: null, url: '/api/files/72/download?transfer=abcdefghijkl' } :
+    { project, products_list: [brief], folders: folders.map((name, i) => ({ name, count: i ? 0 : 2 })), history: [], logs: [] })
   mount('/projects/42', <ProjectPage />)
+  const button = (label: string) => [...host.querySelectorAll('button')].find(button => button.textContent?.trim() === label)!
+  await seen('01定稿文件')
+  act(() => button('01定稿文件').click())
   await seen('中文设计.pdf')
-  expect(host.textContent).toContain('红色套装')
-  const tab = [...host.querySelectorAll<HTMLButtonElement>('[role=tab]')].find(button => button.textContent?.includes('05 详情页'))!
-  act(() => tab.click())
+  act(() => button('中文设计.pdf').click())
+  await seen('下载文件')
+  expect(mock.mock.calls.some(([url]) => url === '/api/files/72/check')).toBe(true)
+  expect(button('复制永久链接')).toBeDefined()
+  act(() => host.querySelector<HTMLInputElement>('input[aria-label="选择 中文设计.pdf"]')!.click())
+  expect(button('下载所选文件（1）').disabled).toBe(false)
+  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="缩略图视图"]')!.click())
+  expect(host.querySelector('button[aria-label="缩略图视图"]')?.getAttribute('aria-pressed')).toBe('true')
+  act(() => button('设计交付').click())
+  await seen('印刷说明.ai')
+  act(() => button('项目根目录').click())
+  act(() => button('05 详情页').click())
   await seen('此资料夹暂无文件')
   expect(host.textContent).not.toContain('中文设计.pdf')
+  act(() => button('商品资产').click())
+  await seen('红色套装')
+  act(() => button('历史版本').click())
+  await seen('暂无历史版本')
+})
+
+it('目录按中标、行业和企业筛选，并使用已有项目读取接口定位', async () => {
+  const mock = mockFetch(url => url === '/api/catalog/tree' ? [{ won: true, folder: '01已中标项目', industries: [
+    { id: 8, name: '酒业', companies: [{ id: 15, name: '企业' }] },
+  ] }] : { items: [project], total: 1, page: 1, page_size: 20 })
+  mount('/projects', <ProjectsPage />)
+  await seen('已中标')
+  const branch = (name: string) => [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="资产目录"] button')].find(node => node.textContent === name)!
+  act(() => branch('已中标').click())
+  await seen('酒业')
+  act(() => branch('酒业').click())
+  await seen('企业')
+  act(() => branch('企业').click())
+  expect(mock.mock.calls.some(([url]) => url.includes('won=true') && url.includes('industry=8') && url.includes('company=15'))).toBe(true)
+  await seen('节日礼盒')
+  expect(host.querySelector('nav[aria-label="资产目录"] a[href="/projects/42"]')).not.toBeNull()
 })
 
 it('商品详情使用人工确认状态展示空标签', async () => {

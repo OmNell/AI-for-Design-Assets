@@ -42,7 +42,7 @@ export function getProjects({ q, won, industry, company, page, sort }: ProjectQu
   return request(`/api/projects?${params}`)
 }
 export const getProject = (id: number): Promise<ProjectDetail> => request(`/api/projects/${id}`)
-export const getProjectFiles = (id: number, category: string): Promise<FileRow[]> => request(`/api/projects/${id}/files?category=${encodeURIComponent(category)}`)
+export const getProjectFiles = (id: number, category?: string): Promise<FileRow[]> => request(`/api/projects/${id}/files${category ? `?category=${encodeURIComponent(category)}` : ''}`)
 export const getProduct = (id: number): Promise<ProductDetail> => request(`/api/products/${id}`)
 export const getLink = (id: string): Promise<ResolvedLink> => request(`/api/l/${encodeURIComponent(id)}`)
 export const checkFile = (id: number): Promise<FileCheck> => request(`/api/files/${id}/check`)

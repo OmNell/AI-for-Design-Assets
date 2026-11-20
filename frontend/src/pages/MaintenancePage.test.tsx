@@ -5,8 +5,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { ArchiveRepairsPage, MaintenancePage } from './MaintenancePage'
-import { GlassProvider } from '../components/glass/GlassProvider'
-import { MODE_KEY } from '../components/glass/visualMode'
 
 const response = (value: unknown) => new Response(JSON.stringify(value))
 let container: HTMLDivElement
@@ -15,9 +13,6 @@ let cache: QueryClient
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
-  vi.stubGlobal('CSS', { supports: () => false })
-  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
-  localStorage.setItem(MODE_KEY, 'lite')
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -40,9 +35,9 @@ async function until(check: () => boolean) {
 }
 
 function mount(path: string, repairs = false) {
-  act(() => root.render(<QueryClientProvider client={cache}><GlassProvider><MemoryRouter initialEntries={[path]}>
+  act(() => root.render(<QueryClientProvider client={cache}><MemoryRouter initialEntries={[path]}>
     {repairs ? <ArchiveRepairsPage /> : <MaintenancePage />}
-  </MemoryRouter></GlassProvider></QueryClientProvider>))
+  </MemoryRouter></QueryClientProvider>))
 }
 
 function button(text: string) {

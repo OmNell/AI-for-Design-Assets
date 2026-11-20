@@ -1,3 +1,4 @@
+import { Button, Panel } from '../components/ui'
 import { useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -7,8 +8,6 @@ import { getReview, type ProductPatch, type ReviewField } from '../api/review'
 import type { ProductTag } from '../api/upload'
 import { useAuthStore } from '../stores/auth'
 import { splitTerms } from '../lib/terms'
-import { GlassPanel } from '../components/glass/GlassPanel'
-import { GlassButton } from '../components/glass/GlassButton'
 import { TerminateBatchButton } from '../components/TerminateBatchButton'
 import { FieldEditor } from '../components/review/TagForm'
 import { RoundHistory } from '../components/review/ProductList'
@@ -16,7 +15,7 @@ import { PathPicker } from '../components/audit/PathPicker'
 import { fieldLabels, OperationDiff } from '../components/ops/OperationDiff'
 import { SupplementWorkspace } from '../components/ops/SupplementWorkspace'
 
-const linkClass = 'text-sm text-emerald-800 underline underline-offset-4'
+const linkClass = 'text-sm text-blue-700 underline underline-offset-4'
 const unaudited = ['已暂存', '待核对', '已驳回', '待初审', '待终审']
 type RenamePlan = { id: number; name: string; rename_file: boolean }
 
@@ -30,7 +29,7 @@ function NameForm({ manifest, plan, change }: { manifest: OperationManifest; pla
       const proposal = products.find(choice => choice.id === row.id)
       const edit = (name: string, rename_file: boolean) => change({ products: [...products.filter(choice => choice.id !== row.id),
         ...(name === row.display_name && !rename_file ? [] : [{ id: row.id, name, rename_file }])] })
-      return <div key={row.id} className="space-y-2 rounded-xl bg-white/30 p-3">
+      return <div key={row.id} className="space-y-2 rounded-xl bg-slate-50 p-3">
         <label className="block text-sm">{row.product_code} 商品展示名
           <input className="field mt-1" maxLength={200} value={proposal?.name ?? row.display_name} onChange={event => edit(event.target.value, proposal?.rename_file ?? false)} /></label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={proposal?.rename_file ?? false}
@@ -89,7 +88,7 @@ function RetagForm({ batchId, manifest, fields, plan, initialProduct, change }: 
         confirmation_status: inProgress !== undefined ? 'pending' : update?.confirmation_status ?? base?.confirmation_status ?? 'pending' }
       return <FieldEditor key={`${product.id}:${field.key}`} batchId={batchId} field={field} tag={tag} showAi={false} editable canConfirm onChange={patch => editTag(field.key, patch)} />
     })}</div>
-    {product.kind === 'set' && <fieldset className="rounded-xl bg-white/35 p-3"><legend className="text-sm font-medium">套装包含的单品</legend>
+    {product.kind === 'set' && <fieldset className="rounded-xl bg-slate-50 p-3"><legend className="text-sm font-medium">套装包含的单品</legend>
       {itemRows.map(row => <label key={row.id} className="flex items-center gap-2 py-1 text-sm"><input type="checkbox" checked={selected.includes(row.id)}
         onChange={event => apply({ item_ids: event.target.checked ? [...selected, row.id] : selected.filter(id => id !== row.id) })} />{row.product_code} {row.display_name}</label>)}
       {!selected.length && <p className="text-sm text-slate-600">无关联单品</p>}
@@ -110,11 +109,11 @@ function ScopeForm({ data, plan, change }: { data: OperationData; plan: Operatio
     {projectAllowed && <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={wholeRequired} checked={!!plan.project}
       onChange={event => change({ project: event.target.checked, product_ids: [], file_ids: [] })} />整个项目</label>}
     {!plan.project && <div className="grid grid-cols-2 gap-4">
-      <fieldset className="space-y-2 rounded-xl bg-white/30 p-3"><legend className="font-medium">商品</legend>
+      <fieldset className="space-y-2 rounded-xl bg-slate-50 p-3"><legend className="font-medium">商品</legend>
         {products.map(row => <label key={row.id} className="flex gap-2 text-sm"><input type="checkbox" checked={plan.product_ids?.includes(row.id) ?? false}
           onChange={event => change({ product_ids: event.target.checked ? [...(plan.product_ids ?? []), row.id] : plan.product_ids?.filter(id => id !== row.id) })} />{row.product_code} {row.display_name}</label>)}
         {!products.length && <p className="text-sm text-slate-500">暂无可选商品。</p>}</fieldset>
-      <fieldset className="space-y-2 rounded-xl bg-white/30 p-3"><legend className="font-medium">资料及历史文件</legend>
+      <fieldset className="space-y-2 rounded-xl bg-slate-50 p-3"><legend className="font-medium">资料及历史文件</legend>
         {files.map(row => <label key={row.id} className="flex gap-2 break-all text-sm"><input type="checkbox" checked={plan.file_ids?.includes(row.id) ?? false}
           onChange={event => change({ file_ids: event.target.checked ? [...(plan.file_ids ?? []), row.id] : plan.file_ids?.filter(id => id !== row.id) })} />{row.rel_path}</label>)}
         {!files.length && <p className="text-sm text-slate-500">暂无可选文件。</p>}</fieldset>
@@ -128,9 +127,9 @@ export function OperationPage() {
   const id = Number(useParams().id)
   const valid = Number.isSafeInteger(id) && id > 0
   const data = useQuery({ queryKey: ['operation', id], queryFn: () => getOperation(id), enabled: valid, retry: false })
-  if (!valid) return <GlassPanel><p role="alert">批次编号不正确</p></GlassPanel>
-  if (data.isPending) return <GlassPanel><p role="status">正在读取操作草稿…</p></GlassPanel>
-  if (data.isError) return <GlassPanel><p role="alert">{data.error.message}</p></GlassPanel>
+  if (!valid) return <Panel><p role="alert">批次编号不正确</p></Panel>
+  if (data.isPending) return <Panel><p role="status">正在读取操作草稿…</p></Panel>
+  if (data.isError) return <Panel><p role="alert">{data.error.message}</p></Panel>
   if (data.data.kind === 'supplement') return <SupplementWorkspace key={id} data={data.data} />
   return <LightDraft key={`${id}:${data.data.status}`} data={data.data} />
 }
@@ -177,7 +176,7 @@ function LightDraft({ data }: { data: OperationData }) {
   const ready = kind === 'archive_repair' ? true : kind === 'move' ? !!plan.company_id && !!plan.reason?.trim() : kind === 'rename' ? !!plan.project_name?.trim() || !!plan.products?.length
     : kind === 'retag' ? !!plan.products?.length : !!plan.reason?.trim() && !!(plan.project || plan.product_ids?.length || plan.file_ids?.length)
   return <div className="space-y-5">
-    <GlassPanel><div className="space-y-4">
+    <Panel><div className="space-y-4">
       <div className="flex items-start justify-between gap-3">
         <div><Link to={`/projects/${data.project_id}/operations`} className={linkClass}>返回资产操作</Link>
           <h1 className="mt-3 text-2xl font-semibold">{kind === 'purge' ? '申请物理删除' : operationLabels[kind]}</h1>
@@ -200,20 +199,20 @@ function LightDraft({ data }: { data: OperationData }) {
         </>}
         {['void', 'restore', 'purge', 'move'].includes(kind) && <label className="block text-sm">操作原因
           <textarea className="field mt-1" rows={3} maxLength={500} value={plan.reason ?? ''} onChange={event => set({ reason: event.target.value })} /></label>}
-        <GlassButton primary={false} disabled={!ready || busy} onClick={() => void run(save)}>保存草稿并预览</GlassButton>
+        <Button primary={false} disabled={!ready || busy} onClick={() => void run(save)}>保存草稿并预览</Button>
       </>}
       {error && <p role="alert" className="text-sm text-red-800">{error}</p>}
-    </div></GlassPanel>
+    </div></Panel>
     {(preview || !editable && (data.after || data.purge)) && <OperationDiff operation={preview ?? data} />}
-    {editable && preview && <GlassPanel><div className="space-y-3">
+    {editable && preview && <Panel><div className="space-y-3">
       <label className="block text-sm">给审核的备注<textarea rows={2} className="field mt-1" maxLength={2000} value={description} onChange={event => setDescription(event.target.value)} /></label>
       {kind === 'purge' && preview.purge && (preview.purge.eligible
         ? <label className="block text-sm">输入编号 <strong>{preview.purge.confirm_label}</strong> 确认提交
           <input className="field mt-1 max-w-sm" value={code} onChange={event => setCode(event.target.value)} autoComplete="off" /></label>
         : <p className="text-sm text-amber-900">冷静期尚未结束。最早可申请时间为 {new Date(preview.purge.earliest_allowed).toLocaleString('zh-CN')}。</p>)}
-      <GlassButton disabled={busy || kind === 'purge' && (!preview.purge?.eligible || code.trim() !== preview.purge.confirm_label)}
-        onClick={() => void run(submit)}>提交初审</GlassButton>
+      <Button disabled={busy || kind === 'purge' && (!preview.purge?.eligible || code.trim() !== preview.purge.confirm_label)}
+        onClick={() => void run(submit)}>提交初审</Button>
       {error && <p role="alert" className="text-sm text-red-800">{error}</p>}
-    </div></GlassPanel>}
+    </div></Panel>}
   </div>
 }

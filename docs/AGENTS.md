@@ -27,7 +27,7 @@
   ## 技术栈（不要更换）
   后端：Python 3.12、FastAPI、Uvicorn、SQLAlchemy 2.x、Alembic、SQLite（WAL）、
         smbprotocol、httpx、Pillow、APScheduler、pydantic-settings、cryptography、pytest
-  前端：React 18、TypeScript、Vite、Tailwind CSS、liquid-glass-react、react-router、
+  前端：React 18、TypeScript、Vite、Tailwind CSS 3.4、react-router、
         TanStack Query、zustand、react-hook-form、vitest
   不引入 Redis、Celery、Docker、其他数据库、其他 UI 组件库。需要新依赖时在 PROGRESS.md 里说明理由。
 
@@ -67,10 +67,9 @@
   - 每个服务模块要有单元测试；每个接口至少一条成功和一条失败的集成测试。
 
   ## 界面风格
-  - 液态玻璃：统一通过 src/components/glass/ 里的封装组件使用 liquid-glass-react，页面里不直接引库。
-  - 全局视觉模式两档：full（所有玻璃组件启用实时滤镜）/ lite（只有导航、卡片容器、弹窗、
-    主要按钮用玻璃，列表项和缩略图用 Tailwind 半透明样式）。存 localStorage，右上角一键切换；
-    Safari 和 Firefox 默认 lite。
+  - V1.1 采用 Tailwind 企业界面，复用 `frontend/src/components/ui/` 的共享组件。
+  - 页面使用浅灰底色、白色面板、蓝色主交互与语义状态色。工作台首页与资产浏览采用侧栏、工作区及详情面板。
+  - 保持授权下载、破坏性操作确认、固定永久链接与角色守卫。组件使用清晰的焦点、明示状态与键盘可达交互。
   - 中文界面，桌面浏览器优先（Chrome / Edge），不做移动端适配。
   ## 设计基线更新与历史进度
   - 2026-11-17 起采用50项业务规则对齐的新版文档。docs/PROGRESS.md 既有WP00～WP06开发记录保留原样，不代表符合新设计。
