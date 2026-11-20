@@ -372,7 +372,7 @@ Pillow 直接读取本人 NasFs 流，按 EXIF 方向转正，保留比例生成
 没有新依赖。更新代码后执行全部 pytest、前端 check，再重启；启动自动应用最新 Alembic 迁移。dev 模式永远使用 FakeAiClient，不调用外部模型；prod 使用已保存的百炼兼容配置。设置页保存的配置优先于 config.yaml，生效于后续请求，在途请求继续使用原配置。
 
 - 管理员进入“设置”，填写接口地址、API Key、识图/文本/向量模型、并发数、超时、重试和停滞分钟数。密钥留空保留旧值；写入 settings 的只有 Fernet 密文，读取只返回 api_key_set，表单提交后清空密钥输入。接口地址不接受内嵌凭据/查询参数；服务不跟随重定向。
-- “测试连接”使用已保存配置，分别发一次最小识图、文本、向量请求，逐项显示成功/错误原文（凭据、图片、提示词脱敏）。向量只用于这一次连接测试，不写入向量库或进行向量业务。生产调用协议参考[百炼视觉兼容接口](https://www.alibabacloud.com/help/en/model-studio/qwen-vl-compatible-with-openai)、[百炼向量兼容接口](https://www.alibabacloud.com/help/en/model-studio/embedding-interfaces-compatible-with-openai)；模型和地区地址由管理员按实际账号填写。
+- “测试连接”使用已保存配置，分别发一次识图、文本和向量请求。识图使用临时生成的 128×128 JPEG，文本和识图需收到最终回答，向量需通过有效性校验。失败时显示连接、HTTP、模型、输出截断或响应格式的诊断，只展示已知的上游错误码和解释。测试向量用完即丢。模型和地区地址由管理员按实际账号填写。[百炼视觉兼容接口](https://www.alibabacloud.com/help/en/model-studio/qwen-vl-compatible-with-openai) · [百炼向量兼容接口](https://www.alibabacloud.com/help/en/model-studio/embedding-interfaces-compatible-with-openai)
 - 管理→标签字段固定 11 项，只能更改填写说明和顺序。PUT 提交完整版本与各字段的 `key/hint/sort_order`，实际变更后递增版本。版本冲突返回 409。旧扩展字段和旧标签仍可追溯，不参与新打标。
 - 字段为 category/material/color/style/festival/audience/usage_scene/size/craft/material_name/structure。明确无节日则留空。打标运行使用填写说明快照，新运行才读取最新配置。
 

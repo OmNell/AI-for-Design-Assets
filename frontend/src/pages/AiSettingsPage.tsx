@@ -48,7 +48,7 @@ function SettingsForm({ initial }: { initial: AiSettings }) {
     <div className="flex items-center gap-4"><Button type="submit" disabled={isSubmitting || testing}>保存设置</Button><Button primary={false} onClick={() => void test()} disabled={isSubmitting || testing}>{testing ? '正在测试…' : '测试连接'}</Button><span className="text-xs text-slate-500">测试连接使用已保存的配置</span></div>
     {message && <p role="status" className="text-sm text-emerald-800">{message}</p>}
     {error && <p role="alert" className="text-sm text-red-800">{error}</p>}
-    {!!results.length && <ul className="space-y-3 text-sm">{results.map(result => <li key={result.kind} className="rounded-xl bg-slate-50 p-4"><p className={result.success ? 'text-emerald-800' : 'text-red-800'}>{{ vision: '识图模型', text: '文本模型', embed: '向量模型' }[result.kind] ?? result.kind} · {result.model || '未配置模型'} · {result.success ? '连接成功' : '连接失败'}</p>{result.error && <p className="mt-2 whitespace-pre-wrap break-words text-xs text-red-800">{result.error}</p>}</li>)}</ul>}
+    {!!results.length && <ul className="space-y-3 text-sm">{results.map(result => <li key={result.kind} className="rounded-xl bg-slate-50 p-4"><p className={result.success ? 'text-emerald-800' : 'text-red-800'}>{{ vision: '识图模型', text: '文本模型', embed: '向量模型' }[result.kind] ?? result.kind} · {result.model || '未配置模型'} · {result.success ? '连接成功' : '测试未通过'}</p>{result.error && <p className="mt-2 whitespace-pre-wrap break-words text-xs text-red-800">{result.error}</p>}</li>)}</ul>}
   </form>
 }
 
