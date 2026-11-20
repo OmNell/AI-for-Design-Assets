@@ -41,6 +41,8 @@ def validate_networks(items: list[str]) -> None:
 
 def validate_config(source: Path, managed: Path) -> Settings:
     config = load_settings(source)
+    if not config.nas.dsm_verify_ssl:
+        raise ValueError("托管部署必须验证 DSM HTTPS 证书")
     if (config.mode != "prod" or config.server.port != 8080 or not config.server.public_base_url.startswith("http://")
             or not config.server.public_base_url.rstrip("/").endswith(":8080") or not config.bootstrap_admin
             or not config.nas.dsm_https or not config.ai.base_url.startswith("https://")

@@ -38,9 +38,10 @@ LABELS = {Region.FORMAL: "正式资产区", Region.TEMP: "上传临时区", Regi
 
 def public(nas: NasConfig) -> NasPublic:
     paths = NasPaths(nas.root_path, nas.temp_path, nas.backup_path)
+    certificate = "trusted_ca" if nas.dsm_ca_file else "system_ca" if nas.dsm_https else "legacy_http"
     return NasPublic(host=nas.host, dsm_port=nas.dsm_port, share=nas.share, work_root=nas.work_root,
                      system_user=nas.system_user, has_system_password=bool(nas.system_password_enc.get_secret_value()),
-                     certificate="trusted_ca" if nas.dsm_ca_file else "system_ca" if nas.dsm_https else "legacy_http",
+                     certificate=certificate if nas.dsm_verify_ssl else "mac_test_disabled",
                      regions={r.value: "/" + paths.root(r) for r in Region})
 
 

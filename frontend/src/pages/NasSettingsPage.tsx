@@ -99,7 +99,8 @@ function Workspace({ initial }: { initial: NasStatus }) {
             <label>NAS IP 或内网域名<Input className="mt-1" maxLength={253} value={target.host} onChange={e => { setTarget({ ...target, host: e.target.value }); clearChecks(true) }} /></label>
             <label>DSM HTTPS 端口<Input type="number" className="mt-1" min={1} max={65535} value={target.dsm_port} onChange={e => { setTarget({ ...target, dsm_port: e.target.value }); clearChecks(true) }} /></label>
             <label>SMB 共享文件夹<Input className="mt-1" maxLength={80} value={target.share} onChange={e => { setTarget({ ...target, share: e.target.value }); clearChecks(true) }} /></label>
-            <div><p>DSM 证书验证</p><p className="mt-2 text-xs text-slate-600">{active.certificate === 'trusted_ca' ? '使用服务器配置的专用 CA' :
+            <div><p>DSM 证书验证</p><p className="mt-2 text-xs text-slate-600">{active.certificate === 'mac_test_disabled' ? 'HTTPS 已启用，证书验证关闭（本机测试）' :
+              active.certificate === 'trusted_ca' ? '使用服务器配置的专用 CA' :
               active.certificate === 'legacy_http' ? '旧配置使用 HTTP，待保存的候选强制使用 HTTPS 验证' : '使用系统受信任 CA'}</p></div>
             <label>系统账号名称<Input className="mt-1" value={username} maxLength={128} onChange={e => { setUsername(e.target.value); clearChecks() }} /></label>
             <label>更新系统账号密码<Input className="mt-1" type="password" autoComplete="new-password" maxLength={512} placeholder={active.has_system_password ? '留空保留现有密码' : '请输入系统账号密码'} value={systemPassword} onChange={e => { setSystemPassword(e.target.value); clearChecks() }} /></label>

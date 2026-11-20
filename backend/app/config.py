@@ -3,13 +3,29 @@ from __future__ import annotations
 
 import os
 import ipaddress
+import platform
 import re
+import socket
 from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, YamlConfigSettingsSource
+
+from app import RELEASE_MANIFEST, RELEASE_MARKER
+
+MAC_LOCAL_DSM_TEST_ENV = "NASWB_MAC_LOCAL_DSM_TEST"
+DSM_LOCAL_TEST_NOTICE = "本机测试环境：DSM 证书验证已关闭"
+
+
+def require_mac_dsm_test(dsm_https: bool) -> None:
+    if not dsm_https:
+        raise ValueError("关闭 DSM 证书验证时仍必须使用 HTTPS")
+    if platform.system() != "Darwin" or RELEASE_MANIFEST.is_file() or RELEASE_MARKER.is_file():
+        raise ValueError("只有 Mac 本机的源码测试可以关闭 DSM 证书验证")
+    if os.environ.get(MAC_LOCAL_DSM_TEST_ENV) != "1":
+        raise ValueError(f"关闭 DSM 证书验证必须显式设置 {MAC_LOCAL_DSM_TEST_ENV}=1")
 
 
 class Section(BaseModel):
@@ -44,6 +60,7 @@ class NasConfig(Section):
     host: str = "192.168.0.177"
     dsm_port: int = Field(default=5001, ge=1, le=65535)
     dsm_https: bool = True
+    dsm_verify_ssl: bool = True
     share: str = "设计资产共享"
     work_root: str | None = None
     verified_address: ipaddress.IPv4Address | None = None
@@ -130,10 +147,31 @@ class Settings(BaseSettings):
     def unique_dev_users(self) -> Settings:
         if self.mode == "prod" and not self.nas.dsm_https:
             raise ValueError("生产模式的 DSM 登录必须使用 HTTPS")
+        self.validate_dsm_tls()
         names = [user.username for user in self.dev_users]
         if len(set(names)) != len(names):
             raise ValueError("开发账号不能重复")
         return self
+
+    def validate_dsm_tls(self) -> None:
+        if self.nas.dsm_verify_ssl:
+            return
+        require_mac_dsm_test(self.nas.dsm_https)
+        if self.mode != "prod" or self.server.host != "127.0.0.1":
+            raise ValueError("关闭 DSM 证书验证时必须以 prod 模式仅监听 127.0.0.1")
+
+
+def require_dsm_test_listener(config: Settings, listener: socket.socket | None) -> None:
+    config.validate_dsm_tls()
+    if config.nas.dsm_verify_ssl:
+        return
+    try:
+        if (listener is not None and listener.family == socket.AF_INET and listener.type == socket.SOCK_STREAM
+                and listener.getsockname() == ("127.0.0.1", config.server.port)):
+            return
+    except OSError:
+        pass
+    raise ValueError("关闭 DSM 证书验证时请用 python -m app 启动 127.0.0.1 监听")
 
 
 def load_settings(config_file: Path | str | None = None) -> Settings:

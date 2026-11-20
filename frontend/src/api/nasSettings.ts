@@ -3,7 +3,7 @@ import { request } from './client'
 export interface NasTarget { host: string; dsm_port: number; share: string }
 export interface NasPublic extends NasTarget {
   work_root: string | null; system_user: string; has_system_password: boolean; regions: Record<string, string>
-  certificate: 'trusted_ca' | 'system_ca' | 'legacy_http'
+  certificate: 'trusted_ca' | 'system_ca' | 'legacy_http' | 'mac_test_disabled'
 }
 export interface NasStatus {
   state: 'active' | 'pending_restart' | 'failed'; revision: string | null; active: NasPublic

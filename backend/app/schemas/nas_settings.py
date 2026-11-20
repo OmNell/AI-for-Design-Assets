@@ -46,7 +46,7 @@ class NasPublic(NasTarget):
     work_root: str | None
     system_user: str
     has_system_password: bool
-    certificate: Literal["trusted_ca", "system_ca", "legacy_http"]
+    certificate: Literal["trusted_ca", "system_ca", "legacy_http", "mac_test_disabled"]
     regions: dict[str, str]
 
 

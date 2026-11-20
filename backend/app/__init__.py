@@ -3,11 +3,13 @@ import json
 from pathlib import Path
 import re
 
+RELEASE_MANIFEST = Path(__file__).resolve().parents[2] / "RELEASE.json"
+RELEASE_MARKER = Path(__file__).with_name("_release.txt")
+
 
 def _version() -> str:
-    manifest = Path(__file__).resolve().parents[2] / "RELEASE.json"
-    if manifest.is_file():
-        version = json.loads(manifest.read_text(encoding="utf-8"))["version"]
+    if RELEASE_MANIFEST.is_file():
+        version = json.loads(RELEASE_MANIFEST.read_text(encoding="utf-8"))["version"]
         if isinstance(version, str) and re.fullmatch(r"v\d+\.\d+\.\d+(?:-rc\.\d+)?", version):
             return version
         raise ValueError("发布清单中的版本号不合法")

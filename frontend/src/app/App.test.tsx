@@ -11,6 +11,7 @@ let host: HTMLDivElement
 let roles: Role[]
 let logged: boolean
 let mode: 'dev' | 'prod'
+let dsmVerifySsl: boolean
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status })
 const settle = async () => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) }) }
 async function until(condition: () => boolean) {
@@ -19,7 +20,7 @@ async function until(condition: () => boolean) {
 }
 beforeEach(() => {
   localStorage.clear()
-  roles = ['uploader']; logged = false; mode = 'dev'
+  roles = ['uploader']; logged = false; mode = 'dev'; dsmVerifySsl = true
   useAuthStore.setState({ user: null, initialized: false, notice: '' })
   window.history.replaceState({}, '', '/admin/roles')
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
@@ -27,7 +28,7 @@ beforeEach(() => {
   Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function (this: HTMLDialogElement) { this.open = false } })
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     if (url.startsWith('/api/projects?')) return response({ items: [], total: 0, page: 1, page_size: 20 })
-    if (url === '/api/health') return response({ version: '0.1.0', mode, database_available: true })
+    if (url === '/api/health') return response({ version: '0.1.0', mode, database_available: true, dsm_verify_ssl: dsmVerifySsl })
     if (url === '/api/auth/logout') { logged = false; return response({ message: '已退出登录' }) }
     if (url === '/api/auth/me') return logged ? response({ id: 1, username: 'demo', display_name: null, roles, enabled: true }) : response({ code: 'login_required', message: '请先登录' }, 401)
     return response([])
@@ -41,6 +42,16 @@ it('未登录访问深层路径跳登录页', async () => {
   expect(window.location.pathname).toBe('/login')
   expect(host.textContent).toContain('登录工作台')
   expect(host.querySelector('input[type="password"]')).not.toBeNull()
+  expect(host.textContent).not.toContain('DSM 证书验证已关闭')
+})
+it.each([false, true])('证书验证关闭时明确显示测试提示（已登录 %s）', async (isSignedIn) => {
+  logged = isSignedIn; mode = 'prod'; dsmVerifySsl = false
+  window.history.replaceState({}, '', '/')
+  act(() => root.render(<App />))
+  const notice = '本机测试环境：DSM 证书验证已关闭'
+  await until(() => host.textContent!.includes(notice))
+  expect([...host.querySelectorAll('[role="status"]')].some(node => node.textContent?.trim() === notice)).toBe(true)
+  expect(window.location.pathname).toBe(isSignedIn ? '/' : '/login')
 })
 it('上传人导航不显示管理、审核，退出后深层页面回到登录', async () => {
   logged = true; window.history.replaceState({}, '', '/')

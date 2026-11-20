@@ -8,6 +8,7 @@
 - 一份候选 ZIP 和通过独立可信渠道取得的 SHA-256。NSSM 从公司批准的软件源或 NSSM 官方发行渠道取得，使用经 IT 核准的 Windows x64 二进制。记录二进制的 SHA-256 及文件属性的 `ProductVersion`，安装脚本同时检查两项。安装命令从已验证的解压目录运行。
 - 配置固定内网 DNS，例如 `nas-workbench.company.local` 指向 Windows 主机内网 IP。设置中的 `public_base_url` 必须使用实际域名和 `http://域名:8080`。服务主机换 IP 时改 DNS，原项目、商品和文件链接继续使用原域名及短 ID。
 - 准备公司批准的私有 IPv4 网段清单、独立的初始管理员 NAS 账号、系统账号和至少三名互相独立的测试账号。DSM 使用 HTTPS，有私有 CA 时准备受信 CA 的 PEM 文件。百炼使用 HTTPS。
+- 正式部署和发布包强制验证 DSM HTTPS 证书。私有 CA 使用 `nas.dsm_ca_file`，`nas.dsm_verify_ssl` 必须为 `true`（默认值）。
 
 **HTTP 风险确认**
 工作台采用 HTTP。NAS 登录口令和工作台 Cookie 在局域网链路上可能被明文监听或劫持。IT 应隔离工作台网络，按客户端来源和网段限制 TCP 8080，检查现有防火墙策略、代理和公网映射，在授权与拒绝网段分别验证。禁止公网和访客网接入。安装时以 `-AcceptHttpRisk` 记录已作风险确认。DSM 与百炼仍使用 HTTPS。

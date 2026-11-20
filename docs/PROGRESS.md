@@ -514,3 +514,11 @@ WP10 可在稳定的 `links` 和 NAS 权限校验上接项目页、主图预览�
 - 校验和保存会列出关联历史、批次及任务，禁止危险切换。已有资产改 IP 须通过原 SMB 身份和完整 SHA-256 的样本检查。保存使用原子 YAML 替换，留下受保护的原配置和启用记录。旧进程暂停业务，重启前后会话分离，复检失败恢复原 YAML。
 - Windows 新安装和旧版升级将浏览器可写配置放在独立 ACL 子目录。复用快照、恢复和 NSSM，SQLite、密钥和部署程序维持原布局。受控重启和复检步骤见 [部署手册](../deploy/README.md)。
 - pytest 337 项、Vitest 98 项、TypeScript 与 Vite 构建通过。Chrome 在隔离 LocalFs 环境通过连接测试、选目录、校验、确认保存及待重启限制。Windows 脚本通过静态语法检查，配置路径迁移与恢复通过隔离测试。16 项真实 NAS／百炼测试按默认配置排除，Windows 实机和公司 NAS ACL 待现场验收。
+
+## Mac 本机真实 NAS 测试 · DSM HTTPS 证书开关
+
+- `nas.dsm_verify_ssl` 默认开启。显式设置为 `false` 时，Mac 源码实例需同时使用 `NASWB_MAC_LOCAL_DSM_TEST=1`、`mode: prod`、DSM HTTPS 和 `python -m app` 启动。此入口把实际绑定到 `127.0.0.1` 的套接字传给 Uvicorn。
+- DSM 接口发现、登录与注销、NAS 设置连接测试及自检复用同一证书策略。登录页和工作台顶部提示当前例外状态，管理员可在 NAS 存储设置核对，启动日志也会记录。
+- Windows 托管部署与候选发布包强制验证 DSM 证书。发布构建在 Python 包内携带标记，无需数据库迁移或新增依赖。
+- pytest 355 项通过，16 项真实 NAS／百炼测试按标记排除。Vitest 101 项、TypeScript 和 Vite 构建通过。使用临时配置核对 Mac 进程监听和直接 Uvicorn 启动拒绝。回环自签名 HTTPS 验证了默认拒绝及授权模式下的发现、登录、注销。
+- 真实 NAS 与 Windows 实机验收待现场执行。Mac 手动验收步骤见 [README](../README.md#mac-本机连接真实-nas-测试)。
