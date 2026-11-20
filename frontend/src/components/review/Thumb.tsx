@@ -57,7 +57,7 @@ interface Props { batchId: number; fileId: number; version: string; size?: Thumb
 export function Thumb({ batchId, fileId, version, size = 300, alt, className = 'h-12 w-12' }: Props) {
   const [ref, seen] = useInView<HTMLSpanElement>()
   const state = useThumbnail(batchId, fileId, size, version, seen)
-  return <span ref={ref} className={`flex shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white/40 text-center text-[10px] text-slate-500 ${className}`}>
+  return <span ref={ref} className={`flex shrink-0 items-center justify-center overflow-hidden rounded-lg bg-slate-50 text-center text-[10px] text-slate-500 ${className}`}>
     {state.status === 'ready' ? <img src={state.url} alt={alt} draggable={false} decoding="async" className="h-full w-full object-contain" /> :
       <span title={state.message}>{state.status === 'failed' ? '无缩略图' : '生成中'}</span>}
   </span>

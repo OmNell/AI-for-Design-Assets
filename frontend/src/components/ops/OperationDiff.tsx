@@ -1,7 +1,7 @@
+import { Panel } from '../ui'
 import { Link } from 'react-router'
 import { operationLabels, type FrozenOperation, type SnapshotValue } from '../../api/operations'
 import { formatBytes } from '../../lib/terms'
-import { GlassPanel } from '../glass/GlassPanel'
 import { PurgeList } from './OperationExecution'
 
 export const fieldLabels: Record<string, string> = { category: '品类', material: '材质', color: '主色', style: '风格', festival: '节日场景',
@@ -40,14 +40,14 @@ export function OperationDiff({ operation }: { operation: FrozenOperation }) {
   const { before, after, purge, params } = operation
   const rows = Object.entries(after ?? {}).flatMap(([group, changes]) => Object.entries(changes ?? {}).map(([id, change]) => ({ group, id, ...change })))
   const codes = new Map(before.products.map(row => [row.id, row.product_code]))
-  return <GlassPanel><div className="space-y-4">
+  return <Panel><div className="space-y-4">
     <div><h2 className="text-xl font-semibold">变更前后对比 · {operationLabels[operation.kind]}</h2>
       {params.reason && <p className="mt-2 whitespace-pre-wrap break-all text-sm text-slate-700">操作原因　{params.reason}</p>}</div>
     {!!rows.length && <div className="max-h-[30rem] overflow-auto"><table className="w-full table-fixed text-left text-sm">
-      <thead className="sticky top-0 bg-white/95"><tr><th className="w-1/5 p-2">变更项</th><th className="w-2/5 p-2">当前版本</th><th className="w-2/5 p-2">拟发布版本</th></tr></thead>
+      <thead className="sticky top-0 bg-white"><tr><th className="w-1/5 p-2">变更项</th><th className="w-2/5 p-2">当前版本</th><th className="w-2/5 p-2">拟发布版本</th></tr></thead>
       <tbody>{rows.map((row, index) => <tr key={index} className="border-t border-slate-400/20 align-top">
         <th scope="row" className="break-words p-2 font-medium">{changeTitle(row.group, row.id)}</th>
-        <td className="whitespace-pre-wrap break-all p-2">{show(row.before, row.after, row.group === 'project')}{row.group === 'files' && row.before && /^\d+$/.test(row.id) && <Link to={`/files/${row.id}`} className="mt-1 block text-xs text-emerald-800 underline">查看原文件</Link>}</td>
+        <td className="whitespace-pre-wrap break-all p-2">{show(row.before, row.after, row.group === 'project')}{row.group === 'files' && row.before && /^\d+$/.test(row.id) && <Link to={`/files/${row.id}`} className="mt-1 block text-xs text-blue-700 underline">查看原文件</Link>}</td>
         <td className="whitespace-pre-wrap break-all p-2">{show(row.after, row.before, row.group === 'project')}</td>
       </tr>)}</tbody>
     </table></div>}
@@ -55,5 +55,5 @@ export function OperationDiff({ operation }: { operation: FrozenOperation }) {
       product_codes: [purge.project_code, ...purge.products.map(row => row.product_code)], relationships: purge.relations.map(row =>
         `${codes.get(row.set_product_id) ?? row.set_product_id} → ${codes.get(row.item_product_id) ?? row.item_product_id}`) }} />}
     {!rows.length && !purge && <p className="text-sm text-slate-500">暂无可显示的变更。</p>}
-  </div></GlassPanel>
+  </div></Panel>
 }

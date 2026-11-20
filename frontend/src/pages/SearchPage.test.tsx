@@ -4,7 +4,6 @@ import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { GlassProvider } from '../components/glass/GlassProvider'
 import { VectorIndexPanel } from '../components/VectorIndexPanel'
 import { SearchPage } from './SearchPage'
 
@@ -13,8 +12,6 @@ let host: HTMLDivElement
 let cache: QueryClient
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
-  vi.stubGlobal('CSS', { supports: () => false })
-  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -29,7 +26,7 @@ afterEach(() => {
 })
 
 function mount(component: ReactNode) {
-  act(() => root.render(<MemoryRouter><QueryClientProvider client={cache}><GlassProvider>{component}</GlassProvider></QueryClientProvider></MemoryRouter>))
+  act(() => root.render(<MemoryRouter><QueryClientProvider client={cache}>{component}</QueryClientProvider></MemoryRouter>))
 }
 function set(element: HTMLInputElement | HTMLSelectElement, value: string) {
   const prototype = element instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLSelectElement.prototype

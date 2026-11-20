@@ -1,8 +1,7 @@
+import { Button, Panel } from '../components/ui'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getCompanyMap, saveCompanyMap, type Company, type CompanyMap, type Industry } from '../api/audit'
-import { GlassPanel } from '../components/glass/GlassPanel'
-import { GlassButton } from '../components/glass/GlassButton'
 import { AdminLinks } from '../components/AdminLinks'
 
 const two = (value: number | null | undefined) => value ? String(value).padStart(2, '0') : '新'
@@ -29,14 +28,14 @@ export function CompanyMapPage() {
       setStatus({ ok: '对照表已保存' })
     } catch (reason: unknown) { setStatus({ error: reason instanceof Error ? reason.message : '保存失败，请重试' }) } finally { setBusy(false) }
   }
-  return <GlassPanel><AdminLinks /><h1 className="text-2xl font-semibold">企业→行业对照表</h1>
+  return <Panel><AdminLinks /><h1 className="text-2xl font-semibold">企业→行业对照表</h1>
     <p className="mb-6 mt-3 text-sm text-slate-500">按线下商定的结论录入。序号由系统发放，只增不重排；这里的内容决定存放位置的推荐和终审可选的目录树，不会改动 NAS 上的文件夹。</p>
     {query.isPending ? <p>正在加载对照表…</p> : query.isError ? <p role="alert" className="text-red-800">{query.error.message}</p> : <>
       <h2 className="text-lg font-semibold">行业</h2>
       <ul className="mt-3 space-y-2">{industries.map((item, index) => <li key={item.id ?? `new-${index}`} className="flex items-center gap-3">
         <span className="w-10 text-sm tabular-nums text-slate-500">{two(item.seq)}</span>
         <input aria-label={`行业 ${index + 1} 名称`} className="field max-w-xs !py-2 text-sm" value={item.name} onChange={event => setIndustries(industries.map((value, position) => position === index ? { ...value, name: event.target.value } : value))} /></li>)}</ul>
-      <div className="mt-3"><GlassButton primary={false} onClick={() => setIndustries([...industries, { name: '' }])}>新增行业</GlassButton></div>
+      <div className="mt-3"><Button primary={false} onClick={() => setIndustries([...industries, { name: '' }])}>新增行业</Button></div>
       <h2 className="mt-8 text-lg font-semibold">企业</h2>
       <table className="mt-3 w-full text-left text-sm"><thead className="text-xs text-slate-500"><tr><th className="p-2">序号</th><th className="p-2">标准名（2～10 字）</th><th className="p-2">别名（顿号分隔）</th><th className="p-2">所属行业</th></tr></thead>
         <tbody>{companies.map((item, index) => {
@@ -48,8 +47,8 @@ export function CompanyMapPage() {
               onChange={event => { const chosen = industries.find(value => String(value.id ?? value.name) === event.target.value); update({ industry_id: chosen?.id ?? null, industry_name: chosen?.name ?? '' }) }}>
               <option value="">选择行业</option>{industries.filter(value => value.name.trim()).map(value => <option key={value.id ?? value.name} value={value.id ?? value.name}>{value.name}</option>)}</select></td></tr>
         })}</tbody></table>
-      <div className="mt-3"><GlassButton primary={false} onClick={() => setCompanies([...companies, { name: '', aliases: [], aliasText: '', industry_name: '' }])}>新增企业</GlassButton></div>
-      <div className="mt-8 flex items-center gap-4"><GlassButton disabled={busy} onClick={() => void save()}>保存对照表</GlassButton>
+      <div className="mt-3"><Button primary={false} onClick={() => setCompanies([...companies, { name: '', aliases: [], aliasText: '', industry_name: '' }])}>新增企业</Button></div>
+      <div className="mt-8 flex items-center gap-4"><Button disabled={busy} onClick={() => void save()}>保存对照表</Button>
         {status.ok && <p role="status" className="text-sm text-emerald-800">{status.ok}</p>}{status.error && <p role="alert" className="text-sm text-red-800">{status.error}</p>}</div></>}
-  </GlassPanel>
+  </Panel>
 }

@@ -99,17 +99,11 @@ curl http://localhost:8080/api/health
 
 重建验收：停止后端，将开发环境的 `data/` 移至临时备份位置或删除，再启动；应自动生成新数据库及新密钥，health 恢复正常。此操作仅针对可丢弃的开发数据。
 
-## 前端兼容性
+## 前端工作台
 
-`liquid-glass-react@1.1.1` 的 npm 发布包将 peerDependencies 写为 React >=19，但[上游修复提交](https://github.com/rdev/liquid-glass-react/commit/fff31be69fc674ebb71070a0f3e45659d66a5560)已改为 >=18。项目保留 React/ReactDOM 18.3.1，针对固定版本使用 npm overrides 指向根依赖，不修改库源码，不再使用全局 legacy-peer-deps。干净 `npm ci` 与 `npm ls react react-dom liquid-glass-react` 均可成功。
+界面采用 React 18、Tailwind CSS 3.4 和项目内的共享 UI 组件。页面以 Chrome 与 Edge 桌面环境为主。登录后进入工作台首页，使用左侧导航进入资产、入库、待办与检索。资产浏览支持目录筛选、列表与缩略图切换，以及选中对象的侧栏详情。固定永久链接、权限和已有下载接口沿用现有实现。
 
-玻璃效果统一经 `src/components/glass/GlassSurface.tsx` 封装：Chrome/Edge 使用库的真实 SVG 位移、色散和鼠标高光，装饰层与正文分开，避免文字变形与点击被遮挡。ResizeObserver 让滤镜随容器尺寸更新，正文节点保持不变。
-
-- full：导航、主要按钮、卡片及次要条目均使用实时滤镜。
-- lite：导航、主要按钮、卡片保留玻璃效果；次要条目使用 Tailwind 半透明样式，不挂载 SVG 滤镜。
-- 右上角可切换，偏好存于 localStorage，刷新保持。Safari/Firefox 默认 lite，其 SVG 背景位移支持不完整，使用 CSS 毛玻璃；不把这些浏览器的折射效果宣称为与 Chrome 相同。
-
-本地验证：`npm --prefix frontend run check` 包含真实库的 React 18 DOM 集成测试，验证滤镜绑定、唯一 ID、模式切换、正文保留、尺寸变化及兼容回退。DOM 测试不能代替像素渲染；已另外在本机 Chrome 检查完整/轻量画面及刷新持久化。Safari/Firefox 和 Edge 的实际画面仍需现场验收。
+`npm --prefix frontend run check` 执行 Vitest、TypeScript 检查和 Vite 生产构建。管理和审核操作的验证步骤见 `docs/PROGRESS.md`。
 
 技术文档见 `docs/`，进度及手动验收记录见 `docs/PROGRESS.md`；NAS 探路详见 `scripts/probe/README.md`。
 
@@ -255,14 +249,14 @@ python -m app
 - 管理员允许编辑自己的角色/启用状态，未增加文档没有规定的“最后一个管理员”业务限制；操作前请保留另一位可用管理员。bootstrap_admin 不会在每次登录时重新加权，重新启用需由其他管理员操作。
 - 工作台角色不能授予 NAS ACL。dev 模式从 dev_users 模拟权限，prod 仍由本人 SMB 连接和群晖 ACL 实际执行文件权限。
 - 上传及首页我的批次已在 WP04 实现；待初审、待终审、项目、搜索、设置仍为建设中占位。管理页可维护角色。组件样例 `/components` 仅 dev 模式显示，prod 直接访问跳回首页。
-- 五种玻璃组件统一位于 `src/components/glass/`：Card、Button、Panel、Modal、Nav；GlassProvider/useGlassMode 提供全局两档。full 全部实时，lite 主要壳保留玻璃、卡片/次要按钮使用半透明和模糊。60 卡片网格仅供开发比较流畅度，没有宣称达到某个 FPS 指标。
-- 退出或任一 API 返回 401 时清除内存用户及角色缓存，守卫跳转登录；令牌、用户名密码不写 localStorage（只保存视觉偏好）。表单提交后清空密码字段；SMB 建连后释放普通用户密码。生产环境 DSM 和百炼使用 HTTPS。工作台内网 HTTP 登录页提示口令及 Cookie 明文传输风险，写接口拒绝跨站浏览器请求。
+- V1.1 使用 `src/components/ui/` 的共享控件、表格、空状态及弹窗。组件样例仍是开发模式入口。
+- 退出或任一 API 返回 401 时清除内存用户及角色缓存，守卫跳转登录；令牌、用户名密码不写 localStorage。表单提交后清空密码字段；SMB 建连后释放普通用户密码。生产环境 DSM 和百炼使用 HTTPS。工作台内网 HTTP 登录页提示口令及 Cookie 明文传输风险，写接口拒绝跨站浏览器请求。
 
 手动验证：
 
 1. 浏览器打开 <http://localhost:8080>，使用 demo-uploader 登录一次再退出；用错误密码重试应提示失败。退出后访问 `/projects` 或 `/admin/roles` 应进入登录页。
 2. 用 demo-admin 登录，管理 → 角色表，给 demo-uploader 勾选初审并保存；对方重新登录后应出现“待初审”。普通账号直接请求 GET/PUT `/api/admin/roles` 返回 403。
-3. 在组件样例页打开弹窗（Escape/关闭按钮可关闭）、切换 full/lite、滚动 60 张卡片并刷新，检查偏好保持与文字/按钮清晰可用。
+3. 在开发模式的组件样例页打开弹窗，测试 Escape、关闭按钮和回到触发按钮的键盘焦点。
 4. 测试令牌和 NAS 超时的自动化用例位于 `backend/tests/integration/test_auth_roles.py`；默认测试无真实 NAS 依赖。
 5. 内网 prod 验证：配置真实 NAS 主机、共享及区域根、受信 CA 与 bootstrap_admin，`mode: prod` 后重启；在登录页输入本人真实 NAS 凭据，应完成 DSM 验证和本人 SMB 建连。本包未在真实 NAS 上执行此项，不能把 dev 测试视作通过。
 

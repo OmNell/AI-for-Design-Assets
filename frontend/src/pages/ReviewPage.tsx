@@ -1,3 +1,4 @@
+import { Button, Panel } from '../components/ui'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useNavigate, useSearchParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -9,9 +10,6 @@ import { AssetPreview } from '../components/AssetPreview'
 import { DraftSaver, type SaveStatus } from '../lib/draftSaver'
 import { formatBytes, splitTerms } from '../lib/terms'
 import { useAuthStore } from '../stores/auth'
-import { GlassSurface } from '../components/glass/GlassSurface'
-import { GlassPanel } from '../components/glass/GlassPanel'
-import { GlassButton } from '../components/glass/GlassButton'
 import { ProductList, RoundHistory } from '../components/review/ProductList'
 import { TerminateBatchButton } from '../components/TerminateBatchButton'
 import { Thumb } from '../components/review/Thumb'
@@ -114,9 +112,9 @@ function ReviewWorkspace({ id }: { id: number }) {
   const selected = products.find(product => product.id === current) ?? products[0]
   const items = useMemo(() => products.filter(product => product.kind === 'item'), [products])
 
-  if (!valid) return <GlassPanel><p role="alert">批次编号不正确</p></GlassPanel>
-  if (review.isPending) return <GlassPanel><p>正在加载核对页…</p></GlassPanel>
-  if (review.isError || !data) return <GlassPanel><p role="alert" className="text-red-800">{review.error?.message ?? '核对页加载失败'}</p><Link to="/" className="mt-4 inline-block text-sm text-emerald-800 underline underline-offset-4">返回首页</Link></GlassPanel>
+  if (!valid) return <Panel><p role="alert">批次编号不正确</p></Panel>
+  if (review.isPending) return <Panel><p>正在加载核对页…</p></Panel>
+  if (review.isError || !data) return <Panel><p role="alert" className="text-red-800">{review.error?.message ?? '核对页加载失败'}</p><Link to="/" className="mt-4 inline-block text-sm text-blue-700 underline underline-offset-4">返回首页</Link></Panel>
 
   const { batch, fields, pending } = data
   const editable = batch.editable
@@ -185,73 +183,72 @@ function ReviewWorkspace({ id }: { id: number }) {
         {!!rejectPins.length && <p className="mt-1 text-xs">有 {rejectPins.length} 条意见钉在图片上，列表中带「钉」标记的图选中后可在大图上查看。</p>}</div>
         {isUploader && <TerminateBatchButton id={batch.id} disabled={busy} onTerminated={() => { void client.invalidateQueries({queryKey:['batches']}); navigate('/') }} />}</div>
       {history.length > 1 && <details className="mt-2"><summary className="cursor-pointer text-xs">查看历次意见（{history.length}）</summary><div className="mt-2"><RoundHistory history={history} /></div></details>}</div>}
-    <GlassSurface radius={24} className="px-6 py-4">
-      <div className="flex items-start justify-between gap-6">
+    <div className="ui-panel px-6 py-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0"><h1 className="truncate text-lg font-semibold">{batch.project_code} {batch.company_name} {batch.project_name}
           <span className="ml-3 text-sm font-normal text-slate-600">· 位置 {batch.recommended_path || '位置待定'}</span></h1>
           <p className="mt-1.5 text-xs text-slate-500">{batch.batch_no} · {batch.status} · 责任人 {batch.owner_name}
-            {['待核对', '已驳回'].includes(batch.status) && user?.roles.includes('admin') && <button type="button" className="ml-2 text-emerald-800 underline underline-offset-4" onClick={() => setModal('owner')}>更换责任人</button>}
-            <Link to={`/batches/${batch.id}`} className="ml-3 text-emerald-800 underline underline-offset-4">批次详情</Link></p>
+            {['待核对', '已驳回'].includes(batch.status) && user?.roles.includes('admin') && <button type="button" className="ml-2 text-blue-700 underline underline-offset-4" onClick={() => setModal('owner')}>更换责任人</button>}
+            <Link to={`/batches/${batch.id}`} className="ml-3 text-blue-700 underline underline-offset-4">批次详情</Link></p>
           <p data-testid="pending" className={`mt-2 text-sm ${todo.length ? 'text-amber-900' : 'text-emerald-800'}`}>{todo.length ? `待处理：${todo.join(' · ')}` : editable ? '待处理项已清零，可以提交审核。' : `第 ${batch.round} 轮 · ${batch.status}`}</p>
           {!editable && batch.note_to_reviewer && <p className="mt-2 text-sm">给审核的备注：{batch.note_to_reviewer}</p>}
           {!editable && <p className="mt-1 text-xs text-slate-500">{['待核对', '已驳回'].includes(batch.status) ? '只有当前批次责任人可以修改，当前为只读。' : `批次状态为「${batch.status}」，当前为只读。`}</p>}
         </div>
-        {editable && <div className="flex w-80 shrink-0 flex-col items-end gap-2">
+        {editable && <div className="flex w-full max-w-80 flex-col items-end gap-2">
           <textarea aria-label="给审核的备注" rows={2} maxLength={2000} className="field !rounded-xl !px-3 !py-2 text-sm" placeholder="给审核的备注（可不填；对存放位置有异议写在这里）" value={note} onChange={event => setNote(event.target.value)} />
           <div className="flex items-center gap-3">
             <span role="status" data-testid="save-status" className={`text-xs ${save.state === 'error' ? 'text-red-800' : 'text-slate-500'}`}>{saveLabels[save.state]}{save.state === 'error' && save.message ? `：${save.message}` : ''}
               {save.state === 'error' && <button type="button" className="ml-2 underline underline-offset-4" onClick={() => void saver.flush()}>重试</button>}</span>
-            <GlassButton disabled={busy || !pending.can_submit || supplementaryTodo.length > 0 || unsavedRelations || save.state !== 'saved'} title={todo.length ? `提交前还需处理：${todo.join('、')}` : undefined}
-              onClick={() => void run(() => submitReview(id, note), () => { setNote(''); void client.invalidateQueries({ queryKey: ['batches'] }); void client.invalidateQueries({ queryKey: ['batch', id] }) })}>提交审核</GlassButton></div>
+            <Button disabled={busy || !pending.can_submit || supplementaryTodo.length > 0 || unsavedRelations || save.state !== 'saved'} title={todo.length ? `提交前还需处理：${todo.join('、')}` : undefined}
+              onClick={() => void run(() => submitReview(id, note), () => { setNote(''); void client.invalidateQueries({ queryKey: ['batches'] }); void client.invalidateQueries({ queryKey: ['batch', id] }) })}>提交审核</Button></div>
         </div>}
       </div>
       {error && !modal && <p role="alert" className="mt-2 text-sm text-red-800">{error}</p>}
-    </GlassSurface>
+    </div>
 
-    {isSupplement && supplement.isError && <GlassPanel><p role="alert" className="text-red-800">{supplement.error.message}</p></GlassPanel>}
+    {isSupplement && supplement.isError && <Panel><p role="alert" className="text-red-800">{supplement.error.message}</p></Panel>}
     {supplementData && <SupplementReviewPanel data={supplementData} products={products} editable={editable} busy={busy}
       preferredProduct={preferredProduct} save={saveSupplement} onDirty={setSupplementDirty} />}
 
-    {/* 三栏内部各自滚动：用次级玻璃，lite 模式下不挂实时滤镜，60 张以上主图滚动才流畅。 */}
-    <div className="grid h-[calc(100vh-345px)] min-h-[560px] grid-cols-[270px_minmax(0,1fr)_400px] gap-4">
-      <GlassSurface radius={24} priority="secondary" className="glass-fill min-h-0 p-3"><div className="flex h-full flex-col">
+    <div className="grid h-[max(570px,calc(100dvh-17rem))] grid-cols-[156px_minmax(0,1fr)_minmax(255px,28%)] xl:grid-cols-[176px_minmax(0,1fr)_minmax(300px,29%)] 2xl:grid-cols-[216px_minmax(0,1fr)_minmax(320px,29%)] gap-4">
+      <div className="ui-panel min-h-0 min-w-0 overflow-hidden p-3"><div className="flex h-full flex-col">
         <div data-testid="product-list" className="min-h-0 flex-1 overflow-y-auto pr-1"><ProductList batchId={batch.id} products={products} fields={fields} selectedId={selected?.id} onSelect={setCurrent} checked={editable ? checked : undefined} onToggle={toggle} pinCounts={pinCounts} /></div>
         {editable && <div className="mt-2 border-t border-slate-400/20 pt-2">
           <div className="mb-2 flex items-center justify-between text-xs text-slate-500"><span>已选 {selection.length} 张</span>
             <span><button type="button" className="underline underline-offset-4" onClick={() => setChecked(new Set(items.map(item => item.id)))}>全选单品</button>
               <button type="button" className="ml-3 underline underline-offset-4" onClick={() => setChecked(new Set())}>清空</button></span></div>
-          <div className="flex gap-2"><GlassButton primary={false} disabled={busy || !selection.length} onClick={() => setModal('bulk')}>批量修改</GlassButton>
-            <GlassButton primary={false} disabled={busy} onClick={() => setModal('append')}>追加主图</GlassButton></div></div>}
-      </div></GlassSurface>
+          <div className="flex flex-wrap gap-2"><Button primary={false} disabled={busy || !selection.length} onClick={() => setModal('bulk')}>批量修改</Button>
+            <Button primary={false} disabled={busy} onClick={() => setModal('append')}>追加主图</Button></div></div>}
+      </div></div>
 
-      <GlassSurface radius={24} priority="secondary" className="glass-fill min-h-0 p-3">{selected ? <div className="flex h-full flex-col">
-        <div className="mb-2 flex items-center justify-between gap-3 text-sm"><span className="truncate font-medium">{selected.display_name}</span>
-          {original && <label className="flex shrink-0 items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={compareOriginal} onChange={event => setCompareOriginal(event.target.checked)} />对比原主图</label>}
-          {selected.kind === 'set' && <label className="flex shrink-0 items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={sideBySide} onChange={event => setSideBySide(event.target.checked)} />并排显示包含的单品</label>}</div>
+      <div className="ui-panel min-h-0 min-w-0 overflow-hidden p-3">{selected ? <div className="flex h-full flex-col">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm"><span className="truncate font-medium">{selected.display_name}</span>
+          {original && <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={compareOriginal} onChange={event => setCompareOriginal(event.target.checked)} />对比原主图</label>}
+          {selected.kind === 'set' && <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={sideBySide} onChange={event => setSideBySide(event.target.checked)} />并排显示包含的单品</label>}</div>
         <div className={`min-h-0 flex-1 ${original && compareOriginal || selected.kind === 'set' && sideBySide ? 'grid grid-cols-2 gap-3' : ''}`}>
           <ImageViewer key={selected.id} batchId={batch.id} fileId={selected.batch_file_id} version={selected.fingerprint ?? ''} name={selected.display_name} pins={rejectPins.filter(pin => pin.batch_product_id === selected.id)} />
-          {original && compareOriginal && <div className="min-h-0 overflow-y-auto rounded-2xl bg-white/25 p-2">
+          {original && compareOriginal && <div className="min-h-0 overflow-y-auto rounded-2xl bg-slate-50 p-2">
             <p className="mb-2 text-xs text-slate-600">原主图 · {original.product_code}</p><AssetPreview fileId={original.file_id} name={original.display_name} />
           </div>}
-          {selected.kind === 'set' && sideBySide && !(original && compareOriginal) && <div data-testid="side-items" className="min-h-0 overflow-y-auto rounded-2xl bg-white/20 p-2">
-            <div className="grid grid-cols-2 gap-2">{items.filter(item => draft.includes(item.id)).map(item => <button type="button" key={item.id} className="rounded-xl bg-white/30 p-1.5 text-left hover:bg-white/50" onClick={() => setCurrent(item.id)}>
+          {selected.kind === 'set' && sideBySide && !(original && compareOriginal) && <div data-testid="side-items" className="min-h-0 overflow-y-auto rounded-2xl bg-slate-50 p-2">
+            <div className="grid grid-cols-2 gap-2">{items.filter(item => draft.includes(item.id)).map(item => <button type="button" key={item.id} className="rounded-xl bg-slate-50 p-1.5 text-left hover:bg-slate-50" onClick={() => setCurrent(item.id)}>
               <Thumb batchId={batch.id} fileId={item.batch_file_id} version={item.fingerprint ?? ''} size={1024} alt={`${item.display_name} 图片`} className="aspect-square w-full" />
               <span className="mt-1 block truncate text-xs">{item.display_name}</span></button>)}</div>
             {!draft.length && <p className="p-4 text-sm text-slate-500">还没有勾选包含的单品。</p>}</div>}
-        </div></div> : <p className="p-6 text-sm text-slate-500">本批次没有主图。可以在左侧追加。</p>}</GlassSurface>
+        </div></div> : <p className="p-6 text-sm text-slate-500">本批次没有主图。可以在左侧追加。</p>}</div>
 
-      <GlassSurface radius={24} priority="secondary" className="glass-fill min-h-0 p-3"><div data-testid="tag-form" className="h-full overflow-y-auto pr-1">{selected ?
+      <div className="ui-panel min-h-0 min-w-0 overflow-hidden p-3"><div data-testid="tag-form" className="h-full overflow-y-auto pr-1">{selected ?
         <TagForm batchId={batch.id} product={selected} fields={fields} items={items} editable={editable && !busy} busy={busy} onChange={change(selected.id)}
           onRetry={() => void runProduct(() => retryProductAi(id, selected.id), () => void client.invalidateQueries({ queryKey: key }))} onRemove={() => setModal('remove')}
           relationDraft={draft} onRelationDraft={ids => setDrafts(value => ({ ...value, [selected.id]: ids }))}
           onConfirmRelations={() => void runProduct(() => setRelations(id, selected.id, draft), () => setDrafts(value => { const next = { ...value }; delete next[selected.id]; return next }))} /> :
-        <p className="p-3 text-sm text-slate-500">选择左侧主图后在这里核对标签。</p>}</div></GlassSurface>
+        <p className="p-3 text-sm text-slate-500">选择左侧主图后在这里核对标签。</p>}</div></div>
     </div>
 
-    <GlassSurface radius={20} className="px-5 py-3"><details data-testid="folders"><summary className="cursor-pointer select-none text-sm font-medium">资料夹文件清单（{data.folders.reduce((sum, folder) => sum + folder.files.length, 0)} 个文件，核对阶段不能增减）</summary>
-      <div className="mt-3 grid grid-cols-5 gap-4">{data.folders.map(folder => <section key={folder.name} className="min-w-0"><h3 className="mb-2 text-xs font-semibold text-slate-600">{folder.name}（{folder.files.length}）</h3>
+    <div className="ui-panel px-5 py-3"><details data-testid="folders"><summary className="cursor-pointer select-none text-sm font-medium">资料夹文件清单（{data.folders.reduce((sum, folder) => sum + folder.files.length, 0)} 个文件，核对阶段不能增减）</summary>
+      <div className="mt-3 grid grid-cols-2 gap-4 xl:grid-cols-5">{data.folders.map(folder => <section key={folder.name} className="min-w-0"><h3 className="mb-2 text-xs font-semibold text-slate-600">{folder.name}（{folder.files.length}）</h3>
         <ul className="max-h-56 space-y-1 overflow-y-auto text-xs">{folder.files.map(file => <li key={file.name} className="flex justify-between gap-2"><span className="truncate" title={file.name}>{file.name}</span><span className="shrink-0 text-slate-500">{formatBytes(file.size)}</span></li>)}
-          {!folder.files.length && <li className="text-slate-400">空</li>}</ul></section>)}</div></details></GlassSurface>
+          {!folder.files.length && <li className="text-slate-400">空</li>}</ul></section>)}</div></details></div>
 
     {modal === 'bulk' && <BulkModal fields={fields} count={selection.length} busy={busy} error={error} onClose={close}
       onApply={tags => void run(() => bulkUpdate(id, selection, tags), () => setModal(null))} />}

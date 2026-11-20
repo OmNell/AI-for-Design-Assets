@@ -5,8 +5,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { ReviewPage, applyPatch, mergePatch } from './ReviewPage'
-import { GlassProvider } from '../components/glass/GlassProvider'
-import { MODE_KEY } from '../components/glass/visualMode'
 import { useAuthStore } from '../stores/auth'
 import type { Pending, ProductPatch, ReviewData, ReviewProduct } from '../api/review'
 
@@ -58,8 +56,8 @@ async function until(condition: () => boolean) {
   throw new Error('界面没有完成预期更新')
 }
 function mount() {
-  act(() => root.render(<QueryClientProvider client={query}><GlassProvider><MemoryRouter initialEntries={['/batches/1/review']}>
-    <Routes><Route path="/batches/:id/review" element={<ReviewPage />} /></Routes></MemoryRouter></GlassProvider></QueryClientProvider>))
+  act(() => root.render(<QueryClientProvider client={query}><MemoryRouter initialEntries={['/batches/1/review']}>
+    <Routes><Route path="/batches/:id/review" element={<ReviewPage />} /></Routes></MemoryRouter></QueryClientProvider>))
 }
 function remount() {
   act(() => root.unmount()); query.clear()
@@ -76,11 +74,9 @@ const ready = () => until(() => !!host.querySelector('[data-testid="pending"]'))
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
-  vi.stubGlobal('CSS', { supports: () => false })
-  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.open = true } })
   Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function (this: HTMLDialogElement) { this.open = false } })
-  localStorage.clear(); localStorage.setItem(MODE_KEY, 'lite')
+  localStorage.clear()
   calls = []
   query = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } })
   useAuthStore.getState().setUser({ id: 1, username: 'one', display_name: null, roles: ['uploader'], enabled: true })
@@ -233,15 +229,13 @@ it('被驳回的批次预留顶部横幅；非责任人只读', async () => {
   expect(button('移除这张图')).toBeUndefined()
 })
 
-it('60 张主图的列表项在 lite 模式不挂玻璃滤镜，full 模式才使用', async () => {
+it('60 张主图保留可滚动列表和可选商品', async () => {
   const many = Array.from({ length: 60 }, (_, index) => product(index + 1, `单品${index + 1}`))
   serve(review(many)); mount(); await ready()
   const rows = () => [...host.querySelectorAll('[data-testid="product-list"] li')]
   expect(rows()).toHaveLength(60)
-  expect(rows().every(row => row.querySelector('[data-list-item="lite"]') && !row.querySelector('.glass-surface, .glass-effect, [data-glass-renderer]'))).toBe(true)
-  localStorage.setItem(MODE_KEY, 'full')
-  remount(); await ready()
-  expect(rows().every(row => row.querySelector('.glass-surface[data-visual-mode="full"]'))).toBe(true)
+  expect(rows().every(row => row.querySelector('button'))).toBe(true)
+  expect(host.querySelector('[data-testid="product-list"]')?.classList.contains('overflow-y-auto')).toBe(true)
 })
 
 it('草稿合并保留最新文字，界面预览把人工修改标成已改', () => {

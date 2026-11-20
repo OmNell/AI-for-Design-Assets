@@ -1,3 +1,4 @@
+import { Button, Panel, Table as DataTable } from '../components/ui'
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router'
@@ -7,11 +8,9 @@ import {
   retrySystem, runMaintenance, saveSystem, type CleanupPreview, type SystemJob, type SystemParameters,
 } from '../api/maintenance'
 import { AdminLinks } from '../components/AdminLinks'
-import { GlassButton } from '../components/glass/GlassButton'
-import { GlassPanel } from '../components/glass/GlassPanel'
 import { formatBytes } from '../lib/terms'
 
-const linkClass = 'text-sm text-emerald-800 underline underline-offset-4'
+const linkClass = 'text-sm text-blue-700 underline underline-offset-4'
 const tabs = { inspection: '巡检报告', backup: '备份', cleanup: '临时区清理', errors: '异常任务', logs: '操作日志', search: '搜索日志', settings: '系统参数', tools: '维护工具' }
 const kindNames: Record<string, string> = { moved: '违规移动', modified: '内容变化', unregistered: '未登记', missing: '文件丢失',
   archive_broken: '档案异常', inspection: '巡检', backup: '备份', catalog_thumb: '缩略图重建',
@@ -25,10 +24,8 @@ function Load({ loading, error, children }: { loading: boolean; error: unknown; 
   return <>{children}</>
 }
 function Table({ columns, children }: { columns: string[]; children: ReactNode }) {
-  return <div className="overflow-auto"><table className="w-full border-collapse text-left text-sm">
-    <thead className="border-b border-slate-300"><tr>{columns.map(label => <th className="px-3 py-2" key={label}>{label}</th>)}</tr></thead>
-    <tbody className="[&_td]:p-3 [&_tr]:border-b [&_tr]:border-slate-300/50">{children}</tbody>
-  </table></div>
+  return <DataTable><thead><tr>{columns.map(label => <th key={label}>{label}</th>)}</tr></thead>
+    <tbody>{children}</tbody></DataTable>
 }
 function Quiet({ children }: { children: ReactNode }) { return <p className="text-sm text-slate-600">{children}</p> }
 
@@ -37,7 +34,7 @@ function Trigger({ kind }: { kind: SystemJob }) {
   const job = useMutation({ mutationFn: () => runMaintenance(kind),
     onSuccess: () => { void cache.invalidateQueries({ queryKey: ['maintenance'] }) } })
   return <div className="flex items-center gap-3">
-    <GlassButton disabled={job.isPending} onClick={() => job.mutate()}>立即{kind === 'backup' ? '备份' : '巡检'}</GlassButton>
+    <Button disabled={job.isPending} onClick={() => job.mutate()}>立即{kind === 'backup' ? '备份' : '巡检'}</Button>
     {job.isSuccess && <span role="status" className="text-sm">任务已进入队列</span>}
     {job.error && <span role="alert" className="text-sm text-red-800">{message(job.error)}</span>}
   </div>
@@ -84,7 +81,7 @@ function Inspection() {
         <td><details><summary className="cursor-pointer">{item.auto_fixed ? '已纠正实际路径' : item.resolved_at ? '已修复' : item.acknowledged_at ? '已知悉' : '查看详情'}</summary>
           <p className="break-all">{item.detail}</p>{item.acknowledged_at && <p>账号 #{item.acknowledged_by} · {time(item.acknowledged_at)}</p>}</details></td>
         <td>{item.project_id && <Link className={linkClass} to={`/projects/${item.project_id}`}>项目</Link>}
-          {!item.acknowledged_at && !item.resolved_at && <GlassButton primary={false} disabled={ack.isPending} onClick={() => ack.mutate(item.id)}>标记已知悉</GlassButton>}</td>
+          {!item.acknowledged_at && !item.resolved_at && <Button primary={false} disabled={ack.isPending} onClick={() => ack.mutate(item.id)}>标记已知悉</Button>}</td>
       </tr>)}</Table>
       {findings.data?.length === 0 && <Quiet>没有符合筛选条件的发现。</Quiet>}
       <Pager page={page} setPage={setPage} more={findings.data?.length === 100} />
@@ -119,7 +116,7 @@ function Cleanup() {
     <Load loading={targets.isPending} error={targets.error}><Table columns={['批次／文件', '项目及责任人', '状态', '占用', '最后活动', '操作']}>
       {targets.data?.map(row => <tr key={row.key}><td>{row.label}<br /><span className="text-xs text-slate-600">{row.kind}</span></td>
         <td>{row.project_code ?? '—'} · {row.owner ?? '—'}</td><td>{row.status}</td><td>{row.files} 个 · {formatBytes(row.size)}</td><td>{time(row.updated_at)}</td>
-        <td><GlassButton primary={false} disabled={!row.eligible || preview.isPending || execute.isPending} onClick={() => { execute.reset(); preview.mutate(row.key) }}>核对清单</GlassButton></td>
+        <td><Button primary={false} disabled={!row.eligible || preview.isPending || execute.isPending} onClick={() => { execute.reset(); preview.mutate(row.key) }}>核对清单</Button></td>
       </tr>)}</Table>
       {targets.data?.length === 0 && <Quiet>临时区没有可显示的文件。</Quiet>}
     </Load>
@@ -127,7 +124,7 @@ function Cleanup() {
       <h2 className="font-semibold">清理清单 · {plan.entries.length} 个文件 · {formatBytes(plan.entries.reduce((sum, row) => sum + row.size, 0))}</h2>
       <ul className="max-h-56 overflow-auto break-all text-sm">{plan.entries.map(row => <li key={row.path}>{row.path} · {formatBytes(row.size)}</li>)}</ul>
       <label className="block text-sm">输入 <strong>{plan.target}</strong> 二次确认<input className="field mt-2" value={code} onChange={event => setCode(event.target.value)} /></label>
-      <GlassButton disabled={code !== plan.target || execute.isPending} onClick={() => execute.mutate()}>确认清理</GlassButton>
+      <Button disabled={code !== plan.target || execute.isPending} onClick={() => execute.mutate()}>确认清理</Button>
       <button className={linkClass + ' ml-3'} onClick={() => setPlan(null)}>取消</button>
     </section>}
     {execute.isSuccess && <p role="status" className="text-sm">确认的临时文件已清理。</p>}
@@ -137,8 +134,8 @@ function Cleanup() {
 
 function Pager({ page, setPage, more }: { page: number; setPage: (page: number) => void; more?: boolean }) {
   return <div className="mt-3 flex items-center gap-3 text-sm">
-    <GlassButton primary={false} disabled={page === 1} onClick={() => setPage(page - 1)}>上一页</GlassButton>
-    <span>第 {page} 页</span><GlassButton primary={false} disabled={!more} onClick={() => setPage(page + 1)}>下一页</GlassButton>
+    <Button primary={false} disabled={page === 1} onClick={() => setPage(page - 1)}>上一页</Button>
+    <span>第 {page} 页</span><Button primary={false} disabled={!more} onClick={() => setPage(page + 1)}>下一页</Button>
   </div>
 }
 
@@ -159,10 +156,10 @@ function Logs({ search }: { search: boolean }) {
     setPage(1)
   }
   return <div className="space-y-4">
-    <form onSubmit={submit} className="grid grid-cols-4 items-end gap-3">{fields.map(([key, label, type]) =>
+    <form onSubmit={submit} className="grid grid-cols-2 items-end gap-3 2xl:grid-cols-4">{fields.map(([key, label, type]) =>
       <label className="text-sm" key={key}>{label}<input className="field mt-1" type={type} value={values[key] ?? ''} onChange={event => setValues({ ...values, [key]: event.target.value })} /></label>)}
       {search && <label className="text-sm"><input type="checkbox" checked={values.unclicked === 'true'} onChange={event => setValues({ ...values, unclicked: event.target.checked ? 'true' : '' })} /> 只看无点击记录</label>}
-      <div className="flex items-center gap-3"><GlassButton type="submit">查询</GlassButton><a className={linkClass} href={exportLogs(search, parameters.toString())}>{search ? '导出无点击查询' : '导出 CSV'}</a></div>
+      <div className="flex items-center gap-3"><Button type="submit">查询</Button><a className={linkClass} href={exportLogs(search, parameters.toString())}>{search ? '导出无点击查询' : '导出 CSV'}</a></div>
     </form>
     {search && <Quiet>无点击记录可用于整理检索题目，单凭这一项无法判断检索质量。</Quiet>}
     <Load loading={state.isPending} error={state.error}>
@@ -187,7 +184,7 @@ function Errors() {
     <Table columns={['异常', '原因', '相关对象', '处理入口']}>{errors.data?.map((row, index) => <tr key={`${row.kind}-${row.object_id}-${index}`}>
       <td>{kindNames[row.kind] ?? row.kind}</td><td className="break-all">{row.reason}</td>
       <td>{row.batch_id ? <Link className={linkClass} to={`/batches/${row.batch_id}`}>批次 #{row.batch_id}</Link> : `#${row.object_id}`}</td>
-      <td>{row.retry === 'system' && row.job_id && <GlassButton primary={false} disabled={retry.isPending} onClick={() => retry.mutate(row.job_id!)}>重试后台任务</GlassButton>}
+      <td>{row.retry === 'system' && row.job_id && <Button primary={false} disabled={retry.isPending} onClick={() => retry.mutate(row.job_id!)}>重试后台任务</Button>}
         {row.retry === 'candidate' && <Link className={linkClass} to="/settings">检查候选索引</Link>}
         {row.retry === 'actor' && row.batch_id && <Link className={linkClass} to={`/batches/${row.batch_id}`}>由原操作人继续</Link>}
         {row.kind === 'archive_broken' && <Link className={linkClass} to="/archive/repairs">修复申请列表</Link>}</td>
@@ -210,7 +207,7 @@ function ParametersForm({ initial }: { initial: SystemParameters }) {
     <label className="text-sm">每日备份时间<input className="field mt-1" required type="time" value={value.backup_time}
       onChange={event => setValue({ ...value, backup_time: event.target.value })} /></label>
     <div className="col-span-3 flex items-center gap-4"><span className="text-sm">中国标准时间（Asia/Shanghai，UTC+08:00）</span>
-      <GlassButton disabled={save.isPending} type="submit">保存系统参数</GlassButton>
+      <Button disabled={save.isPending} type="submit">保存系统参数</Button>
       {save.isSuccess && <span role="status">已保存</span>}</div>
     {save.error && <p role="alert" className="col-span-3 text-red-800">{message(save.error)}</p>}
   </form>
@@ -225,7 +222,7 @@ function Tools() {
   return <div className="space-y-4">
     <form className="flex items-end gap-3" onSubmit={event => { event.preventDefault(); submit.mutate() }}>
       <label className="text-sm">商品 ID（可填写多个）<input className="field mt-1" required value={ids} onChange={event => setIds(event.target.value)} /></label>
-      <GlassButton type="submit" disabled={submit.isPending}>重建缩略图</GlassButton>
+      <Button type="submit" disabled={submit.isPending}>重建缩略图</Button>
     </form>
     {submit.isSuccess && <p role="status">正在使用本次登录的 NAS 权限重建缓存。</p>}
     {submit.error && <p role="alert" className="text-red-800">{message(submit.error)}</p>}
@@ -237,10 +234,10 @@ export function MaintenancePage() {
   const [params, setParams] = useSearchParams()
   const key = params.get('tab') ?? 'inspection'
   const selected = Object.hasOwn(tabs, key) ? key as keyof typeof tabs : 'inspection'
-  return <GlassPanel><div className="space-y-5">
+  return <Panel><div className="space-y-5">
     <AdminLinks /><h1 className="text-2xl font-semibold">运营管理</h1>
     <nav aria-label="维护分类" className="flex flex-wrap gap-2">{(Object.keys(tabs) as Array<keyof typeof tabs>).map(tab =>
-      <GlassButton key={tab} onClick={() => setParams({ tab })} primary={selected === tab}>{tabs[tab]}</GlassButton>)}</nav>
+      <Button key={tab} onClick={() => setParams({ tab })} primary={selected === tab}>{tabs[tab]}</Button>)}</nav>
     {selected === 'inspection' && <Inspection />}
     {selected === 'backup' && <Backups />}
     {selected === 'cleanup' && <Cleanup />}
@@ -249,23 +246,23 @@ export function MaintenancePage() {
     {selected === 'search' && <Logs key="search" search />}
     {selected === 'settings' && <Parameters />}
     {selected === 'tools' && <Tools />}
-  </div></GlassPanel>
+  </div></Panel>
 }
 
 export function ArchiveRepairsPage() {
   const cache = useQueryClient()
   const list = useQuery({ queryKey: ['archive-repairs'], queryFn: getRepairs, retry: false })
   const create = useMutation({ mutationFn: createRepairs, onSuccess: () => { void cache.invalidateQueries({ queryKey: ['archive-repairs'] }) } })
-  return <GlassPanel><div className="space-y-4">
+  return <Panel><div className="space-y-4">
     <h1 className="text-2xl font-semibold">档案修复申请</h1>
     <Quiet>为项目创建独立草稿。确认修复清单后提交初审，终审通过后由本轮终审本人执行。</Quiet>
-    <GlassButton disabled={create.isPending || !list.data?.some(row => row.ready)} onClick={() => create.mutate([])}>为全部可申请项目创建草稿</GlassButton>
+    <Button disabled={create.isPending || !list.data?.some(row => row.ready)} onClick={() => create.mutate([])}>为全部可申请项目创建草稿</Button>
     <Load loading={list.isPending} error={list.error}>
       <Table columns={['项目', '原因', '操作']}>{list.data?.map(row => <tr key={row.project_id}><td>{row.project_code} · {row.project_name}</td><td>{row.detail}</td>
-        <td><GlassButton disabled={!row.ready || create.isPending} onClick={() => create.mutate([row.project_id])}>{row.ready ? '创建修复草稿' : '项目已有活动批次'}</GlassButton></td></tr>)}</Table>
+        <td><Button disabled={!row.ready || create.isPending} onClick={() => create.mutate([row.project_id])}>{row.ready ? '创建修复草稿' : '项目已有活动批次'}</Button></td></tr>)}</Table>
       {list.data?.length === 0 && <Quiet>暂无可访问的待修复项目。</Quiet>}
     </Load>
     {create.data?.map(row => <p className="text-sm" key={row.project_id}>{row.error ?? <Link className={linkClass} to={`/batches/${row.batch_id}/operation`}>打开修复草稿 #{row.batch_id}</Link>}</p>)}
     {create.error && <p role="alert" className="text-red-800">{message(create.error)}</p>}
-  </div></GlassPanel>
+  </div></Panel>
 }

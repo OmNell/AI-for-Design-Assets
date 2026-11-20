@@ -24,7 +24,7 @@ export interface OperationFile {
 }
 export interface OperationManifest {
   project: { id: number; project_code: string; project_name: string; company_name: string; won: boolean; status: string
-    folder_name?: string; current_path?: string; voided_at?: string | null; purge_eligible_at?: string | null }
+    folder_name?: string; current_path?: string; company_id?: number | null; industry_id?: number | null; voided_at?: string | null; purge_eligible_at?: string | null }
   products: OperationProduct[]; files: OperationFile[]
   tags?: (ProductTag & { product_id: number; field_key: string })[]
   relations?: { set_product_id: number; item_product_id: number; status: string }[]

@@ -9,8 +9,6 @@ import { QueuePage, formatWaiting } from './QueuePage'
 import { CompanyMapPage } from './CompanyMapPage'
 import { HomePage } from './HomePage'
 import { ReviewPage } from './ReviewPage'
-import { GlassProvider } from '../components/glass/GlassProvider'
-import { MODE_KEY } from '../components/glass/visualMode'
 import { useAuthStore } from '../stores/auth'
 import type { AuditData } from '../api/audit'
 import type { ReviewData, ReviewProduct } from '../api/review'
@@ -52,7 +50,7 @@ async function until(condition: () => boolean) {
   throw new Error('界面没有完成预期更新')
 }
 function mount(node: ReactNode, route: string) {
-  act(() => root.render(<QueryClientProvider client={query}><GlassProvider><MemoryRouter initialEntries={[route]}>{node}</MemoryRouter></GlassProvider></QueryClientProvider>))
+  act(() => root.render(<QueryClientProvider client={query}><MemoryRouter initialEntries={[route]}>{node}</MemoryRouter></QueryClientProvider>))
 }
 const audit = () => mount(<Routes><Route path="/review/:id" element={<AuditPage />} /></Routes>, '/review/1')
 const button = (label: string, scope: ParentNode = document) => [...scope.querySelectorAll('button')].find(value => value.textContent === label)!
@@ -64,11 +62,9 @@ const login = (roles: Role[]) => useAuthStore.getState().setUser({ id: 1, userna
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
-  vi.stubGlobal('CSS', { supports: () => false })
-  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.open = true } })
   Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function (this: HTMLDialogElement) { this.open = false } })
-  localStorage.clear(); localStorage.setItem(MODE_KEY, 'lite')
+  localStorage.clear()
   calls = []
   query = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } })
   login(['first_reviewer'])
@@ -196,7 +192,7 @@ it('对照表页新增行业和企业，别名按顿号拆分后保存', async (
 it('首页顶部待办条显示数量并直达对应页面', async () => {
   login(['uploader', 'first_reviewer'])
   serve((url) => url === '/api/todos' ? [{ key: 'rejected', label: '已驳回', count: 1, link: '/batches/5/review', batches: [{ id: 5, label: 'P_企业_项目' }] }, { key: 'first_review', label: '待初审', count: 3, link: '/first-review', batches: [] }] :
-    url === '/api/batches' ? [] : { version: '0.1.0', mode: 'dev', database_available: true })
+    url === '/api/batches' ? [] : url.startsWith('/api/projects?') ? { items: [], total: 0, page: 1, page_size: 20 } : { version: '0.1.0', mode: 'dev', database_available: true })
   mount(<HomePage />, '/')
   await until(() => !!host.querySelector('[data-testid="todos"]'))
   const links = [...host.querySelectorAll<HTMLAnchorElement>('[data-testid="todos"] a')]

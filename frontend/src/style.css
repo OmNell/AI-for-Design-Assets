@@ -2,23 +2,29 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; color: #273b36; background: #edf1ec; font-synthesis: none; }
-body { margin: 0; min-width: 1000px; background: radial-gradient(ellipse at 10% 15%, #d1e7d8 0%, transparent 55%), radial-gradient(ellipse at 90% 45%, #ede4d0 0%, transparent 50%); }
-.brand-mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: #244d40; color: #eff8ee; font-size: 17px; }
+@layer base {
+  body { @apply bg-slate-50 text-sm text-slate-900 antialiased; font-family: Inter, ui-sans-serif, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  button:focus-visible, a:focus-visible, summary:focus-visible { @apply outline outline-2 outline-offset-2 outline-blue-600; }
+  input[type="checkbox"], input[type="radio"], progress { @apply accent-blue-600; }
+  dialog::backdrop { @apply bg-slate-900/40; }
+}
 
-/* 滤镜仅作用于装饰层，正文和交互保持清晰，切换时不重挂载内容。 */
-.glass-surface { position: relative; border: 1px solid rgb(255 255 255 / 70%); }
-.glass-content { position: relative; }
-.glass-effect { position: absolute; inset: 0; border-radius: inherit; pointer-events: none; }
-.glass-effect > div, .glass-effect > span { transform: none !important; }
-.glass-library > .glass { width: 100%; height: 100%; box-shadow: none !important; }
-.glass-library > .glass > div { display: none; }
-.glass-library .glass__warp { -webkit-backdrop-filter: blur(6px) saturate(125%); }
-.glass-surface[data-glass-renderer="svg"] { background: rgb(255 255 255 / 15%); }
-.glass-surface[data-glass-renderer="css"] { background: rgb(255 255 255 / 30%); backdrop-filter: blur(16px) saturate(125%); -webkit-backdrop-filter: blur(16px) saturate(125%); }
-.glass-surface[data-glass-renderer="none"] { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
-.glass-button > .glass-surface > .glass-content { display: block; }
-.field { width: 100%; border: 1px solid rgb(255 255 255 / 85%); border-radius: 14px; background: rgb(255 255 255 / 50%); padding: 12px 14px; outline-color: #36765c; }
-/* 核对页三栏需要内容层撑满容器高度，才能各自内部滚动。 */
-.glass-fill > .glass-content { height: 100%; }
-.review-row { content-visibility: auto; contain-intrinsic-size: auto 62px; }
+@layer components {
+  .brand-mark { @apply inline-grid size-9 shrink-0 place-items-center rounded-lg bg-blue-600 text-white; }
+  .ui-panel { @apply min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm; }
+  .ui-button { @apply inline-flex min-h-9 shrink-0 items-center justify-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50; }
+  .ui-primary { @apply border-blue-600 bg-blue-600 text-white hover:border-blue-700 hover:bg-blue-700; }
+  .ui-secondary { @apply border-slate-200 bg-white text-slate-700 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 aria-pressed:border-blue-300 aria-pressed:bg-blue-50 aria-pressed:text-blue-700; }
+  .field { @apply w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100; }
+  .ui-table { @apply w-full border-collapse text-left text-sm; }
+  .ui-table thead { @apply border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-500; }
+  .ui-table th, .ui-table td { @apply px-4 py-3; }
+  .ui-table tbody tr { @apply border-b border-slate-100 last:border-b-0 hover:bg-slate-50; }
+  .ui-link { @apply font-medium text-blue-700 hover:underline; }
+  .review-row { content-visibility: auto; contain-intrinsic-size: auto 62px; }
+}
+
+.asset-file-table { container: asset-table / inline-size; }
+@container asset-table (max-width: 520px) {
+  [data-file-time] { display: none; }
+}

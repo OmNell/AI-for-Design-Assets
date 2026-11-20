@@ -1,3 +1,4 @@
+import { Button, Panel } from '../ui'
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -5,15 +6,13 @@ import { updateOperation, type OperationData, type OperationInput, type Suppleme
 import { confirmBatch, getBatch, type UploadFile } from '../../api/upload'
 import type { ReviewProduct } from '../../api/review'
 import { formatBytes } from '../../lib/terms'
-import { GlassPanel } from '../glass/GlassPanel'
-import { GlassButton } from '../glass/GlassButton'
 import { TerminateBatchButton } from '../TerminateBatchButton'
 import { Thumb } from '../review/Thumb'
 import { AssetPreview } from '../AssetPreview'
 
 const conflictNames = { new: '新增', duplicate: '相同，跳过', conflict: '同路径不同内容' }
 const choiceNames = { replace: '替换原文件', keep_both: '另存为新文件（自动命名）' }
-const linkClass = 'text-sm text-emerald-800 underline underline-offset-4'
+const linkClass = 'text-sm text-blue-700 underline underline-offset-4'
 type ConflictChoice = NonNullable<SupplementFile['choice']>
 const toggle = (values: number[], id: number, checked: boolean) => checked ? [...values, id] : values.filter(value => value !== id)
 
@@ -28,7 +27,7 @@ function ConflictFiles({ data, files, choices, onChoice }: { data: OperationData
       const old = row.file_id ? oldFiles.get(row.file_id) : undefined
       const fresh = newFiles.get(row.id)
       const image = /^(套装|单品)\/[^/]+\.(jpe?g|png)$/i.test(row.rel_path)
-      return <section key={row.id} className="rounded-xl bg-white/35 p-3">
+      return <section key={row.id} className="rounded-xl bg-slate-50 p-3">
         <h3 className="break-all text-sm font-medium">{row.rel_path} · {row.conflict ? conflictNames[row.conflict] : '尚未核对'}</h3>
         {row.conflict === 'conflict' && <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-slate-600">
           <div className="min-w-0"><p>当前文件 {old ? formatBytes(old.size) : '—'}{old?.mtime && ` · ${new Date(old.mtime).toLocaleString('zh-CN')}`}</p>
@@ -72,9 +71,9 @@ export function SupplementWorkspace({ data }: { data: OperationData }) {
     } catch (reason) { setError(reason instanceof Error ? reason.message : '无法提交补充文件') }
     finally { setBusy(false) }
   }
-  if (data.status !== '已暂存') return <GlassPanel><p className="mb-4 text-sm">补充批次 · {data.status}</p>
-    <Link className={linkClass} to={`/batches/${id}`}>查看批次详情</Link></GlassPanel>
-  return <GlassPanel><div className="space-y-4">
+  if (data.status !== '已暂存') return <Panel><p className="mb-4 text-sm">补充批次 · {data.status}</p>
+    <Link className={linkClass} to={`/batches/${id}`}>查看批次详情</Link></Panel>
+  return <Panel><div className="space-y-4">
     <div className="flex items-center justify-between gap-3"><h1 className="text-2xl font-semibold">核对补充文件</h1>
       <Link className={linkClass} to={`/batches/${id}`}>返回批次详情</Link></div>
     <p className="text-sm text-slate-600">{data.before.project.project_code} · {data.before.project.project_name}</p>
@@ -86,10 +85,10 @@ export function SupplementWorkspace({ data }: { data: OperationData }) {
     }) : undefined} />
     {error && <p role="alert" className="text-sm text-red-800">{error}</p>}
     {data.editable && <div className="flex gap-2">
-      <GlassButton disabled={!ready || busy} onClick={() => void action()}>确认文件并继续核对</GlassButton>
+      <Button disabled={!ready || busy} onClick={() => void action()}>确认文件并继续核对</Button>
       {!!batch.data && <TerminateBatchButton id={id} disabled={busy} onTerminated={() => navigate(`/batches/${id}`)} />}
     </div>}
-  </div></GlassPanel>
+  </div></Panel>
 }
 
 export function SupplementReviewPanel({ data, products, editable, busy, preferredProduct, save, onDirty }: {
@@ -117,7 +116,7 @@ export function SupplementReviewPanel({ data, products, editable, busy, preferre
   const newSetOldItems = (id: number) => choices.batch_set_items?.[String(id)]
   const oldSetNewItems = (id: number) => choices.relation_batch_items?.[String(id)] ?? []
   const updateOldSet = (id: number, items: number[]) => choose({ relation_reviews: { ...choices.relation_reviews, [id]: items } })
-  return <GlassPanel><details open><summary className="cursor-pointer text-lg font-semibold">补充文件与商品身份核对</summary>
+  return <Panel><details open><summary className="cursor-pointer text-lg font-semibold">补充文件与商品身份核对</summary>
     <div className="mt-4 space-y-4">
       <p className="text-sm text-slate-600">为每张主图选择新增商品或具体的替换目标。保存替换目标后，原标签与新识别值会出现在右侧核对面板。</p>
       {preferredProduct && <p className="text-sm text-slate-600">从「{oldProducts.find(row => row.id === preferredProduct)?.display_name ?? '商品'}」的替换入口进入，请在相应主图中手动选择商品。</p>}
@@ -138,7 +137,7 @@ export function SupplementReviewPanel({ data, products, editable, busy, preferre
         {sets.map(set => {
           const previousId = assignments.find(row => row.id === set.id)?.existing_product_id
           const proposed = newSetOldItems(set.id) ?? (previousId ? oldSetItems(previousId).filter(id => !assignments.some(row => row.existing_product_id === id)) : [])
-          return <div key={set.id} className="rounded-xl bg-white/40 p-3">
+          return <div key={set.id} className="rounded-xl bg-slate-50 p-3">
             <h3 className="font-medium">{set.display_name} · 已入库单品关系</h3>
             <p className="text-sm text-slate-600">本批次单品可在右侧关系编辑区选择。</p>
             {oldItems.filter(row => !assignments.some(choice => choice.existing_product_id === row.id)).map(row =>
@@ -163,8 +162,8 @@ export function SupplementReviewPanel({ data, products, editable, busy, preferre
             <button type="button" className={`mt-2 ${linkClass}`} onClick={() => updateOldSet(id, proposed)}>{confirmedRelations(id) ? '已复核，重新确认' : '确认关联关系'}</button>
           </div>
         })}
-        {editable && <GlassButton primary={false} disabled={busy || saving} onClick={() => void apply()}>保存身份与关联复核</GlassButton>}
+        {editable && <Button primary={false} disabled={busy || saving} onClick={() => void apply()}>保存身份与关联复核</Button>}
       </fieldset>
       {message && <p role="status" className="text-sm">{message}</p>}
-    </div></details></GlassPanel>
+    </div></details></Panel>
 }

@@ -1,10 +1,9 @@
+import { Button, Panel } from '../ui'
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router'
 import { executeOperation, getExecution, type OperationKind, type PurgePreview } from '../../api/operations'
 import { formatBytes } from '../../lib/terms'
-import { GlassPanel } from '../glass/GlassPanel'
-import { GlassButton } from '../glass/GlassButton'
 
 export function PurgeList({ preview }: { preview: Omit<PurgePreview, 'confirmation_code'> }) {
   return <section className="space-y-3 rounded-xl border border-red-300/70 bg-red-50/80 p-4" aria-label="预期物理删除清单">
@@ -42,12 +41,12 @@ export function OperationExecution({ batchId, kind, projectId }: { batchId: numb
     } catch (reason) { setError(reason instanceof Error ? reason.message : '无法继续执行') }
     finally { setBusy(false) }
   }
-  if (execution.isPending) return <GlassPanel><p role="status">正在获取执行进度…</p></GlassPanel>
-  if (execution.isError) return <GlassPanel><p role="alert">{execution.error.message}</p></GlassPanel>
+  if (execution.isPending) return <Panel><p role="status">正在获取执行进度…</p></Panel>
+  if (execution.isError) return <Panel><p role="alert">{execution.error.message}</p></Panel>
   const value = execution.data
-  return <GlassPanel><div className="space-y-4">
+  return <Panel><div className="space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-xl font-semibold">操作执行进度</h2>
-      {projectId && <Link to={`/projects/${projectId}/operations`} className="text-sm text-emerald-800 underline">返回资产操作</Link>}</div>
+      {projectId && <Link to={`/projects/${projectId}/operations`} className="text-sm text-blue-700 underline">返回资产操作</Link>}</div>
     <p role="status">{value.status} · {value.step_name || `第 ${value.step} 步`}</p>
     {value.error && <p className="rounded-xl bg-amber-100 p-3 text-sm text-amber-950">{value.error}</p>}
     {kind === 'purge' && !!value.purge_files?.length && <PurgeList preview={value} />}
@@ -55,7 +54,7 @@ export function OperationExecution({ batchId, kind, projectId }: { batchId: numb
     {value.can_resume && (kind === 'purge' ? <div className="space-y-3">
       <label className="block text-sm">再次输入编号 <strong>{value.confirmation_code}</strong> 确认执行
         <input className="field mt-2 max-w-sm" value={code} onChange={event => setCode(event.target.value)} autoComplete="off" /></label>
-      <GlassButton disabled={busy || !value.confirmation_code || code.trim() !== value.confirmation_code} onClick={() => void run()}>确认执行物理删除</GlassButton>
-    </div> : <GlassButton disabled={busy} onClick={() => void run()}>从检查点继续执行</GlassButton>)}
-  </div></GlassPanel>
+      <Button disabled={busy || !value.confirmation_code || code.trim() !== value.confirmation_code} onClick={() => void run()}>确认执行物理删除</Button>
+    </div> : <Button disabled={busy} onClick={() => void run()}>从检查点继续执行</Button>)}
+  </div></Panel>
 }

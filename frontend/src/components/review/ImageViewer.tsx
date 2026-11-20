@@ -66,7 +66,7 @@ export function ZoomImage({ image, name, pins = [], onPin }: ZoomProps) {
     return scale === 1 ? INITIAL : { scale, x: current.x * scale / current.scale, y: current.y * scale / current.scale }
   })
   return <div className="relative h-full min-h-0 w-full">
-    <div ref={frame} data-testid="viewer" data-scale={view.scale.toFixed(2)} className={`flex h-full w-full touch-none select-none items-center justify-center overflow-hidden rounded-2xl bg-white/30 ${pinning ? 'cursor-crosshair' : view.scale > 1 ? 'cursor-grab active:cursor-grabbing' : ''}`} onClick={place}
+    <div ref={frame} data-testid="viewer" data-scale={view.scale.toFixed(2)} className={`flex h-full w-full touch-none select-none items-center justify-center overflow-hidden rounded-2xl bg-slate-50 ${pinning ? 'cursor-crosshair' : view.scale > 1 ? 'cursor-grab active:cursor-grabbing' : ''}`} onClick={place}
       onPointerDown={event => { if (view.scale > 1 && !pinning) { drag.current = { x: event.clientX, y: event.clientY }; event.currentTarget.setPointerCapture?.(event.pointerId) } }}
       onPointerMove={event => {
         const start = drag.current
@@ -83,9 +83,9 @@ export function ZoomImage({ image, name, pins = [], onPin }: ZoomProps) {
         {pins.map((pin, index) => <span key={index} data-testid="pin" title={pin.text} className="pointer-events-auto absolute flex h-6 w-6 items-center justify-center rounded-full border-2 border-white bg-red-600 text-xs font-semibold text-white shadow"
           style={{ left: box.left + pin.x * box.width, top: box.top + pin.y * box.height, transform: `translate(-50%, -50%) scale(${1 / view.scale})` }}>{index + 1}</span>)}</div>}
     </div>
-    {onPin && <button type="button" aria-pressed={pinning} className={`absolute bottom-3 left-3 rounded-full px-3 py-1 text-xs ${pinning ? 'bg-red-600 text-white' : 'bg-white/70 text-slate-700 hover:bg-white'}`}
+    {onPin && <button type="button" aria-pressed={pinning} className={`absolute bottom-3 left-3 rounded-full px-3 py-1 text-xs ${pinning ? 'bg-red-600 text-white' : 'bg-white text-slate-700 hover:bg-white'}`}
       onClick={() => setPinning(value => !value)}>{pinning ? '点击图片上的位置…' : '钉意见'}</button>}
-    <div className="absolute bottom-3 right-3 flex items-center gap-1 rounded-full bg-white/70 px-2 py-1 text-xs text-slate-700">
+    <div className="absolute bottom-3 right-3 flex items-center gap-1 rounded-full bg-white px-2 py-1 text-xs text-slate-700">
       <button type="button" aria-label="缩小" className="h-6 w-6 rounded-full hover:bg-white" onClick={() => zoom(1 / 1.4)}>－</button>
       <span className="w-10 text-center tabular-nums">{Math.round(view.scale * 100)}%</span>
       <button type="button" aria-label="放大" className="h-6 w-6 rounded-full hover:bg-white" onClick={() => zoom(1.4)}>＋</button>
