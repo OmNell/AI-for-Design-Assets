@@ -1,4 +1,5 @@
 import { Button } from '../ui'
+import { Link } from 'react-router'
 import { useEffect, useId, useRef, useState } from 'react'
 import { getTagValues, type ProductPatch, type ReviewField, type ReviewProduct, type TagValue } from '../../api/review'
 import type { ProductTag } from '../../api/upload'
@@ -111,27 +112,47 @@ function FreeText({ product, editable, onChange }: { product: ReviewProduct; edi
 export interface TagFormProps {
   batchId: number; product: ReviewProduct; fields: ReviewField[]; items: ReviewProduct[]; editable: boolean; busy: boolean
   onChange: (patch: ProductPatch, immediate?: boolean) => void
-  onRetry: () => void; onRemove: () => void
+  onRetry: () => void; onRemove: () => void; descriptionHref?: string
   relationDraft: number[]; onRelationDraft: (ids: number[]) => void; onConfirmRelations: () => void
 }
 
-export function TagForm({ batchId, product, fields, items, editable, busy, onChange, onRetry, onRemove, relationDraft, onRelationDraft, onConfirmRelations }: TagFormProps) {
+export function TagForm({ batchId, product, fields, items, editable, busy, onChange, onRetry, onRemove, descriptionHref, relationDraft, onRelationDraft, onConfirmRelations }: TagFormProps) {
   const recommended = new Map(product.relation_items.map(item => [item.batch_product_id, item.source]))
   const saved = product.relation_items.map(item => item.batch_product_id)
+  const descriptionNeeded = product.pre_description_state === 'missing' || product.pre_description_state === 'reconfirm'
+  const canRetry = editable && !descriptionNeeded && !busy
   const changed = saved.length !== relationDraft.length || saved.some(value => !relationDraft.includes(value))
   return <div className="space-y-3">
     <div className="flex items-start justify-between gap-3"><div className="min-w-0"><h2 className="truncate text-lg font-semibold" title={product.file_name}>{product.display_name}</h2>
       <p className="mt-1 text-xs text-slate-500">{product.kind === 'set' ? '套装' : '单品'} · {product.file_name}</p></div>
       {editable && <button type="button" disabled={busy} className="shrink-0 text-xs text-red-800 underline underline-offset-4 disabled:opacity-50" onClick={onRemove}>移除这张图</button>}</div>
+    {(product.pre_description || editable && descriptionHref) && <div className="rounded-xl bg-slate-50 p-3 text-sm">
+      <h3 className="font-medium">上传人对商品的原始描述</h3>
+      <p className="mt-1 whitespace-pre-wrap break-words text-slate-700">{product.pre_description || '未填写'}</p>
+      {editable && descriptionHref && product.ai_status !== 'pending' && <Link to={descriptionHref} className="mt-2 inline-block text-blue-700 underline">
+        {product.pre_description_state === 'reconfirm' ? '重新确认主图描述' : product.pre_description ? '编辑主图预描述' : '填写主图预描述'}
+      </Link>}
+    </div>}
+    {product.ai_status === 'awaiting_description' && <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
+      {descriptionNeeded ? '请先填写或重新确认主图描述，再识别这张图。' : '主图描述已保存，请启动识别后再确认标签。'}</p>}
     {product.ai_status === 'pending' && <p role="status" className="rounded-xl bg-sky-100/70 p-3 text-sm text-sky-900">正在打标，完成后自动刷新。期间可以先手工填写。</p>}
     {(product.ai_status === 'failed' || (product.ai_status === 'done' && !product.visual_ai_succeeded)) && <div className="rounded-xl bg-red-100/75 p-3 text-sm text-red-900 ring-1 ring-red-400/40">
       <p>打标失败：{product.ai_error || '未知原因'}</p>
       <p className="mt-1 text-xs">当前主图缺少可提交的视觉识别结果，请重新打标。</p>
-      {editable && <div className="mt-2"><Button disabled={busy} onClick={onRetry}>重新打标</Button></div>}</div>}
+      {canRetry && <div className="mt-2"><Button onClick={onRetry}>重新打标</Button></div>}</div>}
     {product.flags.includes('multi_object') && <div className="flex items-center justify-between gap-3 rounded-xl bg-amber-100/75 p-3 text-xs text-amber-900 ring-1 ring-amber-500/50">
       <p>这张单品图里识别出多个商品，请核对标签是否对应同一件商品。</p>
       {editable && <button type="button" className="shrink-0 rounded-full bg-amber-700 px-3 py-1 text-white hover:bg-amber-800" onClick={() => onChange({ resolve_flags: ['multi_object'] }, true)}>已核对，无需修改</button>}</div>}
-    {editable && product.ai_status === 'done' && product.visual_ai_succeeded && <button type="button" disabled={busy} className="text-xs text-blue-700 underline underline-offset-4 disabled:opacity-50" onClick={onRetry}>重新打标（不覆盖人工改过的字段）</button>}
+    {product.flags.includes('description_conflict') && <div className="rounded-xl bg-amber-100/75 p-3 text-sm text-amber-900">
+      <p>人工描述与视觉识别存在差异，建议核对。</p>
+      {editable && <Button primary={false} className="mt-2" disabled={busy || !product.visual_ai_succeeded}
+        onClick={() => onChange({ resolve_flags: ['description_conflict'] }, true)}>确认已核对差异</Button>}</div>}
+    {product.ai_raw_result && <details className="rounded-xl bg-slate-50 p-3 text-sm">
+      <summary className="cursor-pointer">{product.visual_ai_succeeded ? 'AI 原始识别结果' : '上一版 AI 原始识别结果'}</summary>
+      <pre className="mt-2 whitespace-pre-wrap break-all text-xs text-slate-700">{product.ai_raw_result}</pre>
+    </details>}
+    {canRetry && product.ai_status === 'awaiting_description' && <Button onClick={onRetry}>识别这张图</Button>}
+    {canRetry && product.ai_status === 'done' && product.visual_ai_succeeded && <button type="button" disabled={busy} className="text-xs text-blue-700 underline underline-offset-4 disabled:opacity-50" onClick={onRetry}>重新打标（不覆盖人工改过的字段）</button>}
     {fields.map(field => <FieldEditor key={`${product.id}:${field.key}`} batchId={batchId} field={field} tag={product.tags[field.key]} canConfirm={product.visual_ai_succeeded && product.ai_status === 'done'} editable={editable} onChange={onChange} />)}
     <FreeText key={product.id} product={product} editable={editable} onChange={onChange} />
     {product.kind === 'set' && <fieldset data-testid="relations" className={`rounded-xl p-3 ${product.relation_confirmed && !changed ? 'bg-slate-50' : 'bg-amber-100/75 ring-1 ring-amber-500/50'}`}>

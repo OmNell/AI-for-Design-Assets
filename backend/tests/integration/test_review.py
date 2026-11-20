@@ -12,7 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.db.models import Batch, BatchFile, BatchProduct, Oplog, ReviewSnapshot
-from test_ai_pipeline import client, confirm, login, uploaded
+from test_ai_pipeline import client, confirm, login, save_description, uploaded
 
 
 def ready(client: TestClient, paths: list[str]) -> str:
@@ -156,6 +156,12 @@ def test_owner_only_admin_transfer_and_session_for_append_remove(client: TestCli
         return client.post(url, data={"kind":"item"},files={"file":(name,data.getvalue(),"image/jpeg")})
     assert append("../越界.jpg").status_code == 422
     assert append("甲.jpg").status_code == 200
+    description = next(p for p in client.get(base + "/pre-descriptions").json()["products"] if p["kind"] == "item")
+    assert description["state"] == "reconfirm"
+    assert not description["visual_ai_succeeded"]
+    assert client.post(f"{url}/{description['id']}/retry-ai").json()["code"] == "pre_descriptions_required"
+    assert save_description(client, base, description, "这是一张新水杯的主图。").status_code == 200
+    assert client.post(f"{url}/{description['id']}/retry-ai").status_code == 200
     assert client.app.state.jobs.wait_idle()
     view = client.get(url).json()
     item, group = view["products"]

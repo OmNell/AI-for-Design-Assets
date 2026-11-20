@@ -68,7 +68,7 @@ def parse_result(raw: str, fields: list[FieldDefinition], kind: str = "item",
             value = ""
         tags[field["key"]] = {"value": value, "terms": split_terms(value), "source": "ai",
                               "ai_value": ai_value, "flag": "uncertain" if uncertain else None}
-    flags: list[str] = []
+    flags: list[str] = ["description_conflict"] if document.get("description_conflict") is True else []
     if kind == "item" and document.get("multi_object") is True:
         flags.append("multi_object")
     relations: list[RelationItem] = []

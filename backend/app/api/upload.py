@@ -8,7 +8,7 @@ from app.api.dependencies import client_host, require_role, require_login, requi
 from app.db.models import User
 from app.errors import AppError
 from app.schemas.auth import Role
-from app.schemas.upload import BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, ResumeRequest, TerminateBatchRequest
+from app.schemas.upload import BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, PreDescriptionInput, PreDescriptionView, ResumeRequest, TerminateBatchRequest
 from app.services.auth.service import COOKIE_NAME, LoginContext
 
 router = APIRouter(prefix="/api/batches")
@@ -88,6 +88,17 @@ def pause(id: int, request: Request, login: LoginContext = Depends(upload_user))
 @router.post("/{id}/cancel", response_model=BatchResponse)
 def terminate(id: int, body: TerminateBatchRequest, request: Request, login: LoginContext = Depends(require_login_context)) -> BatchResponse:
     return request.app.state.upload.terminate(id, login, body.reason, client_host(request), confirmed=body.confirmed)
+
+
+@router.get("/{id}/pre-descriptions", response_model=PreDescriptionView)
+def pre_descriptions(id: int, request: Request, login: LoginContext = Depends(require_login_context)) -> PreDescriptionView:
+    return request.app.state.upload.pre_descriptions(id, login)
+
+
+@router.put("/{id}/products/{product_id}/pre-description", response_model=PreDescriptionView)
+def save_pre_description(id: int, product_id: int, body: PreDescriptionInput, request: Request,
+                         login: LoginContext = Depends(require_login_context)) -> PreDescriptionView:
+    return request.app.state.upload.save_pre_description(id, product_id, body, login, client_host(request))
 
 
 @router.post("/{id}/confirm", response_model=BatchResponse)

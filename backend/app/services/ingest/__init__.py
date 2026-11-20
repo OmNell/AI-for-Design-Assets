@@ -22,6 +22,7 @@ from app.services.archive import publication
 from app.services.admin.company_map import WON_FOLDERS
 from app.services.ai.field_catalog import FIXED_FIELDS
 from app.services.ai.orchestrator import AiService
+from app.services.ai.vision import matches_frozen_description
 from app.services.auth.service import AuthService, LoginContext
 from app.services.jobs import JobContext, JobFailure, JobQueue
 from app.services.nas import NasFs, NasPermissionDenied, Region, safe_join
@@ -255,7 +256,8 @@ class IngestService:
             evidence = execution.snapshot.content["evidence"].get(str(item["id"]), {})
             image = frozen_files.get(item["batch_file_id"])
             if (not image or not item["visual_ai_succeeded"] or not evidence.get("ai_model")
-                    or evidence.get("ai_fingerprint") != image["fingerprint"] or set(item["tags"]) != set(FIXED_FIELDS)
+                    or evidence.get("ai_fingerprint") != image["fingerprint"]
+                    or not matches_frozen_description(evidence, image["fingerprint"]) or set(item["tags"]) != set(FIXED_FIELDS)
                     or any(tag["confirmation_status"] == "pending" for tag in item["tags"].values())
                     or (item["kind"] == "set" and not item["relation_confirmed"])):
                 raise JobFailure("审核快照的主图证据、标签或关系确认不完整", retryable=False)

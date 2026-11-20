@@ -23,6 +23,7 @@ from app.schemas.review import (BulkRequest, FolderFile, FolderGroup, OwnerRespo
 from app.services.ai.orchestrator import RELATION_FLAGS, REVIEWING, AiService, active_products
 from .history import round_history
 from app.services.ai.field_catalog import fixed_fields, FIXED_FIELDS
+from app.services.ai import pre_descriptions as descriptions
 from app.services.ai.vision import has_visual_evidence
 from app.services.ai.parsing import split_terms
 from app.services.auth.service import AuthService, LoginContext
@@ -166,6 +167,8 @@ class ReviewService:
             thumb_error=file.thumb_error, ai_status=product.ai_status, ai_error=product.ai_error,
             visual_ai_succeeded=has_visual_evidence(product, file), tags=tags, free_text=product.free_text,
             free_text_source=product.free_text_source, ai_free_text=product.ai_free_text, flags=list(product.flags),
+            ai_raw_result=product.ai_raw_result, pre_description=product.pre_description,
+            pre_description_state=descriptions.state(product, file),
             relation_items=[RelationView(batch_product_id=item["batch_product_id"], source=str(item.get("source", "ai")))
                             for item in product.relation_items if isinstance(item, dict) and isinstance(item.get("batch_product_id"), int)],
             relation_confirmed=product.relation_confirmed, relation_confirm_kind=product.relation_confirm_kind)
@@ -334,8 +337,9 @@ class ReviewService:
     def retry_ai(self, batch_id: int, product_id: int, login: LoginContext, host: str) -> ProductUpdate:
         with self.auth.lock, self.auth.database.session() as session:
             batch, user = self._writable(session, batch_id, login.user)
+            UploadService._check_login(session, login)
             product, file = self._product(session, batch, product_id)
-            if product.ai_status == "pending":
+            if str(product.id) in batch.payload.get("ai_single", {}):
                 raise AppError("ai_in_progress", "这张图正在打标，请稍候", 409)
             if file.fingerprint_kind != "full" or not file.fingerprint:
                 path = self.paths.join(Region.TEMP, batch.batch_no, self._folder(batch), file.rel_path)
@@ -453,6 +457,8 @@ class ReviewService:
             product.tags_confirmation = {k: {"previous_value": v.get("value", ""), "status": "pending"}
                                          for k, v in (product.tags or {}).items() if k in FIXED_FIELDS}
             product.ai_model = product.ai_fingerprint = product.ai_success_at = None
+            product.ai_status, product.ai_error = descriptions.AWAITING_DESCRIPTION, None
+            product.pre_description_fingerprint = None
             product.relation_confirm_kind = "pending"
             product.tags, product.free_text, product.free_text_source, product.ai_free_text = {}, "", "ai", ""
             product.flags, product.relation_items, product.relation_confirmed = [], [], False
@@ -471,7 +477,6 @@ class ReviewService:
                         other.flags = [*other.flags, RECHECK]
                     rechecked.append(other.id)
             self.thumbs.enqueue(session, batch, file, actor_id=user.id, session_id=login.session_id, retry=True)
-            self.ai.start_single(session, batch, product, user, host, login.session_id)
             self._log(session, user, "追加主图", "batch_product", product.id, None,
                       {"rel_path": rel_path, "size": len(data), "fingerprint": digest, "sets_to_recheck": rechecked}, host)
             return self._response(session, batch, user)
@@ -531,7 +536,12 @@ class ReviewService:
         products = active_products(session, batch.id)
         evidence = {str(p.id): {"ai_model": p.ai_model, "ai_success_at": p.ai_success_at.isoformat(),
                     "ai_fingerprint": p.ai_fingerprint, "tags_confirmation": p.tags_confirmation,
-                    "existing_product_id": p.existing_product_id} for p in products}
+                    "existing_product_id": p.existing_product_id,
+                    "pre_description": p.pre_description, "pre_description_version": p.pre_description_version or None,
+                    "pre_description_fingerprint": p.pre_description_fingerprint,
+                    "pre_description_by": p.pre_description_by,
+                    "pre_description_at": p.pre_description_at.isoformat() if p.pre_description_at else None,
+                    "ai_description_version": p.ai_description_version} for p in products}
         actions = list(session.scalars(select(Oplog.id).where(Oplog.object_type == "batch_product",
             Oplog.object_id.in_([str(p.id) for p in products])).order_by(Oplog.id)))
         view.batch.round += int(batch.status == REJECTED)

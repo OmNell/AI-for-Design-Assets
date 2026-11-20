@@ -14,6 +14,7 @@ import { ComponentsPage } from '../pages/ComponentsPage'
 import { AiSettingsPage } from '../pages/AiSettingsPage'
 import { TagFieldsPage } from '../pages/TagFieldsPage'
 import { BatchDetailPage } from '../pages/BatchDetailPage'
+import { PreDescriptionPage } from '../pages/PreDescriptionPage'
 import { ReviewPage } from '../pages/ReviewPage'
 import { AuditPage } from '../pages/AuditPage'
 import { QueuePage } from '../pages/QueuePage'
@@ -78,6 +79,7 @@ function AuthBootstrap() {
       <Route path="/l/:linkId" element={<AssetLinkPage />} />
       <Route path="/admin/asset-findings" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><FindingsPage /></RoleGuard>} />
       <Route path="/batches/:id" element={<BatchDetailPage />} />
+      <Route path="/batches/:id/pre-descriptions" element={<PreDescriptionPage />} />
       <Route path="/batches/:id/review" element={<ReviewPage />} />
       <Route path="/review/:id" element={<AuditPage />} />
       <Route path="/admin/company-map" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><CompanyMapPage /></RoleGuard>} />

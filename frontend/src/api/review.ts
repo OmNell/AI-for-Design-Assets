@@ -1,12 +1,13 @@
 import type { OperationKind } from './operations'
 import { request } from './client'
-import type { ProductTag } from './upload'
+import type { DescriptionState, ProductTag } from './upload'
 
 export interface ReviewProduct {
   id: number; batch_file_id: number; kind: 'set' | 'item'; display_name: string; file_name: string
   fingerprint: string | null; thumb_status: string | null; thumb_error: string | null
-  ai_status: 'pending' | 'done' | 'failed'; ai_error: string | null; visual_ai_succeeded: boolean
+  ai_status: 'pending' | 'done' | 'failed' | 'awaiting_description'; ai_error: string | null; visual_ai_succeeded: boolean
   tags: Record<string, ProductTag>; free_text: string; free_text_source: string; ai_free_text: string
+  pre_description?: string | null; pre_description_state?: DescriptionState; ai_raw_result?: string | null
   flags: string[]; relation_items: { batch_product_id: number; source: string }[]; relation_confirmed: boolean; relation_confirm_kind: "pending" | "confirmed_members" | "confirmed_empty"
 }
 export interface ReviewField { key: string; label: string; hint: string }

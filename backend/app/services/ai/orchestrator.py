@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 import secrets
 import threading
 import logging
@@ -19,10 +18,11 @@ from app.services.auth.service import AuthService
 from app.services.crypto import SecretCipher
 from app.services.jobs import JobContext, JobFailure, JobQueue
 from app.services.oplog import OplogService
-from app.services.thumbs import ThumbService, is_main_image, source_version
+from app.services.thumbs import ThumbService, source_version
 from .client import AiCallError, AiClient, FakeAiClient
 from .field_catalog import fixed_fields
 from .parsing import FieldDefinition, parse_result
+from . import pre_descriptions as descriptions
 from .vision import has_visual_evidence
 from app.services.admin.company_map import recommend
 from .settings import AiSettingsService, require_admin
@@ -89,7 +89,9 @@ class AiService:
         OplogService(session).write(batch.uploader_id, "system", action, "batch", str(batch.id), None,
                                    {"status": batch.status}, "成功", "AI 后台任务")
 
-    def start_batch(self, session: Session, batch: Batch, actor: User, host: str) -> None:
+    def start_batch(self, session: Session, batch: Batch, actor: User, host: str, *, session_id: int | None = None) -> None:
+        products = descriptions.products_for_batch(session, batch, initialize=True)
+        descriptions.require_descriptions(products)
         self.cancel_jobs(session, batch, "整批重新打标", actor.id, host)
         batch.status = PROCESSING
         run = secrets.token_hex(16)
@@ -97,10 +99,11 @@ class AiService:
                          "ai_last_progress": utcnow().isoformat()}
         if batch.kind == "ingest":
             batch.recommended_path = None
-        for product in session.scalars(select(BatchProduct).where(BatchProduct.batch_id == batch.id)):
+        for product, file in products:
             product.ai_status, product.ai_error = "pending", None
-        for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id, BatchFile.upload_status == "done")):
-            if file.conflict != "duplicate":
+            if session_id is not None and actor.id in (batch.owner_id, batch.uploader_id):
+                self.thumbs.enqueue(session, batch, file, actor_id=actor.id, session_id=session_id, retry=True)
+            else:
                 self.thumbs.enqueue(session, batch, file)
         self.queue.enqueue("ai_tag_batch", {"batch_id": batch.id, "run_id": run}, session=session)
         self._log(session, batch, "开始 AI 打标")
@@ -126,17 +129,10 @@ class AiService:
                 batch.payload = {**batch.payload, "ai_fields": fields, "ai_initialized": True}
                 if batch.kind == "ingest":
                     batch.recommended_path = self._recommend(session, batch)
-                for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id).order_by(BatchFile.id)):
-                    if not is_main_image(file) or file.removed or file.conflict == "duplicate":
-                        continue
-                    product = session.scalar(select(BatchProduct).where(BatchProduct.batch_id == batch.id, BatchProduct.batch_file_id == file.id))
-                    if product is None:
-                        product = BatchProduct(batch_id=batch.id, batch_file_id=file.id,
-                            kind="set" if file.rel_path.startswith("套装/") else "item", display_name=Path(file.rel_path).stem)
-                        session.add(product)
-                    product.ai_status, product.ai_error = "pending", None
-                    if not has_visual_evidence(product, file):
-                        product.ai_success_at = product.ai_model = product.ai_fingerprint = None
+                for product, file in descriptions.products_for_batch(session, batch, initialize=True):
+                    # 升级前启动的批次保留已成功的结果，尚未处理的图片仍需预描述。
+                    if product.ai_status != "done" or not has_visual_evidence(product, file):
+                        product.ai_status, product.ai_error = "pending", None
                     if not product.relation_confirmed:
                         product.relation_confirm_kind = "pending"
                 self._log(session, batch, "建立 AI 商品清单及位置建议")
@@ -155,9 +151,12 @@ class AiService:
             if product.ai_status != "pending" or str(product.id) in references:
                 continue
             file = session.get(BatchFile, product.batch_file_id)
-            if file is None or file.removed or file.upload_status != "done" or file.fingerprint_kind != "full" or not file.fingerprint:
+            if file is None or not descriptions.is_completed_main(file) or not descriptions.valid_fingerprint(file):
                 product.ai_status, product.ai_error = "failed", "主图缺少有效的完整 SHA-256，请核对文件后重试"
                 self._log(session, batch, "主图指纹未验证")
+            elif descriptions.state(product, file) != "ready":
+                product.ai_status, product.ai_error = "failed", "请先填写或重新确认主图预描述，再启动 AI"
+                self._log(session, batch, "主图预描述待确认")
             elif file.thumb_status == "failed":
                 product.ai_status, product.ai_error = "failed", file.thumb_error or "送审图生成失败"
                 self._log(session, batch, "送审图失败，跳过该商品")
@@ -166,7 +165,8 @@ class AiService:
                 self._log(session, batch, "送审图指纹未验证")
             elif file.thumb_status == "done":
                 job = self.queue.enqueue("ai_tag_product", {"batch_id": batch.id, "run_id": batch.payload["ai_run"],
-                    "product_id": product.id}, session=session)
+                    "product_id": product.id, "description_version": product.pre_description_version,
+                    "fingerprint": file.fingerprint}, session=session)
                 references[str(product.id)] = job.id
         batch.payload = {**batch.payload, "ai_jobs": references}
         if phase is items and items and all(product.ai_status != "pending" for product in items):
@@ -185,12 +185,16 @@ class AiService:
 
     def start_single(self, session: Session, batch: Batch, product: BatchProduct, actor: User, host: str, session_id: int) -> None:
         """核对阶段单张打标；调用方持有认证锁并已完成权限与状态检查。"""
+        file = session.get(BatchFile, product.batch_file_id)
+        if file is None or not descriptions.is_completed_main(file):
+            raise AppError("product_not_found", "找不到已上传的主图", 404)
+        descriptions.require_descriptions([(product, file)])
         self.cancel_single(session, batch, product, "重新打标", actor.id, host)
         product.ai_status, product.ai_error = "pending", None
         singles = dict(batch.payload.get("ai_single", {}))
-        singles[str(product.id)] = {"token": secrets.token_hex(16), "job": None}
+        singles[str(product.id)] = {"token": secrets.token_hex(16), "job": None,
+            "description_version": product.pre_description_version, "fingerprint": file.fingerprint}
         batch.payload = {**batch.payload, "ai_single": singles}
-        file = session.get(BatchFile, product.batch_file_id)
         self.thumbs.enqueue(session, batch, file, actor_id=actor.id, session_id=session_id, retry=True)
         self._advance_single(session, batch)
 
@@ -220,12 +224,17 @@ class AiService:
             file = session.get(BatchFile, product.batch_file_id) if product is not None else None
             if file is None or file.removed or product.ai_status != "pending":
                 singles.pop(key)
+            elif (descriptions.state(product, file) != "ready" or entry.get("description_version") != product.pre_description_version
+                  or entry.get("fingerprint") != file.fingerprint):
+                product.ai_status, product.ai_error = "failed", "主图或预描述已变化，请重新确认后识别"
+                singles.pop(key)
             elif file.thumb_status == "failed":
                 product.ai_status, product.ai_error = "failed", file.thumb_error or "送审图生成失败"
                 singles.pop(key)
             elif file.thumb_status == "done":
                 job = self.queue.enqueue("ai_tag_product", {"batch_id": batch.id, "run_id": batch.payload.get("ai_run"),
-                    "product_id": product.id, "single": entry["token"]}, session=session)
+                    "product_id": product.id, "single": entry["token"], "description_version": entry["description_version"],
+                    "fingerprint": entry["fingerprint"]}, session=session)
                 singles[key] = {**entry, "job": job.id}
             else:
                 continue
@@ -257,20 +266,36 @@ class AiService:
             self._log(session, batch, "AI 商品处理结束")
             self._advance(session, batch)
 
-    def _sanitize(self, session: Session, batch: Batch) -> Callable[[str], str]:
-        user = session.get(User, batch.uploader_id)
+    def _sanitize(self, session: Session, batch: Batch, described_by: int | None) -> Callable[[str], str]:
         nas = self.auth.config.nas
-        secrets_ = [batch.project_code, str(batch.payload["folder_name"]).split("_")[1], user.username,
-                    nas.host, nas.share, nas.root_path, nas.temp_path, nas.backup_path]
-        company = secrets_[1]
+        company = str(batch.payload["folder_name"]).split("_")[1]
+        secrets_ = [batch.project_code, company, batch.batch_no, nas.host, nas.share,
+                    nas.root_path, nas.temp_path, nas.backup_path, nas.system_user]
+        for user_id in {batch.uploader_id, batch.owner_id, described_by} - {None}:
+            if (user := session.get(User, user_id)) is not None:
+                secrets_.append(user.username)
         for row in session.scalars(select(CompanyIndustryMap)):
             if company.casefold() in {name.casefold() for name in [row.company_name, *row.aliases]}:
                 secrets_.extend([row.company_name, *row.aliases])
+        tokens = sorted(set(filter(None, secrets_)), key=len, reverse=True)
+        private = re.compile("|".join(
+            rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])" if re.fullmatch(r"[a-zA-Z0-9_-]+", token)
+            else re.escape(token) for token in tokens), re.IGNORECASE)
+        # 路径和网址不是识别所需的产品属性。
+        path = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*://|[A-Za-z]:[\\/]|[\\/]{2}|(?<!\w)/)[^\s，。；、！？]+|"
+                          r"[^\s，。；、！？/\\]+(?:[\\/][^\s，。；、！？/\\]+){2,}")
         def clean(value: str) -> str:
-            for secret in sorted(filter(None, secrets_), key=len, reverse=True):
-                value = re.sub(re.escape(secret), "[已省略]", value, flags=re.IGNORECASE)
-            return value
+            return private.sub("[已省略]", path.sub("[已省略]", value))
         return clean
+
+    @staticmethod
+    def _description_input(job: Job, product: BatchProduct, file: BatchFile) -> str:
+        if descriptions.state(product, file) != "ready":
+            raise JobFailure("请先填写或重新确认主图预描述，再启动 AI", retryable=False)
+        if (job.payload.get("description_version") != product.pre_description_version
+                or job.payload.get("fingerprint") != file.fingerprint):
+            raise JobFailure("主图或预描述已变化，请重新确认后识别", retryable=False)
+        return product.pre_description or ""
 
     def handle_product(self, context: JobContext) -> None:
         with self.auth.lock, self.auth.database.session() as session:
@@ -278,10 +303,10 @@ class AiService:
             if batch is None:
                 return
             product = session.get(BatchProduct, context.job.payload["product_id"])
-            if product is None or product.ai_status == "done":
+            if product is None or product.batch_id != batch.id or product.ai_status == "done":
                 return
             file = session.get(BatchFile, product.batch_file_id)
-            if file is None or file.removed or file.upload_status != "done" or file.fingerprint_kind != "full" or not file.fingerprint:
+            if file is None or file.batch_id != batch.id or not descriptions.is_completed_main(file) or not descriptions.valid_fingerprint(file):
                 raise JobFailure("主图缺少有效的完整 SHA-256", retryable=False)
             version = source_version(file)
             image_path = self.auth.config.paths.data_dir / "thumbs" / "batch" / str(batch.id) / str(file.id) / "1024.jpg"
@@ -294,7 +319,11 @@ class AiService:
                 for row in fixed_fields(session)
             ]
             fixed_keys = {field["key"] for field in fields}
-            clean = self._sanitize(session, batch)
+            pre_description = self._description_input(context.job, product, file)
+            clean = self._sanitize(session, batch, product.pre_description_by)
+            pre_description = clean(pre_description)
+            if not any(char.isalnum() for char in pre_description.replace("[已省略]", "")):
+                raise JobFailure("主图预描述隐去保密信息后没有产品内容，请改写后重试", retryable=False)
             safe_fields = [{"key": field["key"], "label": clean(field["label"]), "hint": clean(field["hint"])} for field in fields]
             items, valid = [], {}
             if product.kind == "set":
@@ -308,7 +337,7 @@ class AiService:
         for attempt in range(retries + 1):
             try:
                 raw = client.generate(image, safe_fields, items=items if kind == "set" else None,
-                                      filename=filename, batch_id=batch_id, product_id=product_id)
+                                      filename=filename, batch_id=batch_id, product_id=product_id, pre_description=pre_description)
             except AiCallError as error:
                 raise JobFailure(error.message, retryable=False) from None
             try:
@@ -318,6 +347,7 @@ class AiService:
                 if attempt == retries:
                     raise JobFailure("模型未返回可解析的 JSON", retryable=False) from None
         with self.auth.lock, self.auth.database.session() as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
             batch = self._current(session, context.job.payload)
             if batch is None:
                 return
@@ -325,15 +355,19 @@ class AiService:
             if product is None:
                 return
             file = session.get(BatchFile, product.batch_file_id)
-            if (file is None or file.removed or file.upload_status != "done" or file.fingerprint_kind != "full"
+            if (file is None or not descriptions.is_completed_main(file)
                     or file.thumb_fingerprint != file.fingerprint or source_version(file) != version):
                 raise JobFailure("主图已变化，请重新识别", retryable=False)
+            self._description_input(context.job, product, file)
+            description_changed = product.ai_description_version != product.pre_description_version
             product.ai_success_at = utcnow()
+            product.ai_description_version = product.pre_description_version
+            product.ai_raw_result = raw
             product.ai_model = client.config.model_vision or "fake-vision"
             product.ai_fingerprint = file.fingerprint
             for key, tag in result["tags"].items():
                 previous = product.tags.get(key, {})
-                if previous.get("source") in HUMAN_SOURCES:
+                if previous.get("source") == "manual" or (not description_changed and previous.get("source") in HUMAN_SOURCES):
                     result["tags"][key] = {**previous, "ai_value": tag["ai_value"]}
             product.tags = {**product.tags, **result["tags"]}
             product.ai_free_text = result["free_text"]

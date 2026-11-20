@@ -21,3 +21,18 @@ export const pauseBatch = (id: number, token?: string | null, keepalive = false)
 export const terminateBatch = (id: number, reason: string): Promise<Batch> => request(`/api/batches/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason, confirmed: true }) })
 export const confirmBatch = (id: number): Promise<Batch> => request(`/api/batches/${id}/confirm`, { method: 'POST' })
 export const retryAi = (id: number): Promise<Batch> => request(`/api/batches/${id}/retry-ai`, { method: 'POST' })
+
+export type DescriptionState = 'missing' | 'ready' | 'reconfirm'
+export interface PreDescriptionProduct {
+  id: number; batch_file_id: number; kind: 'item' | 'set'; display_name: string; file_name: string
+  thumb_status: string | null; thumb_error: string | null; fingerprint: string | null
+  description: string | null; version: number; state: DescriptionState; ai_status: string; ai_error: string | null
+  visual_ai_succeeded: boolean; ai_in_progress: boolean
+}
+export interface PreDescriptionData {
+  batch_id: number; status: string; kind: string; folder_name: string; editable: boolean; products: PreDescriptionProduct[]
+}
+export interface PreDescriptionInput { description: string; version: number; fingerprint: string | null }
+export const getPreDescriptions = (id: number): Promise<PreDescriptionData> => request('/api/batches/' + id + '/pre-descriptions')
+export const savePreDescription = (id: number, productId: number, body: PreDescriptionInput): Promise<PreDescriptionData> =>
+  request('/api/batches/' + id + '/products/' + productId + '/pre-description', { method: 'PUT', body: JSON.stringify(body) })

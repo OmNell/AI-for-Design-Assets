@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { updateOperation, type OperationData, type OperationInput, type SupplementFile } from '../../api/operations'
-import { confirmBatch, getBatch, type UploadFile } from '../../api/upload'
+import { confirmBatch, getBatch, getPreDescriptions, type UploadFile } from '../../api/upload'
 import type { ReviewProduct } from '../../api/review'
 import { formatBytes } from '../../lib/terms'
 import { TerminateBatchButton } from '../TerminateBatchButton'
@@ -63,6 +63,13 @@ export function SupplementWorkspace({ data }: { data: OperationData }) {
     setBusy(true); setError('')
     try {
       await updateOperation(id, { ...data.params, files: Object.entries(choices).map(([id, choice]) => ({ id: Number(id), choice })) })
+      const descriptions = await getPreDescriptions(id)
+      if (descriptions.products.length) {
+        cache.setQueryData(['pre-descriptions', id], descriptions)
+        await cache.invalidateQueries({ queryKey: ['operation', id] })
+        navigate('/batches/' + id + '/pre-descriptions' + (replace > 0 ? '?replace=' + replace : ''))
+        return
+      }
       const value = await confirmBatch(id)
       cache.setQueryData(['batch', id], value)
       await cache.invalidateQueries({ queryKey: ['operation', id] })

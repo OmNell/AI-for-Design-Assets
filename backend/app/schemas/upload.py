@@ -127,3 +127,37 @@ class BatchProductResponse(BaseModel):
 
 
 BatchResponse.model_rebuild()
+
+
+class PreDescriptionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    description: str = Field(max_length=180)
+    version: int = Field(ge=0)
+    fingerprint: str | None
+
+
+class PreDescriptionProduct(BaseModel):
+    id: int
+    batch_file_id: int
+    kind: Literal["item", "set"]
+    display_name: str
+    file_name: str
+    thumb_status: str | None
+    thumb_error: str | None
+    fingerprint: str | None
+    description: str | None
+    version: int
+    state: Literal["missing", "ready", "reconfirm"]
+    ai_status: str
+    ai_error: str | None
+    visual_ai_succeeded: bool
+    ai_in_progress: bool
+
+
+class PreDescriptionView(BaseModel):
+    batch_id: int
+    status: str
+    folder_name: str
+    kind: str
+    editable: bool
+    products: list[PreDescriptionProduct]

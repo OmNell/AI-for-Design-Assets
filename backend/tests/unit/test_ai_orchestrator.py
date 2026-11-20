@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.db.database import Database
-from app.db.models import Batch, BatchFile, BatchProduct, CompanyIndustryMap, Job, User
+from app.db.models import Batch, BatchFile, BatchProduct, CompanyIndustryMap, Job, User, utcnow
 from app.services.ai.orchestrator import AiService
 from app.services.ai.settings import AiSettingsService
 from app.services.auth.backends import FakeAuthBackend
@@ -41,7 +41,12 @@ def service(database: Database, settings: Settings, tmp_path: Path) -> Iterator[
             batch = Batch(batch_no='B1', project_code='P', kind='ingest', status='已暂存', uploader_id=user.id, owner_id=user.id,
                 temp_path='B1/P_企业_项目', won=True, payload={'folder_name': 'P_企业_项目'})
             session.add(batch); session.flush()
-            session.add(BatchFile(batch_id=batch.id, rel_path='单品/主图.jpg', size=1, mtime=1, bytes_received=1, upload_status='done', fingerprint='a' * 64, fingerprint_kind='full'))
+            file = BatchFile(batch_id=batch.id, rel_path='单品/主图.jpg', size=1, mtime=1, bytes_received=1,
+                upload_status='done', fingerprint='a' * 64, fingerprint_kind='full')
+            session.add(file); session.flush()
+            session.add(BatchProduct(batch_id=batch.id, batch_file_id=file.id, kind='item', display_name='主图',
+                ai_status='awaiting_description', pre_description='这是便携水杯。', pre_description_by=user.id,
+                pre_description_at=utcnow(), pre_description_fingerprint=file.fingerprint, pre_description_version=1))
         try:
             yield ai, batch, user
         finally:
@@ -81,7 +86,10 @@ def test_whole_batch_retry_fences_old_generation(service: tuple[AiService, Batch
     ai.handle_batch(JobContext(old_job, None))
     with ai.auth.database.session() as session:
         assert session.get(Batch, batch.id).payload['ai_run'] == new_run
-        assert session.scalar(select(BatchProduct)) is None
+        product = session.scalar(select(BatchProduct))
+        assert product.pre_description == '这是便携水杯。' and product.ai_status == 'pending'
+        assert product.ai_success_at is None and not product.tags
+        assert session.scalar(select(Job.id).where(Job.kind == 'ai_tag_product')) is None
         assert session.get(Job, old_job.id).status == 'failed'
 
 

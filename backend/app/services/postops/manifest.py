@@ -22,6 +22,7 @@ from app.services import archive
 from app.services.admin.company_map import company_path
 from app.services.ai.field_catalog import FIXED_FIELDS
 from app.services.ai.parsing import split_terms
+from app.services.ai.vision import matches_frozen_description
 from app.services.nas import NasPermissionDenied, safe_join
 from app.services.preflight import REQUIRED
 
@@ -490,7 +491,8 @@ class _ManifestChange:
                     raise _error("operation_vision_required", "新增或替换主图没有对应的视觉 AI 和核对记录",
                                  {"file_id": row["id"]})
                 continue
-            if not proof.get("ai_success_at") or not proof.get("ai_model") or proof.get("ai_fingerprint") != row["fingerprint"]:
+            if (not proof.get("ai_success_at") or not proof.get("ai_model") or proof.get("ai_fingerprint") != row["fingerprint"]
+                    or not matches_frozen_description(proof, row["fingerprint"])):
                 raise _error("operation_vision_required", "视觉 AI 成功证据与本次主图的完整 SHA-256 不匹配",
                              {"file_id": row["id"]})
             if review["tags"].keys() != FIXED_FIELDS.keys():
