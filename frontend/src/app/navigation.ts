@@ -16,5 +16,5 @@ export function canAccess(roles: Role[], item: NavigationItem): boolean {
 }
 
 export function safeLoginReturn(path: string): boolean {
-  return /^\/(?:l\/[a-zA-Z0-9_-]+|review\/\d+|batches\/\d+\/(?:operation|review)|projects\/\d+\/operations)$/.test(path)
+  return /^\/(?:projects|l\/[a-zA-Z0-9_-]+|review\/\d+|batches\/\d+\/(?:operation|review)|projects\/\d+\/operations)$/.test(path)
 }

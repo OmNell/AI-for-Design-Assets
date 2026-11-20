@@ -35,6 +35,8 @@ from app.services.maintenance.admin import AdminService
 from app.services.maintenance.cleanup import CleanupService
 from app.services.maintenance.settings import SystemService
 from app.api.auth import router as auth_router
+from app.api.nas_browser import router as nas_browser_router
+from app.services.nas_browser import NasBrowser
 from app.api.nas_settings import router as nas_settings_router
 from app.services.nas_settings import NasSettingsService, activate_at_boot
 from app.services.nas_settings.state import NasChangeGate
@@ -102,6 +104,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             application.state.database = database
             pool = create_session_pool(config)
             application.state.auth = AuthService(database, pool, create_auth_backend(config), config)
+            application.state.nas_browser = NasBrowser(application.state.auth)
             application.state.roles = RoleService(application.state.auth)
             jobs = JobQueue(database, pool, workers=config.jobs.workers, auth_lock=application.state.auth.lock)
             application.state.jobs = jobs
@@ -211,6 +214,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
     application.add_middleware(GateMiddleware)
     application.include_router(router)
     application.include_router(nas_settings_router)
+    application.include_router(nas_browser_router)
     application.include_router(auth_router)
     application.include_router(admin_router)
     application.include_router(maintenance_router)

@@ -33,7 +33,8 @@ def create_fs(config: Settings, username: str, password: str) -> BaseFs:
         raise NasPermissionDenied("开发账号或密码不正确")
     user = next(user for user in config.dev_users if user.username == username)
     permissions = {Region(region): Access(access) for region, access in user.permissions.items()}
-    return LocalFs(config.paths.dev_nas_dir, permissions, paths, initialize=config.nas.work_root is None)
+    return LocalFs(config.paths.dev_nas_dir, permissions, paths, initialize=config.nas.work_root is None,
+                   browser_read=user.nas_browser_read)
 
 
 def create_system_fs(config: Settings) -> BaseFs:

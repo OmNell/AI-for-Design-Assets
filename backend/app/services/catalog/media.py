@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 import re
 import secrets
-from typing import Iterator
+from typing import BinaryIO, Iterator
 from urllib.parse import quote, urlencode
 
 from sqlalchemy import func, select
@@ -54,17 +54,21 @@ def parse_range(value: str | None, size: int) -> tuple[int, int] | None:
     return start, end
 
 
-def stream_headers(asset: ReadAsset, span: tuple[int, int] | None, *, inline: bool) -> dict[str, str]:
-    name = asset.name
+def file_headers(name: str, size: int, mtime: float, span: tuple[int, int] | None, *, inline: bool) -> dict[str, str]:
     fallback = re.sub(r"[^A-Za-z0-9_.-]", "_", name) or "file"
-    length = asset.size if span is None else span[1] - span[0] + 1
+    length = size if span is None else span[1] - span[0] + 1
     disposition = "inline" if inline else "attachment"
     headers = {**NO_CACHE, "Accept-Ranges": "bytes", "Content-Length": str(length),
-               "ETag": f'"{asset.digest}"',
-               "Last-Modified": format_datetime(datetime.fromtimestamp(int(asset.mtime), timezone.utc), usegmt=True),
+               "Last-Modified": format_datetime(datetime.fromtimestamp(int(mtime), timezone.utc), usegmt=True),
                "Content-Disposition": f"{disposition}; filename=\"{fallback}\"; filename*=UTF-8''{quote(name, safe='')}"}
     if span:
-        headers["Content-Range"] = f"bytes {span[0]}-{span[1]}/{asset.size}"
+        headers["Content-Range"] = f"bytes {span[0]}-{span[1]}/{size}"
+    return headers
+
+
+def stream_headers(asset: ReadAsset, span: tuple[int, int] | None, *, inline: bool) -> dict[str, str]:
+    headers = file_headers(asset.name, asset.size, asset.mtime, span, inline=inline)
+    headers["ETag"] = f'"{asset.digest}"'
     if asset.warning:
         headers["X-Asset-Warning"] = "content_changed"
     if asset.status in ("voided", "replaced"):
@@ -73,9 +77,13 @@ def stream_headers(asset: ReadAsset, span: tuple[int, int] | None, *, inline: bo
 
 
 def transfer_chunks(asset: ReadAsset, length: int) -> Iterator[bytes]:
+    yield from read_chunks(asset.stream, length)
+
+
+def read_chunks(stream: BinaryIO, length: int) -> Iterator[bytes]:
     remaining = length
     while remaining:
-        chunk = asset.stream.read(min(remaining, CHUNK_SIZE))
+        chunk = stream.read(min(remaining, CHUNK_SIZE))
         if not chunk:
             raise NasUnavailable("NAS 文件流提前结束")
         remaining -= len(chunk)

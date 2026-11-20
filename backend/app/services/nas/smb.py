@@ -78,6 +78,7 @@ class SmbFs(BaseFs):
         self._disconnected = False
         self._cache: dict[str, object] = {}
         self._session: Session | None = None
+        self.browser_tree: TreeConnect | None = None
         try:
             self._connect(password)
         except Exception as error:
@@ -87,6 +88,7 @@ class SmbFs(BaseFs):
     def _connect(self, password: str) -> None:
         if self.strict_share:
             tree = direct_session(self.host, self.share, self.username, password, self.timeout)
+            self.browser_tree = tree
             self._session = tree.session
             self._cache[f"{self.host.lower()}:445"] = tree.session.connection
             return
@@ -189,4 +191,5 @@ class SmbFs(BaseFs):
             smbclient.reset_connection_cache(connection_cache=self._cache, fail_on_error=True)
         finally:
             self._session = None
+            self.browser_tree = None
             self._cache.clear()

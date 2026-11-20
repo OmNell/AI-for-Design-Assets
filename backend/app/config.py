@@ -122,6 +122,7 @@ class PathsConfig(Section):
 class DevUser(Section):
     username: str = Field(min_length=1)
     password: SecretStr
+    nas_browser_read: bool = False
     permissions: dict[Literal["formal", "temp", "backup"], Literal["none", "read", "write"]] = Field(default_factory=dict)
 
 

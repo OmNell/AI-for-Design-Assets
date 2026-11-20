@@ -8,7 +8,7 @@ import { Badge, Button, ContextPane, EmptyState, ErrorState, FileIcon, Input, Lo
 
 export const statusNames: Record<string, string> = { active: '有效', voided: '已作废', deleted: '已删除', ingesting: '入库中' }
 
-export function ProjectsPage() {
+export function ProjectsPage({ embedded = false }: { embedded?: boolean }) {
   const [params, setParams] = useSearchParams()
   const navigate = useNavigate()
   const won = params.get('won')
@@ -26,7 +26,7 @@ export function ProjectsPage() {
 
   return <div className="min-w-0 space-y-4">
     <header className="flex flex-wrap items-center justify-between gap-3">
-      <div><h1 className="text-2xl font-semibold tracking-tight">全部资产</h1><p className="mt-1 text-slate-500">按中标状态、行业或企业浏览已入库项目。</p></div>
+      <div>{!embedded && <h1 className="text-2xl font-semibold tracking-tight">全部资产</h1>}<p className="mt-1 text-slate-500">按中标状态、行业或企业浏览已入库项目。</p></div>
       <Link to="/projects/voided" className="ui-button ui-secondary">查看作废项目</Link>
     </header>
     <div className={`grid min-w-0 items-start gap-4 lg:grid-cols-[178px_minmax(0,1fr)] ${selected ? 'xl:grid-cols-[172px_minmax(0,1fr)_auto] 2xl:grid-cols-[204px_minmax(0,1fr)_auto]' : '2xl:grid-cols-[204px_minmax(0,1fr)]'}`}>
@@ -42,7 +42,7 @@ export function ProjectsPage() {
           </Select><ViewSwitch view={view} onChange={setView} /></div>
         </div>
         {(list.isPending || list.isPlaceholderData) ? <LoadingState>正在加载项目…</LoadingState> : list.isError ? <ErrorState retry={() => void list.refetch()}>{list.error.message}</ErrorState> :
-          !rows.length ? <EmptyState title="没有找到项目" /> : view === 'list' ?
+          !rows.length ? <EmptyState title={embedded && !filters.q && !classification.won && !classification.industry && !classification.company ? "暂无已入库项目" : "没有找到项目"} /> : view === 'list' ?
             <Table label="项目列表"><thead><tr><th>项目</th><th>企业</th><th>状态</th><th>文件</th><th>操作</th></tr></thead>
               <tbody>{rows.map(item => <tr key={item.id} className={picked === item.id ? 'bg-blue-50' : ''} onClick={() => setPicked(item.id)} onDoubleClick={() => navigate(`/projects/${item.id}`)}>
                 <td className="min-w-0"><button type="button" className="flex w-full min-w-0 items-center gap-2 text-left" onClick={() => setPicked(item.id)}>
