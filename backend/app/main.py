@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 from contextlib import asynccontextmanager
 from pathlib import Path
 from collections.abc import Awaitable, Callable
@@ -43,7 +44,7 @@ from app.services.upload.service import UploadService
 from app.services.auth.service import AuthService
 from app.services.admin import RoleService
 from app.services.nas.factory import create_auth_backend, create_session_pool
-from app.config import Settings, load_settings
+from app.config import DSM_LOCAL_TEST_NOTICE, Settings, load_settings, require_dsm_test_listener
 from app.db.database import Database
 from app.errors import error_response, register_handlers
 from app.logging_config import configure_logging
@@ -68,13 +69,15 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
-               log_dir: Path | None = None, *, config_file: Path | None = None) -> FastAPI:
+               log_dir: Path | None = None, *, config_file: Path | None = None,
+               mac_local_dsm_listener: socket.socket | None = None) -> FastAPI:
     nas_gate = NasChangeGate()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         source = (config_file or Path(os.environ.get("NASWB_CONFIG", "config.yaml"))).resolve()
         config = settings or load_settings(source)
+        require_dsm_test_listener(config, mac_local_dsm_listener)
         log_root = source.parent.parent if source.parent.name == "configuration" else source.parent
         directory = log_dir or log_root / "logs"
         handler = configure_logging(directory)
@@ -92,6 +95,9 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             database.migrate()
             nas_gate.unfreeze()
             config = activate_at_boot(config, source, database, application.state.cipher)
+            require_dsm_test_listener(config, mac_local_dsm_listener)
+            if not config.nas.dsm_verify_ssl:
+                logger.warning(DSM_LOCAL_TEST_NOTICE)
             application.state.settings = config
             application.state.database = database
             pool = create_session_pool(config)

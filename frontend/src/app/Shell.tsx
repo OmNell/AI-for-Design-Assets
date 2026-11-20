@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { logout } from '../api/auth'
 import { getHealth } from '../api/health'
 import { roleLabels } from '../api/types'
+import { DsmLocalTestNotice } from '../components/DsmLocalTestNotice'
 import { Button, ErrorState, Icon, Input, type IconName } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 import { canAccess, navigation } from './navigation'
@@ -17,6 +18,7 @@ export function Shell() {
   const user = useAuthStore(state => state.user)!
   const query = useQueryClient()
   const health = useQuery({ queryKey: ['health'], queryFn: () => getHealth() })
+  const macDsmTest = health.data?.dsm_verify_ssl === false
   const [error, setError] = useState('')
   const [exiting, setExiting] = useState(false)
   const [term, setTerm] = useState('')
@@ -36,7 +38,7 @@ export function Shell() {
     { label: '审核', paths: ['/first-review', '/final-review'] },
     { label: '系统', paths: ['/admin/roles', '/settings', '/admin/nas-settings'] },
   ]
-  return <div className="grid h-dvh min-h-0 grid-cols-[200px_minmax(0,1fr)] grid-rows-[64px_minmax(0,1fr)] overflow-hidden lg:grid-cols-[232px_minmax(0,1fr)] 2xl:grid-cols-[248px_minmax(0,1fr)]">
+  return <div className={`grid h-dvh min-h-0 grid-cols-[200px_minmax(0,1fr)] overflow-hidden lg:grid-cols-[232px_minmax(0,1fr)] 2xl:grid-cols-[248px_minmax(0,1fr)] ${macDsmTest ? 'grid-rows-[64px_auto_minmax(0,1fr)]' : 'grid-rows-[64px_minmax(0,1fr)]'}`}>
     <header className="col-span-2 flex min-w-0 items-center gap-5 border-b border-slate-200 bg-white px-5">
       <Link to="/" className="flex w-[180px] shrink-0 items-center gap-3 lg:w-[212px]">
         <span className="brand-mark"><Icon name="brand" className="size-5" /></span><span className="font-semibold text-slate-900">设计资产工作台</span>
@@ -57,6 +59,7 @@ export function Shell() {
         <Button primary={false} loading={exiting} onClick={() => void exit()}><Icon name="logout" />退出</Button>
       </div>
     </header>
+    {macDsmTest && <div className="col-span-2"><DsmLocalTestNotice /></div>}
     <aside className="flex min-h-0 flex-col overflow-y-auto border-r border-slate-200 bg-white px-3 pt-5">
       <nav className="space-y-6" aria-label="主导航">{sections.map(section => {
         const links = section.paths.flatMap(path => navigation.filter(item => item.path === path && canAccess(user.roles, item)))

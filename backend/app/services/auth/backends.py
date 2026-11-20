@@ -9,7 +9,7 @@ from typing import Protocol
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.config import DevUser, NasConfig
+from app.config import DevUser, NasConfig, require_mac_dsm_test
 
 
 class AuthUnavailable(Exception):
@@ -53,7 +53,13 @@ class DsmAuthBackend:
 
     def _client(self) -> httpx.Client:
         config = self._config
-        verify = ssl.create_default_context(cafile=str(config.dsm_ca_file) if config.dsm_ca_file else None)
+        if config.dsm_verify_ssl:
+            verify = ssl.create_default_context(cafile=str(config.dsm_ca_file) if config.dsm_ca_file else None)
+        else:
+            require_mac_dsm_test(config.dsm_https)
+            verify = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            verify.check_hostname = False
+            verify.verify_mode = ssl.CERT_NONE
         return httpx.Client(
             base_url=f"{'https' if config.dsm_https else 'http'}://{config.verified_address or config.host}:{config.dsm_port}/webapi/",
             headers={"Host": f"{config.host}:{config.dsm_port}"},

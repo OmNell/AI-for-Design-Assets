@@ -16,6 +16,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = "RELEASE.json"
+RELEASE_MARKER = "backend/app/_release.txt"
 REQUIRED = {"backend/app/main.py", "backend/app/static/index.html", "backend/pyproject.toml",
             "backend/alembic.ini", "backend/config.production.example.yaml", "deploy/install.ps1",
             "deploy/upgrade.ps1", "deploy/uninstall.ps1", "scripts/restore_backup.py",
@@ -119,17 +120,20 @@ def build(version: str, dist: Path) -> Path:
     paths.update(p.relative_to(ROOT).as_posix() for p in (ROOT / "backend/app/static").rglob("*") if p.is_file())
     if not REQUIRED <= paths:
         raise ValueError("缺少已纳入 Git 的发布文件或 Vite 产物")
+    if RELEASE_MARKER in paths:
+        raise ValueError("发布标记必须由构建生成")
     dist.mkdir(parents=True, exist_ok=True)
     package = dist / f"nas-workbench-{version}-windows.zip"
     manifest = {"format": 1, "version": version, "built_at": datetime.now(timezone.utc).isoformat(),
                 "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "node": node, "python": sys.version.split()[0], "files": {}}
     with ZipFile(package, "x", compression=ZIP_DEFLATED) as out:
-        for name in sorted(paths):
+        for name in sorted(paths | {RELEASE_MARKER}):
             path = ROOT / name
             if not eligible(name) or any(parent.is_symlink() for parent in (path, *path.parents) if parent.is_relative_to(ROOT)):
                 raise ValueError("发布文件含链接或超出允许范围")
-            data = path.read_bytes()
+            # 标记随 Python 包安装，脱离发布 ZIP 目录时也继续拒绝本机测试例外。
+            data = f"{version}\n".encode("ascii") if name == RELEASE_MARKER else path.read_bytes()
             manifest["files"][name] = {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
             out.writestr(name, data)
         out.writestr(MANIFEST, json.dumps(manifest, ensure_ascii=False, indent=2))

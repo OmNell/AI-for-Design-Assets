@@ -26,7 +26,7 @@ import httpx
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import select
-from app.config import Settings, load_settings
+from app.config import DSM_LOCAL_TEST_NOTICE, Settings, load_settings
 from app.db.database import Database
 from app.db.models import ProductEmbedding, Setting
 from app.services.ai.client import AiClient
@@ -167,7 +167,7 @@ def network_checks(config: Settings, args, report: Report) -> None:
             if not config.nas.dsm_https:
                 raise ValueError("生产 DSM 必须配置 HTTPS")
             DsmAuthBackend(config.nas.model_copy(update={"timeout_s": 5})).discover()
-            return "DSM HTTPS 与登录 API 发现通过"
+            return "DSM HTTPS 与登录 API 发现通过" if config.nas.dsm_verify_ssl else DSM_LOCAL_TEST_NOTICE
         report.run("DSM HTTPS", dsm)
         paths = create_paths(config)
         try:

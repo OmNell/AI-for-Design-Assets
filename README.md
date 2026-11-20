@@ -51,7 +51,37 @@ npm --prefix frontend run build
 - 密钥与数据库应一并备份；已有密钥无效时会报错，不自动覆盖。删除 `data/` 并重新启动会创建全新数据库与密钥，旧密钥加密的内容无法用新密钥解密。
 - 普通 NAS 密码不写配置；`nas.system_password_enc` 和 `ai.api_key_enc` 只放密文。prod 登录时使用真实 DSM 和本人 SMB；只有显式使用系统会话才解密系统账号密码，不连接百炼。
 
-加密工具的使用（Python 代码，不要把真实凭据写入源码、命令历史或日志）：
+### Mac 本机连接真实 NAS 测试
+
+DSM 证书验证默认开启。正式环境的私有证书可通过 `nas.dsm_ca_file` 配置受信 CA。若 Mac 本机临时测试的 DSM 证书尚未受信，可以在 **Mac 源码工作副本** 中使用下面的例外。编辑独立测试配置 `~/nas-workbench-real-test/config.yaml`，把以下字段合并到现有配置中，保留 `paths`、共享名和其他设置：
+
+```yaml
+mode: prod
+server:
+  host: 127.0.0.1
+  port: 8081
+nas:
+  host: 192.168.0.177
+  dsm_port: 5001
+  dsm_https: true
+  dsm_verify_ssl: false
+```
+
+停止正在使用这份配置的旧进程。在仓库根目录执行：
+
+```sh
+npm --prefix frontend run build
+NASWB_CONFIG="$HOME/nas-workbench-real-test/config.yaml" \
+  NASWB_MAC_LOCAL_DSM_TEST=1 .venv/bin/python -m app
+```
+
+打开 <http://127.0.0.1:8081>。看到「本机测试环境：DSM 证书验证已关闭」后，使用真实 NAS 用户名和密码登录。工作台实际绑定 IPv4 回环地址，DSM 仍走 HTTPS，SMB 仍以登录人本人连接。请直接访问本机地址，避免通过转发或代理向其他设备开放测试实例。
+
+测试结束后把 `nas.dsm_verify_ssl` 改回 `true` 或删除该项，取消命令中的 `NASWB_MAC_LOCAL_DSM_TEST=1` 后重启。Windows 托管部署和发布包会拒绝该例外。
+
+### 加密工具与操作日志
+
+加密工具可在 Python 中使用。真实凭据应留在内存中。
 
 ```python
 from app.config import load_settings
@@ -95,7 +125,7 @@ python -m alembic -c backend/alembic.ini current
 curl http://localhost:8080/api/health
 ```
 
-成功示例：`{"version":"0.1.0","mode":"dev","database_available":true}`。数据库不可用时返回 503；所有 API 错误采用 `{code,message,detail}`，不返回内部异常、配置或请求体。非 `/api` 页面路由回退 `index.html`，未知 API 和缺失 `/assets/` 资源返回结构化 404，前端未构建时首页为 404，health 仍可用。
+成功示例：`{"version":"0.1.0","mode":"dev","database_available":true,"dsm_verify_ssl":true}`。数据库不可用时返回 503；所有 API 错误采用 `{code,message,detail}`，不返回内部异常、配置或请求体。非 `/api` 页面路由回退 `index.html`，未知 API 和缺失 `/assets/` 资源返回结构化 404，前端未构建时首页为 404，health 仍可用。
 
 重建验收：停止后端，将开发环境的 `data/` 移至临时备份位置或删除，再启动；应自动生成新数据库及新密钥，health 恢复正常。此操作仅针对可丢弃的开发数据。
 

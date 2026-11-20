@@ -14,10 +14,13 @@ class HealthResponse(BaseModel):
     version: str
     mode: str
     database_available: bool
+    dsm_verify_ssl: bool
 
 
 @router.get("/health", response_model=HealthResponse, responses={503: {"model": ErrorResponse}})
 def health(request: Request) -> HealthResponse:
     if not request.app.state.database.is_available():
         raise AppError("database_unavailable", "数据库暂时不可用", 503)
-    return HealthResponse(version=__version__, mode=request.app.state.settings.mode, database_available=True)
+    config = request.app.state.settings
+    return HealthResponse(version=__version__, mode=config.mode, database_available=True,
+                          dsm_verify_ssl=config.nas.dsm_verify_ssl)

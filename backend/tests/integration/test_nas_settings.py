@@ -299,3 +299,16 @@ def test_windows_config_relocation_keeps_data_and_ca_paths(tmp_path):
     new.write_bytes(original + b"\n# after")
     rollback(tmp_path, package)
     assert new.read_bytes() == original and old.exists()
+
+
+def test_managed_deployment_rejects_mac_tls_exception_even_with_authorization(tmp_path, monkeypatch):
+    from app import config as config_module
+    from deploy.ops import validate_config
+
+    monkeypatch.setattr(config_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(config_module, "RELEASE_MANIFEST", tmp_path / "RELEASE.json")
+    monkeypatch.setenv(config_module.MAC_LOCAL_DSM_TEST_ENV, "1")
+    source = tmp_path / "config.yaml"
+    source.write_text("mode: prod\nserver: {host: 127.0.0.1}\nnas: {dsm_verify_ssl: false}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="托管部署必须验证 DSM HTTPS 证书"):
+        validate_config(source, tmp_path)

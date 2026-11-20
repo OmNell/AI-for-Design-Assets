@@ -10,6 +10,7 @@ nas:
   host: 192.168.0.177
   dsm_port: 5001
   dsm_https: true
+  dsm_verify_ssl: true
   share: 设计资产共享
   root_path: /设计资产
   temp_path: /工作台临时区
