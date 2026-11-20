@@ -11,7 +11,6 @@ from io import BytesIO
 from importlib.resources import files
 import json
 import logging
-import re
 import threading
 import time
 
@@ -26,6 +25,23 @@ from .parsing import FieldDefinition
 from .prompts import build_prompt
 
 logger = logging.getLogger("nas_workbench")
+
+_TEST_TOKENS = 256
+_SEARCH_TOKENS = {"query": 2048, "rank": 3072}
+_OMNI_TEXT_MODEL = "qwen3.8-omni-flash"
+_PROVIDER_ERRORS = {
+    "AccessDenied": "账号无调用权限",
+    "InvalidApiKey": "API Key 无效",
+    "invalid_api_key": "API Key 无效",
+    "InvalidParameter": "请求参数不符合模型要求",
+    "invalid_request_error": "请求参数不符合模型要求",
+    "model_not_found": "模型不存在或未开通",
+    "ModelNotFound": "模型不存在或未开通",
+    "DataInspectionFailed": "请求未通过模型内容检查",
+    "Arrearage": "服务账户欠费",
+    "Throttling": "服务限流",
+    "rate_limit_exceeded": "服务限流",
+}
 
 
 _search_usage: ContextVar[list[dict[str, object]] | None] = ContextVar("search_usage", default=None)
@@ -103,7 +119,7 @@ def validate_review_image(image: bytes) -> None:
 
 def _test_image() -> bytes:
     stream = BytesIO()
-    with Image.new("RGB", (1, 1), "white") as image:
+    with Image.new("RGB", (128, 128), "blue") as image:
         image.save(stream, format="JPEG")
     return stream.getvalue()
 
@@ -111,6 +127,113 @@ def _test_image() -> bytes:
 def _usage(body: object) -> dict[str, object]:
     candidate = body.get("usage", {}) if isinstance(body, dict) else {}
     return candidate if isinstance(candidate, dict) else {}
+
+
+def _text_budget(model: str, tokens: int) -> dict[str, object]:
+    if model.strip().casefold() in ("qwen4-max", "qwen4-max-preview"):
+        return {"enable_thinking": False, "max_completion_tokens": tokens}
+    return {"max_tokens": tokens}
+
+
+def _provider_hint(body: object) -> str:
+    if not isinstance(body, dict):
+        return ""
+    error = body.get("error")
+    fields = error if isinstance(error, dict) else body
+    for field in ("code", "type"):
+        code = fields.get(field)
+        if isinstance(code, str) and code in _PROVIDER_ERRORS:
+            return f"（{code}，{_PROVIDER_ERRORS[code]}）"
+    return ""
+
+
+def _check_model_error(body: dict[str, object], *, diagnostics: bool) -> None:
+    if body.get("error") is not None or body.get("success") is False or body.get("code") not in (
+        None, "", 0, "0", 200, "200", "OK", "Success"
+    ):
+        raise _AttemptError("AI模型返回错误" + (_provider_hint(body) if diagnostics else ""), usage=_usage(body))
+
+
+def _text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(part["text"] for part in content
+                       if isinstance(part, dict) and part.get("type", "text") in ("text", "output_text")
+                       and isinstance(part.get("text"), str))
+    return ""
+
+
+def _finish(reason: object, usage: dict[str, object]) -> None:
+    if reason == "length":
+        raise _AttemptError("AI输出截断（length），请检查输出 Token 预算", usage=usage)
+    if reason == "content_filter":
+        raise _AttemptError("AI模型返回错误：回答未通过内容审核", usage=usage)
+    if reason != "stop":
+        raise _AttemptError("AI响应格式不兼容：缺少正常结束的文本回答", retryable=True, usage=usage)
+
+
+def _final_answer(text: str, has_reasoning: bool, reason: object, usage: dict[str, object]) -> _Result:
+    _finish(reason, usage)
+    if text.strip() and not text.lstrip().lower().startswith("<think>"):
+        return _Result(text, usage)
+    message = "AI未返回最终回答：仅收到思考结果" if has_reasoning else "AI响应格式不兼容：未返回最终文本"
+    raise _AttemptError(message, retryable=True, usage=usage)
+
+
+def _sse_events(lines: Iterator[str]) -> Iterator[str]:
+    parts: list[str] = []
+    for line in lines:
+        if line.startswith("data:"):
+            parts.append(line[5:].removeprefix(" "))
+        elif not line and parts:
+            yield "\n".join(parts)
+            parts.clear()
+    if parts:
+        yield "\n".join(parts)
+
+
+def _stream_answer(response: httpx.Response, *, diagnostics: bool) -> _Result:
+    chunks: list[str] = []
+    has_reasoning = False
+    reason: object = None
+    usage: dict[str, object] = {}
+    for event in _sse_events(response.iter_lines()):
+        if event.strip() == "[DONE]":
+            break
+        try:
+            frame = json.loads(event)
+        except ValueError:
+            raise _AttemptError("AI响应格式不兼容：流式事件不是有效 JSON", retryable=True, usage=usage) from None
+        if not isinstance(frame, dict):
+            raise _AttemptError("AI响应格式不兼容：流式事件需要 JSON 对象", retryable=True, usage=usage)
+        _check_model_error(frame, diagnostics=diagnostics)
+        usage = _usage(frame) or usage
+        choices = frame.get("choices")
+        if not isinstance(choices, list) or (choices and not isinstance(choices[0], dict)):
+            raise _AttemptError("AI响应格式不兼容：缺少流式对话结果", retryable=True, usage=usage)
+        if not choices:
+            continue
+        choice = choices[0]
+        delta = choice.get("delta")
+        if isinstance(delta, dict):
+            if delta.get("refusal"):
+                raise _AttemptError("AI模型返回错误：模型拒绝回答", usage=usage)
+            chunks.append(_text(delta.get("content")))
+            has_reasoning |= bool(delta.get("reasoning_content"))
+        if choice.get("finish_reason") is not None:
+            reason = choice["finish_reason"]
+    return _final_answer("".join(chunks), has_reasoning, reason, usage)
+
+
+def _embedding(body: dict[str, object]) -> list[float]:
+    data = body.get("data")
+    vector = data[0].get("embedding") if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict) else None
+    if (not isinstance(vector, list) or not 1 <= len(vector) <= 8192
+            or any(type(value) not in (float, int) or not (-1e30 < value < 1e30) for value in vector)
+            or not any(vector)):
+        raise _AttemptError("AI响应格式不兼容：向量模型未返回有效向量", retryable=True, usage=_usage(body))
+    return vector
 
 
 class AiClient:
@@ -144,31 +267,8 @@ class AiClient:
         self._secret = key
         return key
 
-    def _safe_error(self, message: str, payload: dict[str, object]) -> str:
-        if self._secret:
-            message = message.replace(self._secret, "[凭据已隐藏]")
-        # 厂商错误可能回显输入，仍不能把完整提示词/图像写入日志或数据库。
-        messages = payload.get("messages", [])
-        if isinstance(messages, list):
-            for item in messages:
-                content = item.get("content") if isinstance(item, dict) else None
-                if isinstance(content, str) and content:
-                    message = message.replace(content, "[提示词已隐藏]")
-                elif isinstance(content, list):
-                    for part in content:
-                        if not isinstance(part, dict):
-                            continue
-                        text = part.get("text")
-                        if isinstance(text, str) and text:
-                            message = message.replace(text, "[提示词已隐藏]")
-                        url = part.get("image_url")
-                        if isinstance(url, dict) and isinstance(url.get("url"), str):
-                            message = message.replace(url["url"], "[图片内容已隐藏]")
-        message = re.sub(r"data:image/[^;\s]+;base64,[A-Za-z0-9+/=]+", "[图片内容已隐藏]", message)
-        message = re.sub(r"[A-Za-z0-9+/]{128,}={0,2}", "[长数据已隐藏]", message)
-        return message[:4000]
-
-    def _post(self, endpoint: str, model: str, payload: dict[str, object], *, diagnostics: bool = False) -> object:
+    @contextmanager
+    def _request(self, endpoint: str, model: str, payload: dict[str, object]) -> Iterator[httpx.Response]:
         if not model.strip():
             raise _AttemptError("模型名尚未配置")
         key = self._key()
@@ -179,49 +279,68 @@ class AiClient:
         except (ValueError, httpx.InvalidURL):
             raise _AttemptError("AI接口地址格式不正确") from None
         try:
-            response = self.http.post(str(base).rstrip("/") + endpoint, json=payload,
-                                      headers={"Authorization": f"Bearer {key}"})
+            with self.http.stream("POST", str(base).rstrip("/") + endpoint, json=payload,
+                                  headers={"Authorization": f"Bearer {key}"}) as response:
+                yield response
+        except httpx.ConnectTimeout:
+            raise _AttemptError("AI连接超时，未能建立连接", retryable=True) from None
+        except httpx.ConnectError:
+            raise _AttemptError("无法建立AI连接，请检查网络或TLS证书", retryable=True) from None
         except httpx.TimeoutException:
             raise _AttemptError("AI请求超时", retryable=True) from None
+        except httpx.DecodingError:
+            raise _AttemptError("AI响应格式不兼容：无法解码响应", retryable=True) from None
         except httpx.HTTPError:
-            raise _AttemptError("无法连接AI接口", retryable=True) from None
+            raise _AttemptError("AI HTTP 请求失败：请求或响应传输中断", retryable=True) from None
+
+    def _response_json(self, response: httpx.Response, *, diagnostics: bool = False) -> dict[str, object]:
+        response.read()
         try:
             body: object = response.json()
         except ValueError:
             body = None
-        if not 200 <= response.status_code < 300:
-            detail: object = body.get("error", body) if isinstance(body, dict) else response.text
-            if isinstance(detail, dict):
-                detail = detail.get("message", json.dumps(detail, ensure_ascii=False))
-            # 业务请求的厂商错误可能只回显姓名/字段提示等输入片段，不将其落库。
-            # 只有不含业务数据的管理员最小连接测试保留脱敏原文。
-            message = self._safe_error(str(detail), payload) if diagnostics and detail else f"AI接口返回HTTP {response.status_code}"
+        if not response.is_success:
+            message = f"AI接口返回HTTP {response.status_code}"
+            if diagnostics:
+                message += _provider_hint(body)
             raise _AttemptError(message, response.status_code in (408, 429) or response.status_code >= 500,
                                 _usage(body))
-        if body is None:
-            raise _AttemptError("AI接口响应不是有效JSON", retryable=True)
+        if not isinstance(body, dict):
+            raise _AttemptError("AI响应格式不兼容：需要 JSON 对象", retryable=True)
+        _check_model_error(body, diagnostics=diagnostics)
         return body
 
+    def _post(self, endpoint: str, model: str, payload: dict[str, object], *, diagnostics: bool = False) -> dict[str, object]:
+        with self._request(endpoint, model, payload) as response:
+            return self._response_json(response, diagnostics=diagnostics)
+
     def _chat(self, model: str, payload: dict[str, object], *, diagnostics: bool = False) -> _Result:
-        body = self._post("/chat/completions", model, payload, diagnostics=diagnostics)
-        choices = body.get("choices") if isinstance(body, dict) else None
-        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-            message = choices[0].get("message")
-            content = message.get("content") if isinstance(message, dict) else None
-            if isinstance(content, str) and content.strip():
-                return _Result(content, _usage(body))
-            if isinstance(content, list):
-                text = "".join(part["text"] for part in content if isinstance(part, dict) and isinstance(part.get("text"), str))
-                if text.strip():
-                    return _Result(text, _usage(body))
-        raise _AttemptError("AI接口未返回文本内容", retryable=True, usage=_usage(body))
+        if model.strip().casefold() == _OMNI_TEXT_MODEL:
+            payload = {**payload, "stream": True, "modalities": ["text"], "stream_options": {"include_usage": True}}
+        with self._request("/chat/completions", model, payload) as response:
+            if response.is_success and payload.get("stream") is True and response.headers.get(
+                "content-type", ""
+            ).split(";", 1)[0].strip().lower() == "text/event-stream":
+                return _stream_answer(response, diagnostics=diagnostics)
+            body = self._response_json(response, diagnostics=diagnostics)
+        choices = body.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise _AttemptError("AI响应格式不兼容：缺少对话结果", retryable=True, usage=_usage(body))
+        choice = choices[0]
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            _finish(choice.get("finish_reason"), _usage(body))
+            raise _AttemptError("AI响应格式不兼容：缺少对话消息", retryable=True, usage=_usage(body))
+        if message.get("refusal"):
+            raise _AttemptError("AI模型返回错误：模型拒绝回答", usage=_usage(body))
+        return _final_answer(_text(message.get("content")), bool(message.get("reasoning_content")),
+                             choice.get("finish_reason", "stop"), _usage(body))
 
     def _embedding_test(self, model: str, payload: dict[str, object]) -> _Result:
         body = self._post("/embeddings", model, payload, diagnostics=True)
-        data = body.get("data") if isinstance(body, dict) else None
-        embedding = data[0].get("embedding") if isinstance(data, list) and data and isinstance(data[0], dict) else None
-        if not isinstance(embedding, list) or not embedding or not all(type(value) in (int, float) for value in embedding):
-            raise _AttemptError("向量模型未返回有效测试结果", retryable=True, usage=_usage(body))
+        _embedding(body)
+        if "model" in body and body["model"] != model:
+            raise _AttemptError("向量响应的模型与配置不一致", usage=_usage(body))
         return _Result("连接成功", _usage(body))
 
     def _record(self, model: str, kind: str, milliseconds: int, usage: dict[str, object], success: bool,
@@ -283,12 +402,7 @@ class AiClient:
 
         def action() -> _Result:
             body = self._post("/embeddings", model, {"model": model, "input": text})
-            data = body.get("data") if isinstance(body, dict) else None
-            vector = data[0].get("embedding") if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict) else None
-            if (not isinstance(vector, list) or not 1 <= len(vector) <= 8192
-                    or any(type(value) not in (float, int) or not (-1e30 < value < 1e30) for value in vector)
-                    or not any(vector)):
-                raise _AttemptError("向量模型未返回有效向量", retryable=True, usage=_usage(body))
+            vector = _embedding(body)
             if body.get("model") != model:
                 raise _AttemptError("向量响应的模型与配置不一致")
             return _Result(json.dumps(vector), _usage(body))
@@ -299,7 +413,7 @@ class AiClient:
         path = {"query": "query_understanding.txt", "rank": "ranking.txt"}[task]
         instruction = files("app").joinpath("prompts", path).read_text(encoding="utf-8")
         model = self.config.model_text
-        payload = {"model": model, "temperature": 0, "max_tokens": 1600, "messages": [
+        payload = {"model": model, "temperature": 0, **_text_budget(model, _SEARCH_TOKENS[task]), "messages": [
             {"role": "system", "content": instruction},
             {"role": "user", "content": json.dumps(data, ensure_ascii=False)},
         ]}
@@ -315,9 +429,12 @@ class AiClient:
             else:
                 content: object = "仅回复好"
                 if kind == "vision":
-                    content = [{"type": "text", "text": "仅回复好"}, {"type": "image_url", "image_url": {
+                    content = [{"type": "text", "text": "请用一句话回答图片的主色。"}, {"type": "image_url", "image_url": {
                         "url": "data:image/jpeg;base64," + base64.b64encode(_test_image()).decode("ascii")}}]
-                payload.update(messages=[{"role": "user", "content": content}], max_tokens=8)
+                payload.update(_text_budget(model, _TEST_TOKENS))
+                if model.strip().casefold() == _OMNI_TEXT_MODEL:
+                    payload["reasoning_effort"] = "none"
+                payload["messages"] = [{"role": "user", "content": content}]
                 action = lambda model=model, payload=payload: self._chat(model, payload, diagnostics=True)
             try:
                 self._run(model, f"{kind}_test", action, retries=0)

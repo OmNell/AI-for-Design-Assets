@@ -132,7 +132,7 @@ def test_connection_check_calls_each_model_once_and_returns_individual_results(d
         payload = json.loads(request.content)
         requests.append(payload)
         if payload['model'] == 'text-test':
-            return httpx.Response(403, json={'error': {'message': 'AccessDenied 原文'}})
+            return httpx.Response(403, json={'error': {'code': 'AccessDenied', 'message': '厂商错误原文'}})
         if request.url.path.endswith('/embeddings'):
             return httpx.Response(200, json={'data': [{'embedding': [.1, .2]}], 'usage': {'prompt_tokens': 1, 'total_tokens': 1}})
         return chat_response()
@@ -140,7 +140,7 @@ def test_connection_check_calls_each_model_once_and_returns_individual_results(d
     try:
         rows = client.test_models()
         assert [row['success'] for row in rows] == [True, False, True]
-        assert rows[1]['error'] == 'AccessDenied 原文'
+        assert rows[1]['error'] == 'AI接口返回HTTP 403（AccessDenied，账号无调用权限）'
         assert len(requests) == 3 and requests[2]['input'] == '连接测试'
         with database.session() as session:
             assert len(list(session.scalars(select(AiCall)))) == 3
@@ -148,14 +148,25 @@ def test_connection_check_calls_each_model_once_and_returns_individual_results(d
         client.close()
 
 
-def test_connection_diagnostics_keep_error_text_but_hide_key_and_test_image(database: Database, tmp_path: Path) -> None:
+def test_connection_diagnostics_omit_untrusted_provider_content(
+    database: Database, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
     config, cipher = configuration(tmp_path)
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(403, json={'error': {'message': '原始错误 sk-test-private data:image/jpeg;base64,' + 'A'*500}})
+        return httpx.Response(403, json={'error': {
+            'code': '不可信字段 sk-test-private',
+            'message': '原始错误 sk-test-private data:image/jpeg;base64,QUJDREVG',
+            'reasoning_content': '私有思考内容',
+        }})
     client = AiClient(config, database, cipher, httpx.MockTransport(handler))
     try:
         rows = client.test_models()
-        assert all('原始错误' in row['error'] and 'sk-test-private' not in row['error'] and 'base64' not in row['error'] for row in rows)
+        assert all(row['error'] == 'AI接口返回HTTP 403' for row in rows)
+        with database.session() as session:
+            saved = [row.error for row in session.scalars(select(AiCall))]
+        visible = str(rows) + str(saved) + caplog.text
+        for secret in ('原始错误', 'sk-test-private', 'QUJDREVG', '私有思考内容'):
+            assert secret not in visible
     finally:
         client.close()
 
@@ -204,5 +215,166 @@ def test_fake_is_deterministic_and_triggers_all_requested_cases(database: Databa
         with database.session() as session:
             failed = list(session.scalars(select(AiCall).where(AiCall.success.is_(False))))
             assert len(failed) == 4
+    finally:
+        client.close()
+
+
+def sse_response(*events: dict[str, object]) -> httpx.Response:
+    content = "".join("data: " + json.dumps(event, ensure_ascii=False) + "\n\n" for event in events)
+    return httpx.Response(200, text=content + "data: [DONE]\n\n", headers={"Content-Type": "text/event-stream"})
+
+
+def test_configured_qwen_models_send_valid_requests_and_return_real_results(database: Database, tmp_path: Path) -> None:
+    config, cipher = configuration(tmp_path, retries=0)
+    config.model_vision = "qwen3.8-omni-flash"
+    config.model_text = "qwen4-max"
+    config.model_embed = "qwen3.7-text-embedding"
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        model = payload["model"]
+        seen.append(model)
+        if model == config.model_vision:
+            assert request.url.path.endswith("/chat/completions")
+            assert payload["stream"] is True and payload["modalities"] == ["text"]
+            assert payload["reasoning_effort"] == "none" and payload["max_tokens"] == 256
+            media = payload["messages"][0]["content"][1]["image_url"]["url"]
+            prefix, encoded = media.split(",")
+            assert prefix == "data:image/jpeg;base64"
+            with Image.open(BytesIO(base64.b64decode(encoded, validate=True))) as image:
+                assert image.format == "JPEG" and image.size == (128, 128) and not image.getexif()
+                image.load()
+            return sse_response(
+                {"choices": [{"delta": {"reasoning_content": "私有思考"}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "蓝"}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "色"}, "finish_reason": "stop"}]},
+                {"choices": [], "usage": {"prompt_tokens": 13, "completion_tokens": 3, "total_tokens": 16}},
+            )
+        if model == config.model_text:
+            assert request.url.path.endswith("/chat/completions")
+            assert payload["enable_thinking"] is False and payload["max_completion_tokens"] == 256
+            assert "max_tokens" not in payload
+            return httpx.Response(200, json={"choices": [{"message": {"content": "好"}, "finish_reason": "stop"}]})
+        assert request.url.path.endswith("/embeddings")
+        assert payload == {"model": config.model_embed, "input": "连接测试"}
+        return httpx.Response(200, json={"model": model, "data": [{"embedding": [0.01, -0.2]}]})
+
+    client = AiClient(config, database, cipher, httpx.MockTransport(handler))
+    try:
+        rows = client.test_models()
+        assert seen == [config.model_vision, config.model_text, config.model_embed]
+        assert [row["success"] for row in rows] == [True, True, True]
+        with database.session() as session:
+            calls = list(session.scalars(select(AiCall).order_by(AiCall.id)))
+            assert len(calls) == 3 and all(row.success and row.error is None for row in calls)
+            assert (calls[0].prompt_tokens, calls[0].completion_tokens, calls[0].total_tokens) == (13, 3, 16)
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(("reply", "diagnosis"), [
+    ({"choices": [{"message": {"content": "好"}, "finish_reason": "length"}]}, "输出截断"),
+    ({"choices": [{"message": {"content": None, "reasoning_content": "私有思考"}, "finish_reason": "stop"}]}, "未返回最终回答"),
+    ({"choices": [{"message": {"content": [{"type": "reasoning", "text": "私有思考"}]}, "finish_reason": "stop"}]}, "格式不兼容"),
+    ({"choices": [{"message": {"content": "好"}, "finish_reason": None}]}, "格式不兼容"),
+    ({"choices": []}, "格式不兼容"),
+    ({"error": {"code": "ModelNotFound", "message": "私有思考"}}, "AI模型返回错误（ModelNotFound"),
+    ({"code": "InvalidParameter", "message": "私有思考"}, "AI模型返回错误（InvalidParameter"),
+    ({"choices": [{"message": {"content": ""}, "finish_reason": "content_filter"}]}, "AI模型返回错误"),
+    ({"choices": [{"message": {"refusal": "私有思考"}, "finish_reason": "stop"}]}, "模型拒绝回答"),
+])
+def test_connection_rejects_unusable_chat_reply(
+    database: Database, tmp_path: Path, reply: dict[str, object], diagnosis: str,
+) -> None:
+    config, cipher = configuration(tmp_path)
+    client = AiClient(config, database, cipher, httpx.MockTransport(lambda request: httpx.Response(200, json=reply)))
+    try:
+        rows = client.test_models()
+        assert all(not row["success"] for row in rows)
+        assert diagnosis in rows[1]["error"] and "私有思考" not in str(rows)
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(("frame", "diagnosis"), [
+    ({"choices": [{"delta": {"content": "好"}, "finish_reason": "length"}]}, "输出截断"),
+    ({"choices": [{"delta": {"content": "好"}, "finish_reason": None}]}, "格式不兼容"),
+    ({"error": {"code": "InvalidParameter", "message": "敏感原文"}}, "AI模型返回错误"),
+    ({"result": "未知响应"}, "格式不兼容"),
+])
+def test_omni_stream_rejects_truncation_and_errors(
+    database: Database, tmp_path: Path, frame: dict[str, object], diagnosis: str,
+) -> None:
+    config, cipher = configuration(tmp_path)
+    config.model_vision = "qwen3.8-omni-flash"
+    client = AiClient(config, database, cipher, httpx.MockTransport(lambda request: sse_response(frame)))
+    try:
+        first = client.test_models()[0]
+        assert not first["success"] and diagnosis in first["error"] and "敏感原文" not in first["error"]
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(("exception", "diagnosis"), [
+    (httpx.ConnectError, "无法建立AI连接"),
+    (httpx.ConnectTimeout, "AI连接超时"),
+    (httpx.ReadTimeout, "AI请求超时"),
+    (httpx.RemoteProtocolError, "AI HTTP 请求失败"),
+    (httpx.DecodingError, "AI响应格式不兼容"),
+])
+def test_connection_transport_diagnostics_are_distinct(
+    database: Database, tmp_path: Path, exception: type[httpx.HTTPError], diagnosis: str,
+) -> None:
+    config, cipher = configuration(tmp_path)
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise exception("sk-test-private", request=request)
+
+    client = AiClient(config, database, cipher, httpx.MockTransport(fail))
+    try:
+        rows = client.test_models()
+        assert all(not row["success"] and diagnosis in row["error"] and "sk-test-private" not in row["error"] for row in rows)
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("response_body", [
+    b"not json",
+    b'{"data":[{"embedding":[0,0]}]}',
+    b'{"data":[{"embedding":[1,NaN]}]}',
+    b'{"data":[{"embedding":[true,1]}]}',
+    b'{"data":[{"embedding":[0.4]}],"model":"different-model"}',
+])
+def test_embedding_probe_rejects_unusable_vectors(database: Database, tmp_path: Path, response_body: bytes) -> None:
+    config, cipher = configuration(tmp_path)
+    config.model_embed = "qwen3.7-text-embedding"
+    client = AiClient(config, database, cipher, httpx.MockTransport(lambda request: httpx.Response(200, content=response_body)))
+    try:
+        assert client.test_models()[2]["success"] is False
+        with pytest.raises(AiCallError):
+            client.embed("查询", None)
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(("task", "budget"), [("query", 2048), ("rank", 3072)])
+def test_search_chat_has_separate_budget_and_only_returns_final_content(database: Database, tmp_path: Path,
+                                                                      task: str, budget: int) -> None:
+    config, cipher = configuration(tmp_path, retries=0)
+    config.model_text = "qwen4-max"
+    final = '{"items":[]}' if task == "rank" else '{"fields":{},"keywords":[],"exclude":[]}'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["model"] == config.model_text
+        assert payload["enable_thinking"] is False and payload["max_completion_tokens"] == budget
+        assert "max_tokens" not in payload
+        return httpx.Response(200, json={"choices": [{"message": {"reasoning_content": "不能输出的思考", "content": [
+            {"type": "reasoning", "text": "也不能输出的思考"}, {"type": "text", "text": final},
+        ]}, "finish_reason": "stop"}]})
+
+    client = AiClient(config, database, cipher, httpx.MockTransport(handler))
+    try:
+        assert client.search_chat(task, {"query": "测试"}) == final
     finally:
         client.close()
