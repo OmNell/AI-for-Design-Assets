@@ -45,6 +45,8 @@ class NasConfig(Section):
     dsm_port: int = Field(default=5001, ge=1, le=65535)
     dsm_https: bool = True
     share: str = "设计资产共享"
+    work_root: str | None = None
+    verified_address: ipaddress.IPv4Address | None = None
     root_path: str = "/设计资产"
     temp_path: str = "/工作台临时区"
     backup_path: str = "/_工作台备份"

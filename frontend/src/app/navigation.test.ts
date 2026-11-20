@@ -11,6 +11,6 @@ it('审核人继承上传能力，但不互相继承审核权限', () => {
   expect(visible(['final_reviewer'])).not.toContain('待初审')
 })
 it('管理员不能自动审核，多角色组合取并集', () => {
-  expect(visible(['admin'])).toEqual(['工作台首页', '我的待办', '全部资产', '智能检索', '管理', '设置'])
+  expect(visible(['admin'])).toEqual(['工作台首页', '我的待办', '全部资产', '智能检索', '管理', '设置', 'NAS 存储设置'])
   expect(visible(['admin', 'final_reviewer'])).toContain('待终审')
 })

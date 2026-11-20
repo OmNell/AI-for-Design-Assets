@@ -4,14 +4,17 @@ from __future__ import annotations
 import errno
 import re
 import stat
+import uuid
 from typing import BinaryIO, Callable, Mapping, TypeVar, cast
 
 import smbclient
-from smbprotocol.exceptions import SMBConnectionClosed
+from smbprotocol.connection import Connection
+from smbprotocol.exceptions import BadNetworkName, SMBConnectionClosed
+from smbprotocol.tree import TreeConnect
 from smbprotocol.session import Session
 from smbprotocol.open import DirectoryAccessMask
 
-from .errors import NasPermissionDenied, NasSessionExpired, translate
+from .errors import NasNotFound, NasPermissionDenied, NasSessionExpired, translate
 from .fs import BaseFs, NasStat
 from .paths import Access, NasPaths, Region, safe_join
 
@@ -24,10 +27,44 @@ def disconnected(error: Exception) -> bool:
             or getattr(error, "status", getattr(error, "ntstatus", None)) in (0xC000020C, 0xC000020D, 0xC00000C9))
 
 
+class DirectConnection(Connection):
+    """连接只在固定服务器上收发，不解析 SMB 符号链接重定向。"""
+    def __init__(self, host: str, timeout: float) -> None:
+        super().__init__(uuid.uuid4(), host, require_signing=True)
+        self.operation_timeout = timeout
+
+    def receive(self, request, wait=True, timeout=None, resolve_symlinks=True):
+        return super().receive(request, wait, min(timeout or self.operation_timeout, self.operation_timeout), False)
+
+
+def direct_session(host: str, share: str, username: str, password: str, timeout: float) -> TreeConnect:
+    connection = DirectConnection(host, timeout)
+    try:
+        connection.connect(timeout=timeout)
+        session = Session(connection, username=username, password=password, require_encryption=False, auth_protocol="ntlm")
+        session.connect()
+        session.password = None
+        tree = TreeConnect(session, rf"\\{host}\{share}")
+        try:
+            tree.connect()
+        except BadNetworkName:
+            raise NasNotFound("SMB 共享文件夹不存在") from None
+        if tree.is_dfs_share:
+            raise NasPermissionDenied("不支持跨共享 DFS 转介")
+        return tree
+    except Exception as error:
+        if connection.transport is not None:
+            try:
+                connection.disconnect(close=False, timeout=timeout)
+            except Exception:
+                pass
+        raise translate(error) from None
+
+
 class SmbFs(BaseFs):
     def __init__(self, host: str, share: str, username: str, password: str,
                  paths: NasPaths | None = None, timeout: float = 30,
-                 permissions: Mapping[Region, Access] | None = None) -> None:
+                 permissions: Mapping[Region, Access] | None = None, *, strict_share: bool = False) -> None:
         super().__init__(paths or NasPaths(), permissions)
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", host) or "/" in safe_join(share):
             raise ValueError("NAS 地址或共享文件夹名称无效")
@@ -37,6 +74,7 @@ class SmbFs(BaseFs):
         self.share = share
         self.username = username
         self.timeout = timeout
+        self.strict_share = strict_share
         self._disconnected = False
         self._cache: dict[str, object] = {}
         self._session: Session | None = None
@@ -47,6 +85,11 @@ class SmbFs(BaseFs):
             raise translate(error) from None
 
     def _connect(self, password: str) -> None:
+        if self.strict_share:
+            tree = direct_session(self.host, self.share, self.username, password, self.timeout)
+            self._session = tree.session
+            self._cache[f"{self.host.lower()}:445"] = tree.session.connection
+            return
         self._session = smbclient.register_session(
             self.host, username=self.username, password=password,
             connection_cache=self._cache, connection_timeout=self.timeout,
@@ -91,7 +134,6 @@ class SmbFs(BaseFs):
             try:
                 info = smbclient.lstat(prefix, **self._options())
             except OSError as error:
-                from .errors import NasNotFound
                 if isinstance(translate(error), NasNotFound):
                     break
                 raise

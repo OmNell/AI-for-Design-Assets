@@ -40,7 +40,7 @@ function Protect-Directories {
     $serviceRead = '*S-1-5-19:(OI)(CI)(RX)'
     $serviceModify = '*S-1-5-19:(OI)(CI)(M)'
     Invoke-Native 'icacls.exe' @($Root, '/inheritance:r', '/grant:r', $admin, $system, $serviceRead)
-    foreach ($name in @('data', 'logs', 'backups')) {
+    foreach ($name in @('data', 'logs', 'backups', 'configuration')) {
         $dir = Join-Path $Root $name
         New-Item $dir -ItemType Directory -Force | Out-Null
         Invoke-Native 'icacls.exe' @($dir, '/inheritance:r', '/grant:r', $admin, $system, $serviceModify)
@@ -94,7 +94,8 @@ function Invoke-Ops {
 function Set-ServiceRelease {
     param([string]$Root, [string]$Nssm, [string]$Release)
     $python = Join-Path $Release '.venv\Scripts\python.exe'
-    $config = Join-Path $Root 'config.yaml'
+    $config = Join-Path $Root 'configuration\config.yaml'
+    if (!(Test-Path -LiteralPath $config -PathType Leaf)) { $config = Join-Path $Root 'config.yaml' }
     Invoke-Native $Nssm @('set', $ServiceName, 'Application', $python)
     Invoke-Native $Nssm @('set', $ServiceName, 'AppDirectory', (Join-Path $Release 'backend'))
     Invoke-Native $Nssm @('set', $ServiceName, 'AppParameters', '-m uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 1 --no-proxy-headers')

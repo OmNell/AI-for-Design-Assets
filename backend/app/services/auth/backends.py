@@ -45,43 +45,64 @@ class DsmAuthBackend:
         self._config = config.model_copy(deep=True)
         self._transport = transport
 
-    @staticmethod
-    def _post(client: httpx.Client, path: str, data: dict[str, str]) -> DsmReply:
-        response = client.post(path, data=data)
+    def _post(self, client: httpx.Client, path: str, data: dict[str, str]) -> DsmReply:
+        extra = {"sni_hostname": self._config.host} if self._config.verified_address else {}
+        response = client.post(path, data=data, extensions=extra)
         response.raise_for_status()
         return DsmReply.model_validate(response.json())
 
-    def verify(self, username: str, password: str) -> bool:
+    def _client(self) -> httpx.Client:
         config = self._config
-        sid: str | None = None
-        auth_path = "entry.cgi"
-        version = "6"
+        verify = ssl.create_default_context(cafile=str(config.dsm_ca_file) if config.dsm_ca_file else None)
+        return httpx.Client(
+            base_url=f"{'https' if config.dsm_https else 'http'}://{config.verified_address or config.host}:{config.dsm_port}/webapi/",
+            headers={"Host": f"{config.host}:{config.dsm_port}"},
+            timeout=config.timeout_s, verify=verify, trust_env=False,
+            follow_redirects=False, transport=self._transport,
+        )
+
+    def _discover(self, client: httpx.Client) -> tuple[str, str]:
+        info = self._post(client, "entry.cgi", {
+            "api": "SYNO.API.Info", "version": "1", "method": "query", "query": "SYNO.API.Auth",
+        })
+        auth = info.data.get("SYNO.API.Auth")
+        if not info.success or not isinstance(auth, dict):
+            raise AuthUnavailable("DSM 认证接口发现失败")
+        path = auth.get("path")
+        if not isinstance(path, str) or not re.fullmatch(r"(?:[A-Za-z0-9_]+/)*[A-Za-z0-9_]+\.cgi", path):
+            raise AuthUnavailable("DSM 认证接口路径无效")
+        maximum, minimum = auth.get("maxVersion"), auth.get("minVersion")
+        if not isinstance(maximum, int) or not isinstance(minimum, int) or min(maximum, 6) < max(minimum, 3):
+            raise AuthUnavailable("DSM 认证接口版本不兼容")
+        return path, str(min(maximum, 6))
+
+    def discover(self) -> None:
         try:
-            verify: bool | ssl.SSLContext = True
-            if config.dsm_ca_file is not None:
-                verify = ssl.create_default_context(cafile=str(config.dsm_ca_file))
-            with httpx.Client(
-                base_url=f"{'https' if config.dsm_https else 'http'}://{config.host}:{config.dsm_port}/webapi/",
-                timeout=config.timeout_s, verify=verify, trust_env=False,
-                follow_redirects=False, transport=self._transport,
-            ) as client:
+            with self._client() as client:
+                self._discover(client)
+        except AuthUnavailable:
+            raise
+        except httpx.HTTPStatusError as error:
+            raise AuthUnavailable("DSM HTTPS 返回重定向，已拒绝" if error.response.is_redirect else
+                                  f"DSM HTTPS 接口返回 HTTP {error.response.status_code}") from None
+        except httpx.TimeoutException:
+            raise AuthUnavailable("DSM HTTPS 连接超时") from None
+        except httpx.ConnectError as error:
+            cause = error.__cause__
+            if isinstance(cause, Exception) and isinstance(cause.__cause__, ssl.SSLCertVerificationError):
+                raise AuthUnavailable("DSM HTTPS 证书验证失败，请核对证书及 CA") from None
+            if "CERTIFICATE_VERIFY_FAILED" in str(error):
+                raise AuthUnavailable("DSM HTTPS 证书验证失败，请核对证书及 CA") from None
+            raise AuthUnavailable("DSM HTTPS 无法连接，请核对地址及端口") from None
+        except Exception:
+            raise AuthUnavailable("DSM HTTPS 响应无效或 CA 配置不可用") from None
+
+    def verify(self, username: str, password: str) -> bool:
+        sid: str | None = None
+        try:
+            with self._client() as client:
+                auth_path, version = self._discover(client)
                 try:
-                    info = self._post(client, "entry.cgi", {
-                        "api": "SYNO.API.Info", "version": "1", "method": "query", "query": "SYNO.API.Auth",
-                    })
-                    if not info.success:
-                        raise AuthUnavailable("DSM 认证接口发现失败")
-                    auth = info.data.get("SYNO.API.Auth")
-                    if not isinstance(auth, dict):
-                        raise AuthUnavailable("DSM 认证接口响应无效")
-                    path = auth.get("path")
-                    if not isinstance(path, str) or not re.fullmatch(r"(?:[A-Za-z0-9_]+/)*[A-Za-z0-9_]+\.cgi", path):
-                        raise AuthUnavailable("DSM 认证接口路径无效")
-                    auth_path = path
-                    maximum, minimum = auth.get("maxVersion"), auth.get("minVersion")
-                    if not isinstance(maximum, int) or not isinstance(minimum, int) or min(maximum, 6) < max(minimum, 3):
-                        raise AuthUnavailable("DSM 认证接口版本不兼容")
-                    version = str(min(maximum, 6))
                     response = self._post(client, auth_path, {
                         "api": "SYNO.API.Auth", "version": version, "method": "login",
                         "account": username, "passwd": password, "session": "DSM", "format": "sid",
