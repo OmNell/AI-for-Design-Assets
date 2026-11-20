@@ -33,7 +33,7 @@
    ```
 
    网段仅为命令示例。需要自选目录时传 `-Root 'D:\NASDesignWorkbench'`。已有目录或服务应走升级/恢复流程。
-3. 按提示输入域名、群晖地址、共享名、三区目录、系统账号和密码。密码使用隐藏输入，配置写入加密值。安装器初始化 SQLite 和密钥。服务以 LocalService 运行，使用发布目录自己的虚拟环境和后端工作目录，端口 8080，单进程，开机自启，异常退出自动重启。
+3. 按提示输入域名、群晖地址、共享名、工作根目录、系统账号和密码。工作根目录输入共享内相对路径，三个业务区自动派生。回车可保留原有共享顶层三区布局。密码使用隐藏输入，配置写入加密值。安装器初始化 SQLite 和密钥。服务以 LocalService 运行，使用发布目录自己的虚拟环境和后端工作目录，端口 8080，单进程，开机自启，异常退出自动重启。
 4. 检查 `logs/service.stdout.log` 和 `logs/service.stderr.log`。NSSM 在启动和运行期间按约 10 MiB 轮换这两类日志，应用日志按天轮换。浏览器从授权网段访问固定域名。确认看到首页并验证 `/api/health` 的生产模式和数据库状态。
 5. Windows 防火墙只创建一个工作台入站规则，适用 Domain 和 Private 配置文件，仅向填入的公司网段开放 TCP 8080。检查 GPO、默认入站策略及其他既有规则是否额外放行。不要使用 Any。
 
@@ -49,10 +49,24 @@
 从已安装候选版本运行 `scripts/preflight_check.py`。在安装目录读取 `installation.json` 的 `release` 找到发布目录，使用其中的 `.venv\Scripts\python.exe`。例如在该发布目录运行：
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\preflight_check.py --config 'C:\ProgramData\NASDesignWorkbench\config.yaml' --package '<候选 ZIP>' --package-sha '<批准的 SHA-256>' --report 'D:\Staging\preflight.json'
+.\.venv\Scripts\python.exe .\scripts\preflight_check.py --config 'C:\ProgramData\NASDesignWorkbench\configuration\config.yaml' --package '<候选 ZIP>' --package-sha '<批准的 SHA-256>' --report 'D:\Staging\preflight.json'
 ```
 
 现场执行时加 `--network` 检查 DNS、HTTP、DSM 和 SMB，加 `--test-ai` 发送真实百炼最小请求。默认的本机校验不代表内网已通过。若要测同卷 rename，先由 NAS 管理员建立获批的 `_WP14验收` 开头的专用测试目录。加 `--write-probe` 及 `--employee`、`--final-reviewer`、`--temp-test-dir`、`--formal-test-dir`、`--backup-test-dir`，按提示输入测试身份密码。终审身份验证临时区移动到正式区。系统账号只可在授权备份测试目录写入，正式区禁止写入、临时区禁止访问的实际群晖权限由 IT 从有效 ACL 核对。NAS 容量、网络拒绝测试、设备隔离和既有永久链接须现场验收。
+
+## NAS 存储设置
+
+Windows 安装器仍负责首次建立 DSM 登录和初始管理员。公司内部署完成后，以管理员登录，在左侧系统导航打开「NAS 存储设置」。现有已绑定的三区直接显示在运行状态中。
+
+1. 输入群晖私网 IPv4 或内网域名、DSM HTTPS 端口和一个普通 SMB 共享名。域名须通过内网 DNS 唯一解析为一个 RFC1918 IPv4。测试连接使用系统受信证书或安装器指定的 CA，保留原 DSM 主机名做证书验证。DSM 请求不跟随重定向。
+2. 输入当前管理员本人的 NAS 密码，分别测试 DSM 和 SMB。浏览授权目录，选择一个现有工作目录。也可输入共享内相对路径，例如 `部门/工作台`。NAS 管理员应提前建立其中的 `设计资产`、`工作台临时区`、`_工作台备份`，按上文权限表配置 ACL。浏览器中的目录选择只读取目录元数据。
+3. 检查目录、影响和系统账号授权。普通员工和终审可分别使用经授权的实际测试账号检查。界面上的读写授权结果来自不写入数据的访问检查。实际继承 ACL、读写和清理效果请在已批准的隔离 NAS 目录现场验收。此前系统密码未变时可留空。换账号、地址或已固定的解析地址时重新输入系统账号密码。
+4. 确认保存后，工作台显示「待重启」并暂停业务入口。维护窗口在提升权限的 PowerShell 执行 `Restart-Service -Name NASDesignWorkbench`，重新登录并打开「NAS 存储设置 → 刷新状态」。复检通过后才启用新会话池。复检失败会恢复原 YAML 并显示「应用失败」。查看 `logs/service.stderr.log` 和设置状态。
+5. 已有资产、历史或批次记录时，根目录和共享变更必须走独立迁移。修改地址须验证原 NAS 的 SMB 身份及可用资产样本。上传、审核、入库、恢复、巡检或备份尚未结束时先结束工作，配置中心会列出冲突。
+
+新版受管配置位于 `configuration/config.yaml`，其目录 ACL 仅允许管理员、系统和服务身份写入，安装根、应用程序及 NSSM 继续按原权限保护。旧版升级在停机和快照后将配置迁至受保护子目录，保留数据目录、密钥、证书绝对路径和旧配置备份。安装根路径下原来的 `config.yaml` 是旧版布局。升级失败时回到原布局和原快照。
+
+配置变更前的 YAML 副本位于本机 `data/nas-settings-previous.yaml`，由 `data/nas-settings-state.json` 记录校验值。外部编辑导致自动恢复无法确认时，由运维保持服务停止，核对副本与日志，再决定回退。恢复旧连接前须确认服务启用后没有在新根产生数据，或确认目标仍为同一套 NAS 资产和目录。旧的完整备份恢复流程也可获得运行时原配置。若按旧手工安装方式运行，配置文件所在目录须专用于工作台服务且可原子替换。
 
 ## 软件升级和回滚
 

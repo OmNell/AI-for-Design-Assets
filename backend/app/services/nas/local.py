@@ -11,16 +11,18 @@ from .paths import Access, NasPaths, Region
 
 
 class LocalFs(BaseFs):
-    def __init__(self, root: Path | str, permissions: Mapping[Region, Access], paths: NasPaths | None = None) -> None:
+    def __init__(self, root: Path | str, permissions: Mapping[Region, Access], paths: NasPaths | None = None, *, initialize: bool = True) -> None:
         super().__init__(paths or NasPaths(), permissions)
         self.root = Path(root).absolute()
-        self.root.mkdir(parents=True, exist_ok=True)
+        if initialize:
+            self.root.mkdir(parents=True, exist_ok=True)
         if self.root.is_symlink():
             raise NasPermissionDenied("本地 NAS 根目录不能是符号链接")
         self.root = self.root.resolve()
         # 只初始化区域目录，不写入任何用户文件；确保区域根预先存在。
-        for region in Region:
-            self._path(self.paths.root(region)).mkdir(parents=True, exist_ok=True)
+        if initialize:
+            for region in Region:
+                self._path(self.paths.root(region)).mkdir(parents=True, exist_ok=True)
 
     def _path(self, path: str) -> Path:
         current = self.root

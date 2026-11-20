@@ -9,6 +9,7 @@ export const navigation: NavigationItem[] = [
   { path: '/todos', label: '我的待办' },
   { path: '/projects', label: '全部资产' }, { path: '/search', label: '智能检索' },
   { path: '/admin/roles', label: '管理', roles: ['admin'] }, { path: '/settings', label: '设置', roles: ['admin'] },
+  { path: '/admin/nas-settings', label: 'NAS 存储设置', roles: ['admin'] },
 ]
 export function canAccess(roles: Role[], item: NavigationItem): boolean {
   return !item.roles || roles.some(role => item.roles!.includes(role))

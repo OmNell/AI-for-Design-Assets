@@ -13,7 +13,6 @@ import secrets
 import shutil
 import socket
 import sqlite3
-import ssl
 import subprocess
 import sys
 from time import perf_counter
@@ -33,6 +32,7 @@ from app.db.models import ProductEmbedding, Setting
 from app.services.ai.client import AiClient
 from app.services.ai.settings import AiSettingsService
 from app.services.crypto import SecretCipher
+from app.services.auth.backends import DsmAuthBackend
 from app.services.ingest.vectors import FORMAL_MODEL, _model_identity, _valid
 from app.services.maintenance.settings import SystemParameters, daily_time
 from app.services.nas import NasFs, NasNotFound, Region, safe_join
@@ -166,15 +166,8 @@ def network_checks(config: Settings, args, report: Report) -> None:
         def dsm() -> str:
             if not config.nas.dsm_https:
                 raise ValueError("生产 DSM 必须配置 HTTPS")
-            context = ssl.create_default_context(cafile=str(config.nas.dsm_ca_file) if config.nas.dsm_ca_file else None)
-            host = config.nas.host
-            if ":" in host and not host.startswith("["):
-                host = f"[{host}]"
-            with httpx.Client(verify=context, timeout=5, trust_env=False) as client:
-                response = client.get(f"https://{host}:{config.nas.dsm_port}/webapi/query.cgi",
-                    params={"api": "SYNO.API.Info", "version": 1, "method": "query", "query": "SYNO.API.Auth"})
-                response.raise_for_status()
-                return require(response.json().get("success") is True, "DSM HTTPS 与登录 API 发现通过")
+            DsmAuthBackend(config.nas.model_copy(update={"timeout_s": 5})).discover()
+            return "DSM HTTPS 与登录 API 发现通过"
         report.run("DSM HTTPS", dsm)
         paths = create_paths(config)
         try:

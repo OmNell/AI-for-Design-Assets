@@ -10,7 +10,7 @@ import { canAccess, navigation } from './navigation'
 
 const icons: Record<string, IconName> = {
   '/': 'home', '/projects': 'folder', '/upload': 'upload', '/todos': 'inbox', '/search': 'search',
-  '/first-review': 'check', '/final-review': 'check', '/admin/roles': 'users', '/settings': 'settings',
+  '/first-review': 'check', '/final-review': 'check', '/admin/roles': 'users', '/settings': 'settings', '/admin/nas-settings': 'folder',
 }
 
 export function Shell() {
@@ -34,7 +34,7 @@ export function Shell() {
   const sections = [
     { label: '工作区', paths: ['/', '/projects', '/upload', '/todos', '/search'] },
     { label: '审核', paths: ['/first-review', '/final-review'] },
-    { label: '系统', paths: ['/admin/roles', '/settings'] },
+    { label: '系统', paths: ['/admin/roles', '/settings', '/admin/nas-settings'] },
   ]
   return <div className="grid h-dvh min-h-0 grid-cols-[200px_minmax(0,1fr)] grid-rows-[64px_minmax(0,1fr)] overflow-hidden lg:grid-cols-[232px_minmax(0,1fr)] 2xl:grid-cols-[248px_minmax(0,1fr)]">
     <header className="col-span-2 flex min-w-0 items-center gap-5 border-b border-slate-200 bg-white px-5">
@@ -64,7 +64,7 @@ export function Shell() {
           <p className="mb-2 px-3 text-xs font-medium text-slate-500">{section.label}</p>
           <ul className="space-y-1">{links.map(item => <li key={item.path}>
             <NavLink to={item.path} end={item.path === '/'} className={({ isActive }) => {
-              const active = isActive || (item.path === '/admin/roles' && location.pathname.startsWith('/admin/'))
+              const active = isActive || (item.path === '/admin/roles' && location.pathname.startsWith('/admin/') && location.pathname !== '/admin/nas-settings')
               return `flex items-center gap-3 rounded-lg px-3 py-2.5 font-medium ${active ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`
             }}><Icon name={icons[item.path]} />{item.label}</NavLink>
           </li>)}</ul>

@@ -21,6 +21,21 @@ class Access(StrEnum):
     WRITE = "write"
 
 
+REGION_NAMES = {"formal": "设计资产", "temp": "工作台临时区", "backup": "_工作台备份"}
+
+
+def work_path(path: str, *, allow_share: bool = False) -> str:
+    """目录选择器只接受共享内的 POSIX 相对路径。"""
+    if not path and allow_share:
+        return ""
+    if "\\" in path or len(path) > 768:
+        raise NasPermissionDenied("请使用共享内的相对路径")
+    checked = safe_join(path)
+    if len(checked.split("/")) > 12 or any(len(part) > 255 for part in checked.split("/")):
+        raise NasPermissionDenied("目录路径超出长度或深度限制")
+    return checked
+
+
 SYSTEM_PERMISSIONS = {Region.FORMAL: Access.READ, Region.TEMP: Access.NONE, Region.BACKUP: Access.WRITE}
 
 
@@ -56,6 +71,11 @@ class NasPaths:
         if any(a == b or a.startswith(b + "/") or b.startswith(a + "/")
                for i, a in enumerate(roots) for b in roots[i+1:]):
             raise ValueError("NAS 三个区域根路径不能重叠")
+
+    @classmethod
+    def under(cls, root: str) -> NasPaths:
+        path = work_path(root)
+        return cls(**{region: safe_join(path, folder) for region, folder in REGION_NAMES.items()})
 
     def root(self, region: Region) -> str:
         return getattr(self, region.value)

@@ -34,6 +34,9 @@ from app.services.maintenance.admin import AdminService
 from app.services.maintenance.cleanup import CleanupService
 from app.services.maintenance.settings import SystemService
 from app.api.auth import router as auth_router
+from app.api.nas_settings import router as nas_settings_router
+from app.services.nas_settings import NasSettingsService, activate_at_boot
+from app.services.nas_settings.state import NasChangeGate
 from app.api.admin import router as admin_router
 from app.api.upload import router as upload_router
 from app.services.upload.service import UploadService
@@ -66,11 +69,14 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
                log_dir: Path | None = None, *, config_file: Path | None = None) -> FastAPI:
+    nas_gate = NasChangeGate()
+
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         source = (config_file or Path(os.environ.get("NASWB_CONFIG", "config.yaml"))).resolve()
         config = settings or load_settings(source)
-        directory = log_dir or source.parent / "logs"
+        log_root = source.parent.parent if source.parent.name == "configuration" else source.parent
+        directory = log_dir or log_root / "logs"
         handler = configure_logging(directory)
         logger = logging.getLogger("nas_workbench")
         database: Database | None = None
@@ -84,12 +90,16 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             application.state.settings = config
             application.state.cipher = SecretCipher(config.paths.data_dir)
             database.migrate()
+            nas_gate.unfreeze()
+            config = activate_at_boot(config, source, database, application.state.cipher)
+            application.state.settings = config
             application.state.database = database
             pool = create_session_pool(config)
             application.state.auth = AuthService(database, pool, create_auth_backend(config), config)
             application.state.roles = RoleService(application.state.auth)
             jobs = JobQueue(database, pool, workers=config.jobs.workers, auth_lock=application.state.auth.lock)
             application.state.jobs = jobs
+            application.state.nas_settings = NasSettingsService(source, application.state.auth, application.state.cipher, jobs, nas_gate)
             system = SystemService(application.state.auth, jobs)
             application.state.system = system
             thumbs = ThumbService(application.state.auth, jobs)
@@ -185,7 +195,16 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             ):
                 return error_response(403, "unsafe_origin", "此操作只允许从工作台页面发起")
         return await call_next(request)
+    class GateMiddleware:
+        def __init__(self, app) -> None:
+            self.app = app
+
+        async def __call__(self, scope, receive, send) -> None:
+            await nas_gate(self.app, scope, receive, send)
+
+    application.add_middleware(GateMiddleware)
     application.include_router(router)
+    application.include_router(nas_settings_router)
     application.include_router(auth_router)
     application.include_router(admin_router)
     application.include_router(maintenance_router)

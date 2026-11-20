@@ -47,8 +47,8 @@ def main() -> int:
             if config.mode != "prod":
                 parser.error("仅生产模式支持临时输入系统账号密码")
             nas = config.nas
-            fs = SmbFs(nas.host, nas.share, nas.system_user, getpass.getpass("系统账号密码："),
-                       paths, nas.timeout_s, SYSTEM_PERMISSIONS)
+            fs = SmbFs(str(nas.verified_address or nas.host), nas.share, nas.system_user, getpass.getpass("系统账号密码："),
+                       paths, nas.timeout_s, SYSTEM_PERMISSIONS, strict_share=nas.work_root is not None)
         else:
             fs = create_system_fs(config)
         try:

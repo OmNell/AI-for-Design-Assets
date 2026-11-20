@@ -75,6 +75,19 @@ class JobQueue:
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._started = False
+        self._paused = False
+
+    def pause_for_nas_change(self) -> bool:
+        with self._auth_lock, self._lock:
+            if self._active.total():
+                return False
+            self._paused = True
+            return True
+
+    def resume_after_nas_change_failure(self) -> None:
+        with self._auth_lock, self._lock:
+            self._paused = False
+        self.wake()
 
     def register(self, kind: str, handler: JobHandler, concurrency: int | None = None,
                  retries: int | None = None, recoverable: bool | None = None,
@@ -115,6 +128,8 @@ class JobQueue:
         with self._lock:
             if kind not in self._registry:
                 raise AppError("job_kind_unregistered", "该任务类型尚未开放", 422)
+            if self._paused:
+                raise AppError("nas_restart_pending", "NAS 配置已保存，任务暂停等待重启", 503)
             if self._stop.is_set():
                 raise AppError("job_queue_stopped", "任务队列已停止", 503)
         if scheduled_at is not None and scheduled_at.tzinfo is None:
@@ -165,7 +180,7 @@ class JobQueue:
 
     def _claim(self) -> tuple[Job, Registration] | None:
         with self._auth_lock, self._lock:
-            if self._stop.is_set() or sum(self._active.values()) >= self.workers:
+            if self._paused or self._stop.is_set() or sum(self._active.values()) >= self.workers:
                 return None
             kinds = [kind for kind, registration in self._registry.items()
                      if self._active[kind] < registration.concurrency]
