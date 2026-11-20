@@ -1,7 +1,7 @@
 """正式卡片柜的只读项目、商品和资料列表。"""
 from __future__ import annotations
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models import (Batch, CatalogFile, CompanyIndustryMap, HistoryVersion, Industry, InspectionFinding, Link,
@@ -72,32 +72,43 @@ class CatalogService:
             files=session.scalar(select(func.count()).select_from(CatalogFile).where(
                 CatalogFile.project_id == project.id, CatalogFile.status == "active")))
 
-    def selection(self, session: Session, filters: ProjectFilters) -> list[Project]:
+    @staticmethod
+    def industry_name():
+        registered = select(Industry.name).where(Industry.id == Project.industry_id).scalar_subquery()
+        return func.coalesce(func.nullif(func.json_extract(Project.archive_review, "$.industry"), ""), registered, "")
+
+    @staticmethod
+    def company_matches(term):
+        company = CompanyIndustryMap
+        aliases = func.json_each(company.aliases).table_valued("value")
+        alias_of_project = select(1).select_from(aliases).where(
+            func.lower(aliases.c.value) == func.lower(Project.company_name)).correlate(company, Project).exists()
+        alias_hit = select(1).select_from(aliases).where(
+            func.instr(func.lower(aliases.c.value), term) > 0).correlate_except(aliases).exists()
+        mapped = select(1).select_from(company).where(
+            or_(company.id == Project.company_id, company.company_name.collate("NOCASE") == Project.company_name, alias_of_project),
+            or_(func.instr(func.lower(company.company_name), term) > 0, alias_hit)).correlate_except(company).exists()
+        return or_(func.instr(func.lower(Project.company_name), term) > 0, mapped)
+
+    @classmethod
+    def selection_query(cls, filters: ProjectFilters) -> Select[tuple[Project]]:
         sort = {"newest": Project.ingested_at.desc(), "oldest": Project.ingested_at.asc(),
                 "name": Project.project_name.asc(), "code": Project.project_code.asc()}
         query = select(Project).where(Project.status == "active")
         if filters.won is not None:
             query = query.where(Project.won == filters.won)
-        companies = list(session.scalars(select(CompanyIndustryMap)))
-        matching = []
-        term = filters.q.strip().casefold()
-        company_term = filters.company.strip().casefold()
-        industry_term = filters.industry.strip().casefold()
-        for project in session.scalars(query.order_by(sort[filters.sort], Project.id)):
-            names = {project.company_name.casefold()}
-            for row in companies:
-                company_names = {item.casefold() for item in [row.company_name, *row.aliases]}
-                if row.id == project.company_id or names.intersection(company_names):
-                    names.update(company_names)
-                    break
-            if term and not any(term in value for value in (project.project_code.casefold(), project.project_name.casefold(), *names)):
-                continue
-            if company_term and str(project.company_id) != company_term and not any(company_term in value for value in names):
-                continue
-            if industry_term and str(project.industry_id) != industry_term and industry_term not in self._industry(session, project).casefold():
-                continue
-            matching.append(project)
-        return matching
+        if term := filters.q.strip().lower():
+            query = query.where(or_(func.instr(func.lower(Project.project_code), term) > 0,
+                                    func.instr(func.lower(Project.project_name), term) > 0, cls.company_matches(term)))
+        if company := filters.company.strip().lower():
+            query = query.where(Project.company_id == company if company.isdecimal() else cls.company_matches(company))
+        if industry := filters.industry.strip().lower():
+            query = query.where(Project.industry_id == industry if industry.isdecimal()
+                                else func.instr(func.lower(cls.industry_name()), industry) > 0)
+        return query.order_by(sort[filters.sort], Project.id)
+
+    def selection(self, session: Session, filters: ProjectFilters) -> list[Project]:
+        return list(session.scalars(self.selection_query(filters)))
 
     def list(self, filters: ProjectFilters, login: LoginContext, host: str) -> ProjectPage:
         with self.auth.database.session() as session:

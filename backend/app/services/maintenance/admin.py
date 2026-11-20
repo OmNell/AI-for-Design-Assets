@@ -159,11 +159,11 @@ class AdminService:
             self.queue._require_admin(session, actor)
             ordered = query.order_by(SearchLog.id.desc())
             if export:
-                return csv_export(("搜索时间", "账号", "查询", "结果数", "点击", "毫秒", "降级提示"),
-                    ((row.ts, username, row.query, row.result_count, count, row.duration_ms, "、".join(row.warnings))
+                return csv_export(("搜索时间", "账号", "查询", "结果数", "点击", "毫秒", "降级提示", "检索模式"),
+                    ((row.ts, username, row.query, row.result_count, count, row.duration_ms, "、".join(row.warnings), "快速匹配" if row.mode == "quick" else "AI 自然语言搜索")
                      for row, username, count in session.execute(ordered)))
             total = session.scalar(select(func.count()).select_from(query.subquery()))
-            items = [SearchLogView(id=row.id, ts=row.ts, user_id=row.user_id, username=username, query=row.query,
+            items = [SearchLogView(id=row.id, ts=row.ts, user_id=row.user_id, username=username, query=row.query, mode=row.mode,
                 result_count=row.result_count, clicks=count, duration_ms=row.duration_ms, warnings=row.warnings)
                 for row, username, count in session.execute(ordered.offset((filters.page-1)*filters.limit).limit(filters.limit))]
             return SearchLogPage(total=total, items=items)
