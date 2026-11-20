@@ -11,9 +11,11 @@ from .paths import Access, NasPaths, Region
 
 
 class LocalFs(BaseFs):
-    def __init__(self, root: Path | str, permissions: Mapping[Region, Access], paths: NasPaths | None = None, *, initialize: bool = True) -> None:
+    def __init__(self, root: Path | str, permissions: Mapping[Region, Access], paths: NasPaths | None = None, *,
+                 initialize: bool = True, browser_read: bool = False) -> None:
         super().__init__(paths or NasPaths(), permissions)
         self.root = Path(root).absolute()
+        self.browser_read = browser_read
         if initialize:
             self.root.mkdir(parents=True, exist_ok=True)
         if self.root.is_symlink():

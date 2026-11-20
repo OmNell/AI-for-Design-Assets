@@ -19,7 +19,7 @@ import { AuditPage } from '../pages/AuditPage'
 import { QueuePage } from '../pages/QueuePage'
 import { CompanyMapPage } from '../pages/CompanyMapPage'
 import { SearchPage } from '../pages/SearchPage'
-import { ProjectsPage } from '../pages/ProjectsPage'
+import { AssetsPage } from '../pages/AssetsPage'
 import { ProjectPage } from '../pages/ProjectPage'
 import { ProductPage } from '../pages/ProductPage'
 import { AssetLinkPage, FilePage, FindingsPage } from '../pages/AssetLinkPage'
@@ -64,7 +64,7 @@ function AuthBootstrap() {
       <Route index element={<HomePage />} />
       <Route path="/todos" element={<TodosPage />} />
       {navigation.filter(item => item.path !== '/' && item.path !== '/todos').map(item => <Route key={item.path} path={item.path} element={<RoleGuard item={item}>
-        {item.path === '/search' ? <SearchPage /> : item.path === '/projects' ? <ProjectsPage /> : item.path === '/admin/roles' ? <RolesPage /> : item.path === '/upload' ? <UploadPage /> : item.path === '/admin/nas-settings' ? <Suspense fallback={<p role="status">正在加载 NAS 存储设置…</p>}><NasSettingsPage /></Suspense> : item.path === '/settings' ? <AiSettingsPage /> : item.path === '/first-review' ? <QueuePage stage="first" /> : item.path === '/final-review' ? <QueuePage stage="final" /> : <PlaceholderPage title={item.label} />}
+        {item.path === '/search' ? <SearchPage /> : item.path === '/projects' ? <AssetsPage /> : item.path === '/admin/roles' ? <RolesPage /> : item.path === '/upload' ? <UploadPage /> : item.path === '/admin/nas-settings' ? <Suspense fallback={<p role="status">正在加载 NAS 存储设置…</p>}><NasSettingsPage /></Suspense> : item.path === '/settings' ? <AiSettingsPage /> : item.path === '/first-review' ? <QueuePage stage="first" /> : item.path === '/final-review' ? <QueuePage stage="final" /> : <PlaceholderPage title={item.label} />}
       </RoleGuard>} />)}
       <Route path="/admin/maintenance" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><Suspense fallback={<p role="status">正在读取维护页面…</p>}><MaintenancePage /></Suspense></RoleGuard>} />
       <Route path="/archive/repairs" element={<RoleGuard item={navigation.find(item => item.path === '/final-review')!}><Suspense fallback={<p role="status">正在读取修复申请…</p>}><ArchiveRepairsPage /></Suspense></RoleGuard>} />

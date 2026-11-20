@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import io
 import struct
 import tempfile
 from pathlib import Path
@@ -16,12 +17,12 @@ class ImageDecodeError(Exception):
     """可安全向用户展示的图像解码失败原因。"""
 
 
-def _decode(source: BinaryIO) -> Image.Image:
+def _decode(source: BinaryIO, pixel_limit: int | None = Image.MAX_IMAGE_PIXELS) -> Image.Image:
     try:
         # 预检允许的主图格式只有 JPEG 和 PNG，避免启用无关解码器。
         with Image.open(source, formats=("JPEG", "PNG")) as original:
             original.seek(0)
-            if Image.MAX_IMAGE_PIXELS is not None and original.width * original.height > Image.MAX_IMAGE_PIXELS:
+            if pixel_limit is not None and original.width * original.height > pixel_limit:
                 raise ImageDecodeError("图片像素过大，无法生成缩略图")
             original.load()
             with ImageOps.exif_transpose(original) as oriented:
@@ -38,6 +39,13 @@ def _decode(source: BinaryIO) -> Image.Image:
         raise ImageDecodeError("图片像素过大，无法生成缩略图") from None
     except (UnidentifiedImageError, OSError, ValueError, SyntaxError, EOFError, struct.error, OverflowError, MemoryError):
         raise ImageDecodeError("图片损坏或无法解码") from None
+
+
+def render_preview(source: BinaryIO, size: int) -> bytes:
+    with _decode(source, 24_000_000) as image, io.BytesIO() as output:
+        image.thumbnail((size, size), Image.Resampling.LANCZOS)
+        image.save(output, format="JPEG", quality=85)
+        return output.getvalue()
 
 
 def render_variants(source: BinaryIO, destination: Path) -> None:
