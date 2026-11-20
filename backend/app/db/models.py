@@ -459,6 +459,7 @@ class SearchLog(Base):
     query: Mapped[str] = mapped_column(Text)
     parsed: Mapped[dict[str, object]] = mapped_column(JSON)
     result_count: Mapped[int] = mapped_column(Integer)
+    mode: Mapped[str] = mapped_column(String, default="semantic", server_default="semantic")
     duration_ms: Mapped[int] = mapped_column(Integer)
     index_generation: Mapped[int | None] = mapped_column(Integer)
     ai_usage: Mapped[list[dict[str, object]]] = mapped_column(JSON)

@@ -1,3 +1,4 @@
+import { searchModeLabels } from '../api/search'
 import { Button, Panel, Table as DataTable } from '../components/ui'
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -163,8 +164,8 @@ function Logs({ search }: { search: boolean }) {
     </form>
     {search && <Quiet>无点击记录可用于整理检索题目，单凭这一项无法判断检索质量。</Quiet>}
     <Load loading={state.isPending} error={state.error}>
-      {search ? <Table columns={['查询时间', '账号', '查询', '结果／点击', '耗时', '降级提示']}>{searches.data?.items.map(row => <tr key={row.id}>
-        <td>{time(row.ts)}</td><td>{row.username ?? row.user_id}</td><td>{row.query}</td><td>{row.result_count}／{row.clicks}</td>
+      {search ? <Table columns={['查询时间', '账号', '查询', '检索模式', '结果／点击', '耗时', '降级提示']}>{searches.data?.items.map(row => <tr key={row.id}>
+        <td>{time(row.ts)}</td><td>{row.username ?? row.user_id}</td><td>{row.query}</td><td>{searchModeLabels[row.mode]}</td><td>{row.result_count}／{row.clicks}</td>
         <td>{row.duration_ms} ms</td><td>{row.warnings.join('、') || '—'}</td></tr>)}</Table>
         : <Table columns={['操作时间', '账号／角色', '动作', '对象', '结果／来源', '详情']}>{ops.data?.items.map(row => <tr key={row.id}>
           <td>{time(row.ts)}</td><td>{row.username ?? row.user_id ?? '系统'}／{row.role}</td><td>{row.action}</td>

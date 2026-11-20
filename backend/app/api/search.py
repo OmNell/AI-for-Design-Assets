@@ -1,4 +1,4 @@
-"""混合检索、点击及管理员向量索引入口。"""
+"""双模式检索、点击及管理员向量索引入口。"""
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Request, Response

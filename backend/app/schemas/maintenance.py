@@ -118,6 +118,7 @@ class SearchLogView(RecordView):
     ts: datetime
     user_id: int
     username: str | None
+    mode: Literal["quick", "semantic"]
     query: str
     result_count: int
     clicks: int

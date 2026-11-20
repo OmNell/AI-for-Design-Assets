@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 from app.schemas.catalog import ProjectRow
 from app.services.ai.field_catalog import FIXED_FIELDS
 
+SearchMode = Literal["quick", "semantic"]
+
 Term = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
 
 
@@ -25,9 +27,15 @@ class Conditions(BaseModel):
         return fields
 
 
+class SearchConditions(Conditions):
+    # 快速匹配保留原始整词，查询模型的输出仍受原有 Term 上限约束。
+    keywords: list[Annotated[str, StringConstraints(min_length=1, max_length=250)]] = Field(default_factory=list, max_length=12)
+
+
 class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=250)]
+    mode: SearchMode = "semantic"
     won: bool | None = None
     industry: str = Field(default="", max_length=120)
     company: str = Field(default="", max_length=120)
@@ -69,11 +77,16 @@ class SearchHit(BaseModel):
     reason: str
 
 
+class SearchProjectHit(ProjectRow):
+    reason: str | None = None
+
+
 class SearchResult(BaseModel):
     search_id: int
+    mode: SearchMode
     products: list[SearchHit]
-    projects: list[ProjectRow]
-    conditions: Conditions
+    projects: list[SearchProjectHit]
+    conditions: SearchConditions
     warnings: list[str]
     degraded: bool
     exact: bool

@@ -1,3 +1,4 @@
+import type { SearchMode } from './search'
 import { request } from './client'
 
 const api = '/api/admin'
@@ -43,7 +44,7 @@ export interface OperationLog extends LogBase {
   before: unknown; after: unknown
 }
 export interface SearchLog extends LogBase {
-  query: string; result_count: number; clicks: number; duration_ms: number; warnings: string[]
+  query: string; mode: SearchMode; result_count: number; clicks: number; duration_ms: number; warnings: string[]
 }
 export interface LogPage<T> { total: number; items: T[] }
 export interface RepairCandidate { project_id: number; project_code: string; project_name: string; ready: boolean; detail: string }
