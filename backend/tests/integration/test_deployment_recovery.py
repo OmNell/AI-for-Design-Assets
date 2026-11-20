@@ -199,7 +199,7 @@ def test_migrates_and_restores_p0_legacy_database(tmp_path):
     try:
         db.migrate()
         with db.engine.connect() as connection:
-            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "0020_maintenance"
+            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "0021_pre_descriptions"
             assert connection.exec_driver_sql("PRAGMA foreign_key_check").fetchall() == []
         with db.session() as session:
             assert session.get(User, 42).roles == ["first_reviewer"]

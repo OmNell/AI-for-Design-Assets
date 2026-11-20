@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Batch, BatchFile, BatchProduct, HCodeSequence, PreflightAck, Project, User, UserSession, utcnow
 from app.errors import AppError
-from app.schemas.upload import AiProgress, Issue, BatchProductResponse, BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, ResumeRequest, UploadFileResponse
+from app.schemas.upload import AiProgress, Issue, BatchProductResponse, BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, PreDescriptionInput, PreDescriptionProduct, PreDescriptionView, ResumeRequest, UploadFileResponse
 from app.services.auth.service import AuthService, LoginContext, is_expired, token_hash
 from app.services.nas import NasFs, NasNotFound, NasSessionExpired, NasUnavailable, Region
 from app.services.nas.factory import create_paths
@@ -25,6 +25,7 @@ from app.services.postops.supplement import active_batch_id, catalog_files, clas
 from .fingerprint import HashState, fingerprint
 from app.services.thumbs import ThumbService, is_main_image
 from app.services.ai.orchestrator import AiService, active_products
+from app.services.ai import pre_descriptions as descriptions
 from app.services.ai.vision import has_visual_evidence
 
 UPLOADING = "上传中"
@@ -34,6 +35,7 @@ TERMINATED = "已终止"
 TERMINATABLE = {UPLOADING, INTERRUPTED, STAGED, "AI 处理中", "AI 处理失败", "待核对", "已驳回", "待初审", "待终审"}
 H_CODE = re.compile(r"H([0-9]{4})-([0-9]{4})")
 AI = "AI 处理中"
+UPLOAD_ROLES = {"uploader", "first_reviewer", "final_reviewer"}
 
 
 class UploadService:
@@ -192,8 +194,87 @@ class UploadService:
                 raise AppError("forbidden", "无权查看该批次", 403)
             return self._snapshot(session, batch)
 
+    @staticmethod
+    def _description_batch(session: Session, batch_id: int, login: LoginContext) -> tuple[Batch, User]:
+        UploadService._check_login(session, login)
+        batch = session.get(Batch, batch_id)
+        if batch is None:
+            raise AppError("batch_not_found", "批次不存在", 404)
+        user = session.get(User, login.user.id)
+        if user is None or not user.enabled or user.id != batch.owner_id or not set(user.roles) & UPLOAD_ROLES:
+            raise AppError("forbidden", "只有当前批次责任人可以填写主图描述", 403)
+        if batch.kind not in {"ingest", "supplement"}:
+            raise AppError("invalid_operation", "该批次不包含可描述的主图", 409)
+        return batch, user
+
+    @staticmethod
+    def _description_view(session: Session, batch: Batch) -> PreDescriptionView:
+        singles = batch.payload.get("ai_single", {})
+        return PreDescriptionView(batch_id=batch.id, status=batch.status, folder_name=batch.payload["folder_name"],
+            kind=batch.kind, editable=descriptions.editable(batch), products=[
+                PreDescriptionProduct(id=product.id, batch_file_id=file.id, kind=product.kind,
+                    display_name=product.display_name, file_name=file.rel_path.rsplit("/", 1)[-1],
+                    thumb_status=file.thumb_status, thumb_error=file.thumb_error, fingerprint=file.fingerprint,
+                    description=product.pre_description, version=product.pre_description_version,
+                    state=descriptions.state(product, file), ai_status=product.ai_status, ai_error=product.ai_error,
+                    visual_ai_succeeded=has_visual_evidence(product, file),
+                    ai_in_progress=batch.status == AI or str(product.id) in singles)
+                for product, file in descriptions.products_for_batch(session, batch)])
+
+    def pre_descriptions(self, batch_id: int, login: LoginContext) -> PreDescriptionView:
+        with self.lock, self.database.session() as session:
+            batch, _ = self._description_batch(session, batch_id, login)
+            return self._description_view(session, batch)
+
+    def save_pre_description(self, batch_id: int, product_id: int, body: PreDescriptionInput,
+                             login: LoginContext, host: str) -> PreDescriptionView:
+        text = descriptions.validated_text(body.description)
+        with self._transfer(login, host) as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            batch, user = self._description_batch(session, batch_id, login)
+            if batch.status == AI or str(product_id) in batch.payload.get("ai_single", {}):
+                raise AppError("ai_in_progress", "这张主图正在识别，识别结束后才能修改预描述", 409)
+            if not descriptions.editable(batch):
+                raise AppError("invalid_batch_state", "只有未提交的待处理批次可以编辑主图描述", 409)
+            product = session.get(BatchProduct, product_id)
+            file = session.get(BatchFile, product.batch_file_id) if product and product.batch_id == batch.id else None
+            if not file or file.batch_id != batch.id or not descriptions.is_completed_main(file):
+                raise AppError("product_not_found", "主图不存在、已移除或尚未完成上传", 404)
+            if product.pre_description_version != body.version or file.fingerprint != body.fingerprint:
+                raise AppError("pre_description_changed", "描述或主图已变化，请刷新后重新确认", 409)
+            if not descriptions.valid_fingerprint(file):
+                self._upgrade_fingerprint(session, batch, file, self.auth.pool.get(login.session_id), host,
+                                          actor_id=user.id, session_id=login.session_id)
+            if descriptions.state(product, file) == "ready" and text == product.pre_description:
+                return self._description_view(session, batch)
+            before = {"description": product.pre_description, "fingerprint": product.pre_description_fingerprint,
+                      "version": product.pre_description_version, "by": product.pre_description_by,
+                      "at": product.pre_description_at.isoformat() if product.pre_description_at else None,
+                      "confirmation": product.tags_confirmation, "relation_confirm_kind": product.relation_confirm_kind}
+            if product.ai_success_at is not None:
+                before["vision"] = {"version": product.ai_description_version, "model": product.ai_model,
+                    "fingerprint": product.ai_fingerprint, "at": product.ai_success_at.isoformat(),
+                    "result": product.ai_raw_result}
+            product.pre_description = text
+            product.pre_description_by = user.id
+            product.pre_description_at = utcnow()
+            product.pre_description_fingerprint = file.fingerprint
+            product.pre_description_version += 1
+            product.ai_status, product.ai_error = descriptions.AWAITING_DESCRIPTION, None
+            product.tags_confirmation = {key: {"status": "pending", "previous_value": value.get("previous_value")}
+                                         for key, value in product.tags_confirmation.items()}
+            if product.kind == "set":
+                product.relation_confirmed, product.relation_confirm_kind = False, "pending"
+            batch.updated_at = product.pre_description_at
+            OplogService(session).write(user.id, ",".join(user.roles), "保存商品主图预描述", "batch_product",
+                str(product.id), before, {"description": text, "file_id": file.id, "fingerprint": file.fingerprint,
+                    "version": product.pre_description_version, "by": user.id, "at": product.pre_description_at.isoformat()},
+                "成功", host)
+            return self._description_view(session, batch)
+
     def retry_ai(self, batch_id: int, login: LoginContext, host: str) -> BatchResponse:
         with self._transfer(login, host) as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
             batch = session.get(Batch, batch_id)
             if batch is None:
                 raise AppError("batch_not_found", "批次不存在", 404)
@@ -211,7 +292,7 @@ class UploadService:
                 for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id))
             ):
                 raise AppError("main_image_required", "补充批次没有待识别主图", 409)
-            self.ai.start_batch(session, batch, user, host)
+            self.ai.start_batch(session, batch, user, host, session_id=login.session_id)
             OplogService(session).write(user.id, ",".join(user.roles), "重试整批 AI", "batch", str(batch.id), None, {"status": AI}, "成功", host)
             return self._snapshot(session, batch)
 
@@ -267,6 +348,7 @@ class UploadService:
         unfinished = session.scalar(select(BatchFile.id).where(BatchFile.batch_id == batch.id, BatchFile.upload_status != "done").limit(1))
         if unfinished is None:
             batch.status = STAGED
+            descriptions.products_for_batch(session, batch, initialize=True)
             batch.payload = {**batch.payload, "upload_token_hash": None, "queued": False}
             self._log(session, batch, "上传已暂存", "uploader", host)
             self._release(batch)
@@ -542,8 +624,9 @@ class UploadService:
         file.fingerprint, file.fingerprint_kind = digest, "full"
         batch.payload = {**batch.payload, "fingerprint_kinds": {**batch.payload.get("fingerprint_kinds", {}), str(file.id): "full"}}
 
-    def _upgrade_fingerprint(self, session: Session, batch: Batch, file: BatchFile, fs: NasFs, host: str) -> None:
-        if file.fingerprint_kind == "full" and file.fingerprint:
+    def _upgrade_fingerprint(self, session: Session, batch: Batch, file: BatchFile, fs: NasFs, host: str, *,
+                             actor_id: int | None = None, session_id: int | None = None) -> None:
+        if descriptions.valid_fingerprint(file):
             return
         path = self._file_path(batch, file)
         if not fs.exists(path) or fs.stat(path).size != file.size:
@@ -552,19 +635,21 @@ class UploadService:
         self._record_fingerprint(batch, file, fingerprint(fs, path, file.size))
         if self.thumbs is not None and old_digest != file.fingerprint:
             file.thumb_status, file.thumb_error, file.thumb_fingerprint = None, None, None
-            self.thumbs.enqueue(session, batch, file)
+            self.thumbs.enqueue(session, batch, file, actor_id=actor_id, session_id=session_id)
         self._log(session, batch, "补算文件完整 SHA-256", "uploader", host)
 
     def _verify_for_ai(self, session: Session, batch: Batch, login: LoginContext, host: str) -> None:
         files = list(session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id)))
-        if batch.kind == "ingest" and not any(is_main_image(file) and not file.removed for file in files):
+        if batch.kind == "ingest" and not any(descriptions.is_completed_main(file) for file in files):
             raise AppError("main_image_required", "首次入库必须保留至少一张主图", 409)
         for file in files:
             if file.removed:
                 continue
-            if file.upload_status != "done":
+            if file.upload_status != "done" or file.bytes_received != file.size:
                 raise AppError("file_not_completed", "须完成所有文件上传后再确认", 409)
-            if file.fingerprint_kind != "full" or not file.fingerprint:
+            if is_main_image(file) and file.size == 0:
+                raise AppError("invalid_main_image", "主图文件为空", 409, {"file_id": file.id})
+            if not descriptions.valid_fingerprint(file):
                 if batch.uploader_id != login.user.id:
                     raise AppError("fingerprint_unverified", "历史批次须由上传人补算完整指纹后才能重试 AI", 409)
                 batch.upload_session_id = login.session_id
@@ -576,6 +661,7 @@ class UploadService:
 
     def confirm(self, batch_id: int, login: LoginContext, host: str) -> BatchResponse:
         with self._transfer(login, host) as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
             batch = self._batch(session, batch_id, login.user)
             self._check_login(session, login)
             if batch.status != STAGED:
@@ -595,7 +681,7 @@ class UploadService:
                     return self._snapshot(session, batch)
             batch.status = AI
             if self.ai is not None:
-                self.ai.start_batch(session, batch, login.user, host)
+                self.ai.start_batch(session, batch, login.user, host, session_id=login.session_id)
             self._log(session, batch, "确认开始 AI 处理", "uploader", host)
             return self._snapshot(session, batch)
 

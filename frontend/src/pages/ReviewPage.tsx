@@ -239,6 +239,7 @@ function ReviewWorkspace({ id }: { id: number }) {
 
       <div className="ui-panel min-h-0 min-w-0 overflow-hidden p-3"><div data-testid="tag-form" className="h-full overflow-y-auto pr-1">{selected ?
         <TagForm batchId={batch.id} product={selected} fields={fields} items={items} editable={editable && !busy} busy={busy} onChange={change(selected.id)}
+          descriptionHref={'/batches/' + id + '/pre-descriptions?product=' + selected.id + (preferredProduct ? '&replace=' + preferredProduct : '')}
           onRetry={() => void runProduct(() => retryProductAi(id, selected.id), () => void client.invalidateQueries({ queryKey: key }))} onRemove={() => setModal('remove')}
           relationDraft={draft} onRelationDraft={ids => setDrafts(value => ({ ...value, [selected.id]: ids }))}
           onConfirmRelations={() => void runProduct(() => setRelations(id, selected.id, draft), () => setDrafts(value => { const next = { ...value }; delete next[selected.id]; return next }))} /> :

@@ -2,7 +2,7 @@ import { Button, Card, Panel } from '../components/ui'
 import { useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { getBatch, confirmBatch, retryAi, type Batch, type BatchProduct } from '../api/upload'
+import { getBatch, retryAi, type Batch, type BatchProduct } from '../api/upload'
 import { getOperation, operationHref, operationLabels } from '../api/operations'
 import { OperationDiff } from '../components/ops/OperationDiff'
 import { OperationExecution } from '../components/ops/OperationExecution'
@@ -16,7 +16,7 @@ const initialLabels: Record<string, string> = { category: '品类', material: '�
 function Product({ product, batch }: { product: BatchProduct; batch: Batch }) {
   const file = batch.files.find(value => value.id === product.batch_file_id)
   const names = new Map(batch.products?.map(value => [value.id, value.display_name]))
-  return <Card><div className="flex items-start justify-between gap-5"><div><h3 className="font-semibold">{product.display_name}</h3><p className="mt-2 text-xs text-slate-500">{product.kind === 'item' ? '单品' : '套装'} · {product.ai_status === 'done' ? '打标完成' : product.ai_status === 'failed' ? '打标失败' : '等待处理'}</p></div>{file && <ThumbnailPreview batchId={batch.id} file={file} />}</div>
+  return <Card><div className="flex items-start justify-between gap-5"><div><h3 className="font-semibold">{product.display_name}</h3><p className="mt-2 text-xs text-slate-500">{product.kind === 'item' ? '单品' : '套装'} · {product.ai_status === 'done' ? '打标完成' : product.ai_status === 'failed' ? '打标失败' : product.ai_status === 'awaiting_description' ? '待填写描述或启动识别' : '等待处理'}</p></div>{file && <ThumbnailPreview batchId={batch.id} file={file} />}</div>
     {product.ai_status === 'done' && product.visual_ai_succeeded === false && <p className="mt-4 text-sm text-amber-800">当前主图缺少已验证的视觉识别结果，请重新打标。</p>}
     {product.ai_error && <p className="mt-4 text-sm text-red-800">{product.ai_error}</p>}
     {product.flags.includes('multi_object') && <p className="mt-4 rounded-xl bg-amber-100/65 p-3 text-sm text-amber-900">一图识别到多个商品</p>}
@@ -58,7 +58,7 @@ export function BatchDetailPage() {
   const reviewPath = pending ? operationHref(id, value.kind, value.status) : `/batches/${id}/${light ? 'operation' : 'review'}`
   const suffix = replace && kind === 'supplement' ? `?replace=${replace}` : ''
   const progress = value.ai_progress ?? { items_total: 0, items_done: 0, sets_total: 0, sets_done: 0, failed: 0 }
-  const canOperate = !!user && (value.uploader_id === undefined || value.uploader_id === user.id) && user.roles.some(role => ['uploader', 'first_reviewer', 'final_reviewer'].includes(role))
+  const canOperate = !!user && (value.owner_id === undefined || value.owner_id === user.id) && user.roles.some(role => ['uploader', 'first_reviewer', 'final_reviewer'].includes(role))
   const canRetry = canOperate || !!user?.roles.includes('admin')
   const products = value.products ?? []
   return <div className="space-y-6"><Panel><div className="mb-6 flex items-start justify-between gap-6"><div><p className="text-xs text-slate-500">{value.batch_no}</p><h1 className="mt-3 break-all text-2xl font-semibold">{value.folder_name}</h1></div><Link className="shrink-0 text-sm text-blue-700 underline underline-offset-4" to="/">返回首页</Link></div>
@@ -67,15 +67,17 @@ export function BatchDetailPage() {
     {!light && <p className="mt-4 break-all text-sm">推荐位置：{value.recommended_path || '位置待定'}</p>}
     {value.status === 'AI 处理中' && <p role="status" className="mt-4 text-sm text-slate-500">正在按单品、套装的顺序处理，请稍候…</p>}
     {error && <p role="alert" className="mt-4 text-red-800">{error}</p>}
-    <div className="mt-6 flex gap-4">{value.status === '已暂存' && canOperate && (kind ? <Link to={`/batches/${id}/operation${suffix}`} className="self-center text-blue-700 underline">{kind === 'supplement' ? '核对补充文件' : '编辑操作草稿'}</Link>
-      : <Button disabled={busy} onClick={() => void act(() => confirmBatch(id))}>确认，开始 AI 处理</Button>)}
+    <div className="mt-6 flex flex-wrap gap-4">{value.status === '已暂存' && canOperate && (kind ? <Link to={`/batches/${id}/operation${suffix}`} className="self-center text-blue-700 underline">{kind === 'supplement' ? '核对补充文件' : '编辑操作草稿'}</Link>
+      : <Link to={'/batches/' + id + '/pre-descriptions'} className="ui-button ui-primary">填写主图预描述</Link>)}
+      {!light && canOperate && (pending || value.status === 'AI 处理失败') && <Link to={'/batches/' + id + '/pre-descriptions' + suffix}
+        className="self-center text-blue-700 underline">查看或修改主图预描述</Link>}
       {!light && ['AI 处理中', 'AI 处理失败', '待核对'].includes(value.status) && (value.status === '待核对' ? user?.id === value.owner_id : canRetry) && <Button disabled={busy} onClick={() => void act(() => retryAi(id))}>重试整批 AI</Button>}
-      {['上传中', '上传中断', '已暂存', 'AI 处理中', 'AI 处理失败', '待核对', '已驳回', '待初审', '待终审'].includes(value.status) && canOperate && <TerminateBatchButton id={id} disabled={busy} onTerminated={result => {
+      {['上传中', '上传中断', '已暂存', 'AI 处理中', 'AI 处理失败', '待核对', '已驳回', '待初审', '待终审'].includes(value.status) && canOperate && (value.uploader_id === undefined || value.uploader_id === user?.id) && <TerminateBatchButton id={id} disabled={busy} onTerminated={result => {
         query.setQueryData(['batch', id], result)
         void query.invalidateQueries({ queryKey: ['batches'] })
       }} />}
       {reviewing && <Link to={`${reviewPath}${suffix}`} className="self-center text-blue-700 underline">{pending ? light ? '查看或编辑操作' : '进入核对页' : '查看提交版本'}</Link>}
-      {['上传中', '上传中断'].includes(value.status) && canOperate && <Link to={`/upload?resume=${id}${replace ? `&replace=${replace}` : ''}`} className="text-sm text-blue-700 underline underline-offset-4">继续上传</Link>}</div>
+      {['上传中', '上传中断'].includes(value.status) && canOperate && (value.uploader_id === undefined || value.uploader_id === user?.id) && <Link to={`/upload?resume=${id}${replace ? `&replace=${replace}` : ''}`} className="text-sm text-blue-700 underline underline-offset-4">继续上传</Link>}</div>
   </Panel>
     {['入库中', '入库异常', '已入库'].includes(value.status) && (kind
       ? <OperationExecution batchId={id} kind={kind} projectId={value.project_id} />

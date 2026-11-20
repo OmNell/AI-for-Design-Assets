@@ -14,6 +14,8 @@ from app.db.models import Batch, BatchFile, PreflightAck, Project, UserSession, 
 from app.main import create_app
 from app.services.auth.service import COOKIE_NAME
 
+from test_ai_pipeline import describe_all
+
 
 @pytest.fixture
 def upload_client(settings: Settings, tmp_path: Path) -> Iterator[TestClient]:
@@ -74,6 +76,7 @@ def test_upload_duplicate_out_of_order_complete_confirm(upload_client: TestClien
     assert finish(client, batch).json()["status"] == "已暂存"
     assert file_path(client, batch).read_bytes() == b"abcdefghij"
     assert done.json()["files"][0]["fingerprint"] == hashlib.sha256(b"abcdefghij").hexdigest()
+    describe_all(client, f'/api/batches/{batch["id"]}')
     assert client.post(f'/api/batches/{batch["id"]}/confirm').json()["status"] == "AI 处理中"
     assert client.post(f'/api/batches/{batch["id"]}/confirm').status_code == 409
     canceled = client.post(f'/api/batches/{batch["id"]}/cancel', json={"reason": "重复素材"})
@@ -317,6 +320,7 @@ def test_confirm_upgrades_legacy_digest_and_preserves_old_record(upload_client: 
     with client.app.state.database.session() as session:
         row = session.get(BatchFile, file_id)
         row.fingerprint, row.fingerprint_kind = "f" * 64, "quick"
+    describe_all(client, f'/api/batches/{batch["id"]}')
     confirmed = client.post(f'/api/batches/{batch["id"]}/confirm')
     assert confirmed.status_code == 200
     assert confirmed.json()["files"][0]["fingerprint"] == hashlib.sha256(b"abcd").hexdigest()

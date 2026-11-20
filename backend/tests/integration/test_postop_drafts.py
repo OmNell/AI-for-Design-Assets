@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from app.db.models import AiCall, BatchProduct, CatalogFile, HistoryVersion, Link, Product, ProductRelation, Project, ReviewSnapshot
+from test_ai_pipeline import describe_all
 from test_ingest import app_for, start
 from test_review import confirm_fields
 from test_two_stage_review import ALL, Flow
@@ -85,6 +86,9 @@ def test_document_supplement_full_sha_and_no_ai(formal):
 def test_replacement_requires_visual_and_explicit_relation_review(formal):
     flow, project_id = formal
     base = upload(flow, project_id, {"单品/另一文件名.jpg": image_bytes("red")})
+    assert flow.call("one", "POST", base + "/confirm").json()["code"] == "pre_descriptions_required"
+    assert flow.call("one", "GET", base + "/pre-descriptions").json()["products"][0]["description"] is None
+    describe_all(flow.client, base)
     begun = flow.call("one", "POST", base + "/confirm")
     assert begun.status_code == 200, begun.text
     assert flow.client.app.state.jobs.wait_idle(8)

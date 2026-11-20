@@ -49,7 +49,22 @@ def uploaded(client: TestClient, paths: list[str], company: str = '企业', proj
     return batch
 
 
+def save_description(client: TestClient, base: str, product: dict, description: str):
+    return client.put(f"{base}/products/{product['id']}/pre-description",
+                      json={"description": description, "version": product["version"], "fingerprint": product["fingerprint"]})
+
+
+def describe_all(client: TestClient, base: str) -> None:
+    response = client.get(base + "/pre-descriptions")
+    assert response.status_code == 200, response.text
+    for product in response.json()["products"]:
+        text = "这是一套商务茶具。" if product["kind"] == "set" else "这是一只水杯。"
+        saved = save_description(client, base, product, text)
+        assert saved.status_code == 200, saved.text
+
+
 def confirm(client: TestClient, batch: dict) -> dict:
+    describe_all(client, f"/api/batches/{batch['id']}")
     response = client.post(f"/api/batches/{batch['id']}/confirm")
     assert response.status_code == 200, response.text
     assert client.app.state.jobs.wait_idle(8)
@@ -124,6 +139,7 @@ def test_cancel_pending_and_running_ai_does_not_publish_late_result(client: Test
         return original(self, *args, **kwargs)
     monkeypatch.setattr(FakeAiClient, 'generate', delayed)
     batch = uploaded(client, [f'单品/{index}.jpg' for index in range(6)])
+    describe_all(client, f"/api/batches/{batch['id']}")
     assert client.post(f"/api/batches/{batch['id']}/confirm").status_code == 200
     try:
         assert entered.wait(2)
@@ -186,13 +202,23 @@ def test_production_payload_has_only_review_image_and_sanitized_candidate_text(c
     real = AiClient(config, client.app.state.database, client.app.state.cipher, transport=httpx.MockTransport(transport))
     monkeypatch.setattr(client.app.state.ai, 'client', lambda: real)
     try:
-        result = confirm(client, uploaded(client, ['单品/P001_私密企业_one_杯子.jpg', '套装/套装.jpg'], '私密企业'))
+        batch = uploaded(client, ['单品/P001_私密企业_one_杯子.jpg', '套装/套装.jpg'], '私密企业')
+        base = f"/api/batches/{batch['id']}"
+        item, bundle = client.get(base + "/pre-descriptions").json()["products"]
+        assert save_description(client, base, item, "私密企业 P001 one 的蓝牙音箱。资料示例 /volume1/工作台临时区/秘密.doc").status_code == 200
+        assert save_description(client, base, bundle, "这是一套便携音箱与充电盒。").status_code == 200
+        assert client.post(base + "/confirm").status_code == 200
+        assert client.app.state.jobs.wait_idle()
+        result = client.get(base).json()
         assert result['status'] == '待核对' and len(payloads) == 2
         text = json.dumps(payloads, ensure_ascii=False)
-        for secret in ['私密企业', 'P001', 'one_杯子', '工作台临时区', '设计资产共享']:
+        for secret in ['私密企业', 'P001', 'one_杯子', '工作台临时区', '设计资产共享', '秘密.doc', 'volume1']:
             assert secret not in text
         assert '[已省略]' in text
-        content = payloads[1]['messages'][0]['content']
+        item_description = json.loads(payloads[0]['messages'][1]['content'][0]['text'])["pre_description"]
+        assert "蓝牙音箱" in item_description and " one " not in item_description
+        content = payloads[1]['messages'][1]['content']
+        assert json.loads(content[0]['text']) == {"pre_description": "这是一套便携音箱与充电盒。"}
         import base64
         image = base64.b64decode(content[1]['image_url']['url'].split(',')[1])
         with Image.open(BytesIO(image)) as decoded:

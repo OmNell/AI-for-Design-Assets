@@ -99,3 +99,48 @@ def test_h_code_sequence_is_atomic_across_database_connections(tmp_path: Path) -
         results = list(executor.map(allocate, range(8)))
     assert sorted(results) == [f"H2020-{n:04d}" for n in range(24, 32)]
     db.close()
+
+
+def test_pre_description_upgrade_preserves_legacy_proof_and_creates_staged_records(tmp_path: Path) -> None:
+    db = legacy_db(tmp_path)
+    config = Config(str(BACKEND_DIR / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
+    with db.engine.begin() as connection:
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        config.attributes["connection"] = connection
+        command.upgrade(config, "0020_maintenance")
+        connection.exec_driver_sql("""
+            UPDATE batch_products SET ai_model = 'legacy-model', ai_fingerprint = ?,
+                ai_success_at = CURRENT_TIMESTAMP WHERE id = 17
+        """, ("c" * 64,))
+        connection.exec_driver_sql("""
+            INSERT INTO batches (id, created_at, updated_at, batch_no, project_code, kind, status,
+                                 owner_id, uploader_id, round, temp_path, won, payload, ingest_step)
+            VALUES (21, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'B21', 'OLD21', 'ingest', 'AI 处理中',
+                    7, 7, 1, 'B21', 1, '{"ai_run":"old"}', 0)
+        """)
+        connection.exec_driver_sql("UPDATE batches SET status = '已暂存' WHERE id = 10")
+        connection.exec_driver_sql("""
+            INSERT INTO batch_files (id, created_at, updated_at, batch_id, rel_path, size, mtime, upload_status,
+                bytes_received, fingerprint, fingerprint_kind, removed, conflict)
+            VALUES (18, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 10, '套装/礼盒.jpg', 4, 1, 'done', 4, ?, 'full', 0, 'new'),
+                   (19, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 10, '单品/重复.jpg', 4, 1, 'done', 4, ?, 'full', 0, 'duplicate'),
+                   (20, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 10, '02设计方案/设计.jpg', 4, 1, 'done', 4, ?, 'full', 0, 'new')
+        """, ("a" * 64, "a" * 64, "b" * 64))
+    db.migrate()
+    db.migrate()
+    with db.engine.connect() as connection:
+        products = connection.exec_driver_sql("""
+            SELECT batch_file_id, kind, ai_status, pre_description_version, pre_description, ai_description_version
+            FROM batch_products ORDER BY batch_file_id
+        """).all()
+        assert products == [(15, "item", "done", 0, None, None), (18, "set", "awaiting_description", 0, None, None)]
+        assert connection.exec_driver_sql("SELECT id, ai_model, ai_fingerprint FROM batch_products WHERE id=17").one() == (
+            17, "legacy-model", "c" * 64)
+        assert not connection.exec_driver_sql("PRAGMA foreign_key_check").all()
+        assert connection.exec_driver_sql("SELECT status FROM batches WHERE id = 21").scalar_one() == "AI 处理失败"
+        assert connection.exec_driver_sql("""
+            SELECT json_extract(after, '$.status') FROM oplog
+            WHERE object_id = '21' AND action = '结束升级前未完成的 AI 任务'
+        """).scalar_one() == "AI 处理失败"
+    db.close()

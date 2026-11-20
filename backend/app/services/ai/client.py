@@ -387,14 +387,15 @@ class AiClient:
         raise AiCallError("AI调用失败")
 
     def generate(self, image: bytes, fields: list[FieldDefinition], items: list[dict[str, object]] | None = None,
-                 filename: str = "", batch_id: int | None = None, product_id: int | None = None) -> str:
+                 filename: str = "", batch_id: int | None = None, product_id: int | None = None, *, pre_description: str) -> str:
         validate_review_image(image)
         prompt = build_prompt(fields, items)
         # filename 专用于假模型，不得进入真实请求。
-        content = [{"type": "text", "text": prompt},
+        content = [{"type": "text", "text": json.dumps({"pre_description": pre_description}, ensure_ascii=False)},
                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(image).decode("ascii")}}]
         model = self.config.model_vision
-        payload: dict[str, object] = {"model": model, "messages": [{"role": "user", "content": content}]}
+        payload: dict[str, object] = {"model": model, "messages": [
+            {"role": "system", "content": prompt}, {"role": "user", "content": content}]}
         return self._run(model, "set" if items is not None else "item", lambda: self._chat(model, payload), batch_id, product_id)
 
     def embed(self, text: str, batch_id: int | None) -> list[float]:
@@ -445,13 +446,13 @@ class AiClient:
 
 
 class FakeAiClient(AiClient):
-    """固定的本地假模型，只在内存用文件名选择测试场景。"""
+    """固定的本地假模型，用文件名或描述选择演示结果。"""
     def __init__(self, config: AiConfig, database: Database, cipher: SecretCipher,
                  transport: httpx.BaseTransport | None = None, retry_delay_seconds: float = 0) -> None:
         super().__init__(config, database, cipher, transport, retry_delay_seconds)
 
     def generate(self, image: bytes, fields: list[FieldDefinition], items: list[dict[str, object]] | None = None,
-                 filename: str = "", batch_id: int | None = None, product_id: int | None = None) -> str:
+                 filename: str = "", batch_id: int | None = None, product_id: int | None = None, *, pre_description: str) -> str:
         validate_review_image(image)
         name = filename.casefold()
         def action() -> _Result:
@@ -469,7 +470,8 @@ class FakeAiClient(AiClient):
             if "空关系" in name or "empty_relation" in name:
                 relations = []
             result = {"tags": tags, "free_text": "具有清晰外观的商品，适合商务社交和日常居家。",
-                "multi_object": "一图多品" in name or "multi" in name, "relation_items": relations}
+                "multi_object": "一图多品" in name or "multi" in name, "relation_items": relations,
+                "description_conflict": "描述冲突" in pre_description}
             return _Result(json.dumps(result, ensure_ascii=False), {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})
         return self._run(self.config.model_vision or "fake-vision", "set" if items is not None else "item", action, batch_id, product_id)
 

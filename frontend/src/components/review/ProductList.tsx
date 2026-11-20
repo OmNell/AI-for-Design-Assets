@@ -3,7 +3,7 @@ import type { ReviewField, ReviewProduct } from '../../api/review'
 import { Thumb } from './Thumb'
 
 export function marks(product: ReviewProduct, fields: ReviewField[]) {
-  const yellow = product.flags.includes('multi_object') || fields.some(field => product.tags[field.key]?.flag) || (product.kind === 'set' && !product.relation_confirmed)
+  const yellow = product.flags.length > 0 || fields.some(field => product.tags[field.key]?.flag) || (product.kind === 'set' && !product.relation_confirmed)
   return { yellow, red: product.ai_status === 'failed' || (product.ai_status === 'done' && !product.visual_ai_succeeded), busy: product.ai_status === 'pending' }
 }
 
@@ -29,6 +29,9 @@ export function ProductList({ batchId, products, fields, selectedId, onSelect, c
               <Thumb batchId={batchId} fileId={product.batch_file_id} version={product.fingerprint ?? ''} alt={`${product.display_name} 缩略图`} />
               <span className="min-w-0 flex-1 truncate text-sm" title={product.display_name}>{product.display_name}</span>
               {!!pinCounts[product.id] && <span className="shrink-0 rounded-full bg-red-600 px-1.5 text-[11px] text-white" title="图上钉有审核意见">钉 {pinCounts[product.id]}</span>}
+              {product.ai_status === 'awaiting_description' && <span className="shrink-0 text-[11px] text-amber-800">
+                {product.pre_description_state === 'ready' ? '待识别' : product.pre_description_state === 'reconfirm' ? '待重确认' : '待描述'}
+              </span>}
               {mark.busy && <span className="shrink-0 rounded-full bg-sky-600 px-1.5 text-[11px] text-white" title="正在打标">…</span>}
               {mark.yellow && <span className="shrink-0 rounded-full bg-amber-500 px-1.5 text-[11px] text-white" title="有待处理的黄色项">黄</span>}
               {mark.red && <span className="shrink-0 rounded-full bg-red-600 px-1.5 text-[11px] text-white" title="打标失败，需重新识别">红</span>}

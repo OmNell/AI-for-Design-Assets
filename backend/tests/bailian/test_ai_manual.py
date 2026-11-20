@@ -51,6 +51,6 @@ def test_ten_main_images_tagging_for_human_review(real_client: AiClient, databas
         with file.open('rb') as original:
             render_variants(original, cache)
         # 仅发已去EXIF的1024 JPEG；报告只显示临时序号及标签，不显示源文件名/路径。
-        result = parse_result(real_client.generate((cache / '1024.jpg').read_bytes(), fields), fields)
+        result = parse_result(real_client.generate((cache / '1024.jpg').read_bytes(), fields, pre_description='这是测试用的蓝色图卡'), fields)
         assert set(result['tags']) == {field['key'] for field in fields}
         print(f'图片{number}：节日场景={result["tags"]["festival"]["value"]}；使用场景={result["tags"]["usage_scene"]["value"]}')

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { TerminateBatchButton } from '../components/TerminateBatchButton'
 import { ThumbnailPreview } from '../components/ThumbnailPreview'
-import { checkUpload, createBatch, resumeBatch, getBatch, pauseBatch, confirmBatch, type Batch, type Precheck } from '../api/upload'
+import { checkUpload, createBatch, resumeBatch, getBatch, pauseBatch, type Batch, type Precheck } from '../api/upload'
 import { checkSupplement, createSupplement, getOperationOptions } from '../api/operations'
 import { readDrop, readInput, readPicker, type DirectorySelection } from '../lib/dirReader'
 import { isIgnored, manifest, preflight, type Issue } from '../lib/preflight'
@@ -143,7 +143,7 @@ export function UploadPage() {
   const step = batch ? batch.status === '已暂存' ? 3 : 2 : selection ? 1 : 0
   return <div className="grid min-w-0 items-start gap-4 grid-cols-[160px_minmax(0,1fr)_minmax(230px,27%)] xl:grid-cols-[184px_minmax(0,1fr)_minmax(275px,28%)] 2xl:grid-cols-[216px_minmax(0,1fr)_minmax(310px,28%)]">
     <Panel className="sticky top-0 !p-4"><h2 className="font-semibold">入库流程</h2>
-      <ol className="mt-4 space-y-3">{['选择项目文件夹', '核对预检结果', '分片上传', '确认并开始 AI 处理'].map((title, index) =>
+      <ol className="mt-4 space-y-3">{['选择项目文件夹', '核对预检结果', '分片上传', '填写主图预描述'].map((title, index) =>
         <li key={title} className={`flex items-start gap-2 text-sm ${step === index ? 'font-semibold text-blue-700' : 'text-slate-600'}`} aria-current={step === index ? 'step' : undefined}>
           <span className={`grid size-5 shrink-0 place-items-center rounded-full text-xs ${step === index ? 'bg-blue-100' : 'bg-slate-100'}`}>{step > index ? <Icon name="check" className="!size-3" /> : index + 1}</span>
           {title}
@@ -193,7 +193,7 @@ export function UploadPage() {
       <span className="break-all">{file.rel_path}</span></div><span className="shrink-0 text-slate-500">{file.upload_status === 'done' ? '已完成' : file.upload_status === 'partial' ? '上传中' : '等待'} · {formatSize(file.bytes_received)} / {formatSize(file.size)}</span></div>)}</div>
     <div className="flex flex-wrap gap-2">{running && <Button onClick={() => void pause()}>暂停</Button>}{['上传中', '上传中断', '已暂存'].includes(batch.status) && <TerminateBatchButton id={batch.id} disabled={busy} onTerminated={onTerminated} />}
       {batch.status === '上传中断' && <Button onClick={() => { setBatch(null); navigate(`/upload?resume=${batch.id}${replaceTarget ? `&replace=${replaceTarget}` : ''}`) }}>重新拖入继续</Button>}
-      {batch.status === '已暂存' && (projectId ? <Link to={`/batches/${batch.id}/operation${replaceQuery}`} className="self-center text-sm text-blue-700 underline">核对补充文件</Link> : <Button disabled={busy} onClick={() => { setBusy(true); void confirmBatch(batch.id).then(value => { apply(value); navigate(`/batches/${value.id}`) }).catch((reason: Error) => setError(reason.message)).finally(() => setBusy(false)) }}>确认，开始 AI 处理</Button>)}</div>
+      {batch.status === '已暂存' && (projectId ? <Link to={`/batches/${batch.id}/operation${replaceQuery}`} className="self-center text-sm text-blue-700 underline">核对补充文件</Link> : <Link to={'/batches/' + batch.id + '/pre-descriptions'} className="ui-button ui-primary">填写主图预描述</Link>)}</div>
     {batch.termination_reason && <p className="mt-5 text-sm text-slate-600">终止原因：{batch.termination_reason}</p>}
     {batch.status === '已暂存' && <p className="mt-5 text-emerald-800">{batch.files.length} 个文件已到达临时区，指纹已计算；空目录已保留。</p>}
     {['AI 处理中', 'AI 处理失败', '待核对'].includes(batch.status) && <p className="mt-5 text-emerald-800"><a href={`/batches/${batch.id}`} className="underline underline-offset-4">查看 AI 进度与结果</a></p>}

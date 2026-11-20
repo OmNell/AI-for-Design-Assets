@@ -38,6 +38,9 @@ class ReviewProduct(BaseModel):
     free_text: str
     free_text_source: str
     ai_free_text: str
+    ai_raw_result: str | None = None
+    pre_description: str | None = None
+    pre_description_state: Literal["missing", "ready", "reconfirm"] = "missing"
     flags: list[str]
     relation_items: list[RelationView]
     relation_confirmed: bool
@@ -129,7 +132,7 @@ class ProductPatch(BaseModel):
     tags: dict[str, str] = Field(default_factory=dict)
     free_text: str | None = None
     confirmations: dict[str, Literal["confirmed_value", "confirmed_unknown"]] = Field(default_factory=dict)
-    resolve_flags: list[Literal["multi_object"]] = Field(default_factory=list)
+    resolve_flags: list[Literal["multi_object", "description_conflict"]] = Field(default_factory=list)
 
 
 class BulkRequest(BaseModel):
