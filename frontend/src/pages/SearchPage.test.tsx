@@ -73,13 +73,14 @@ it('发送筛选条件、显示降级并在删除解释条件后重新检索', a
   expect(bodies[1]).toEqual({ mode: 'semantic', query: '瓷器', won: true, industry: '2', company: '', remove: ['material'] })
 })
 
-it('商品卡片链接到 WP10，搜索错误有明确提示', async () => {
+it('两种结果视图保留完整的长标签和商品链接，搜索错误有提示', async () => {
+  const material = '哑光陶瓷、抛光玻璃、' + 'PANTONE_2026_'.repeat(20)
   const fetcher = vi.fn(async (url: string) => {
     if (url === '/api/catalog/tree') return new Response('[]')
     if (fetcher.mock.calls.filter(([path]) => path === '/api/search').length === 2)
       return new Response(JSON.stringify({ message: '搜索暂不可用' }), { status: 503 })
     return new Response(JSON.stringify({ ...base, mode: 'quick', index_generation: null, products: [{ id: 41, project_id: 8, project_code: 'P001', project_name: '礼盒',
-      company_name: '酒企', won: true, product_code: 'P001-001', name: '青瓷盏', kind: 'item', tags: { material: '陶瓷' },
+      company_name: '酒企', won: true, product_code: 'P001-001', name: '青瓷盏', kind: 'item', tags: { material },
       related: ['茶具套装'], matches: ['material'], reason: '陶瓷材质匹配', url: 'http://nas.example/l/item' }] }))
   })
   vi.stubGlobal('fetch', fetcher)
@@ -90,6 +91,10 @@ it('商品卡片链接到 WP10，搜索错误有明确提示', async () => {
   await until(() => host.textContent!.includes('青瓷盏'))
   expect(host.querySelector('a[href="/products/41"]')).not.toBeNull()
   expect(host.querySelector('a[href="http://nas.example/l/item"]')).not.toBeNull()
+  const tag = () => host.querySelector('article .tag-list li .ui-badge')
+  expect(tag()?.textContent).toBe(`材质 · ${material}`)
+  act(() => host.querySelector<HTMLButtonElement>('[aria-label="列表视图"]')!.click())
+  expect(tag()?.textContent).toBe(`材质 · ${material}`)
   submit()
   await until(() => host.textContent!.includes('搜索暂不可用'))
 })

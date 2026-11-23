@@ -3,7 +3,8 @@
 @tailwind utilities;
 
 @layer base {
-  body { @apply bg-slate-50 text-sm text-slate-900 antialiased; font-family: Inter, ui-sans-serif, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  body { @apply bg-slate-50 text-sm text-slate-900 antialiased; font-family: Inter, ui-sans-serif, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; overflow-wrap: anywhere; }
+  fieldset { min-inline-size: 0; }
   button:focus-visible, a:focus-visible, summary:focus-visible { @apply outline outline-2 outline-offset-2 outline-blue-600; }
   input[type="checkbox"], input[type="radio"], progress { @apply accent-blue-600; }
   dialog::backdrop { @apply bg-slate-900/40; }
@@ -12,10 +13,14 @@
 @layer components {
   .brand-mark { @apply inline-grid size-9 shrink-0 place-items-center rounded-lg bg-blue-600 text-white; }
   .ui-panel { @apply min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm; }
-  .ui-button { @apply inline-flex min-h-9 shrink-0 items-center justify-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50; }
+  .ui-button { @apply inline-flex min-h-9 max-w-full shrink-0 items-center justify-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50; }
   .ui-primary { @apply border-blue-600 bg-blue-600 text-white hover:border-blue-700 hover:bg-blue-700; }
   .ui-secondary { @apply border-slate-200 bg-white text-slate-700 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 aria-pressed:border-blue-300 aria-pressed:bg-blue-50 aria-pressed:text-blue-700; }
-  .field { @apply w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100; }
+  .field { @apply w-full min-w-0 max-w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100; }
+  .ui-badge { display: inline-block; max-inline-size: 100%; white-space: normal; vertical-align: middle; }
+  .tag-list > li { min-inline-size: 0; max-inline-size: 100%; }
+  .ui-dialog { width: min(35rem, calc(100% - 2rem)); max-height: 85dvh; padding: clamp(1rem, 3vw, 1.5rem); }
+  .ui-table-scroll { min-inline-size: 0; max-inline-size: 100%; overflow-x: auto; }
   .ui-table { @apply w-full border-collapse text-left text-sm; }
   .ui-table thead { @apply border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-500; }
   .ui-table th, .ui-table td { @apply px-4 py-3; }
@@ -27,4 +32,93 @@
 .asset-file-table { container: asset-table / inline-size; }
 @container asset-table (max-width: 520px) {
   [data-file-time] { display: none; }
+}
+
+.app-shell {
+  --sidebar-width: 12.5rem;
+  display: grid;
+  height: 100dvh;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.app-shell[data-notice="true"] { grid-template-rows: auto auto minmax(0, 1fr); }
+.app-header {
+  display: flex;
+  min-width: 0;
+  min-height: 4rem;
+  align-items: center;
+  gap: clamp(.5rem, 2vw, 1.25rem);
+  padding: .5rem clamp(.5rem, 2vw, 1.25rem);
+}
+.app-brand { width: calc(var(--sidebar-width) - 1.25rem); }
+.app-account { gap: clamp(.375rem, 1.25vw, .75rem); }
+.app-sidebar { padding-inline: .75rem; }
+.app-nav-link { display: flex; align-items: center; gap: .75rem; padding-inline: .75rem; }
+.workspace { container: workspace / inline-size; padding: clamp(.75rem, 2vw, 1.5rem); }
+
+@media (min-width: 64rem) {
+  .app-shell { --sidebar-width: 14.5rem; }
+}
+@media (min-width: 96rem) {
+  .app-shell { --sidebar-width: 15.5rem; }
+}
+@media (max-width: 47rem) {
+  .app-shell { --sidebar-width: 3.75rem; }
+  .app-brand { width: auto; }
+  .app-sidebar { padding-inline: .375rem; }
+  .app-nav-link { justify-content: center; padding-inline: 0; }
+  .app-brand-label, .app-nav-label, .app-nav-link span, .app-account-details { display: none; }
+}
+@media (max-width: 30rem) {
+  .app-logout { padding-inline: .5rem; }
+  .app-logout span { display: none; }
+}
+
+/* 分栏按侧栏和页面内边距扣除后实际可用的工作区宽度调整。 */
+.browse-layout, .summary-layout, .settings-layout, .product-layout, .upload-layout, .editor-layout {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+.browse-layout, .summary-layout, .settings-layout, .upload-layout { align-items: start; }
+.workspace-context { display: none; }
+.editor-list { max-height: 16rem; }
+.review-preview { height: clamp(17rem, 55dvh, 34rem); }
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
+  gap: 1.25rem;
+}
+
+@container workspace (min-width: 42rem) {
+  .browse-layout, .upload-layout, .editor-layout { grid-template-columns: minmax(10rem, 18%) minmax(0, 1fr); }
+  .browse-layout > :first-child, .upload-layout > :first-child { position: sticky; top: 0; }
+  .upload-layout > :last-child { grid-column: 2; }
+  .editor-layout > :last-child { grid-column: 1 / -1; }
+  .product-layout { grid-template-columns: minmax(0, 1fr) minmax(17rem, 38%); }
+}
+
+@container workspace (min-width: 60rem) {
+  .upload-layout, .editor-layout { grid-template-columns: minmax(10rem, 17%) minmax(0, 1fr) minmax(16rem, 28%); }
+  .upload-layout > :last-child, .editor-layout > :last-child { grid-column: auto; }
+  .settings-layout { grid-template-columns: minmax(0, 1fr) minmax(15rem, 28%); }
+  .editor-list { max-height: 65dvh; }
+  .review-layout { height: max(35.625rem, calc(100dvh - 17rem)); }
+  .review-layout .editor-list { max-height: none; }
+  .review-preview { height: auto; }
+}
+
+@container workspace (min-width: 70rem) {
+  .browse-layout[data-context="true"] { grid-template-columns: minmax(10rem, 18%) minmax(0, 1fr) auto; }
+  .summary-layout { grid-template-columns: minmax(0, 1fr) auto; }
+  .workspace-context {
+    position: sticky;
+    top: 0;
+    display: block;
+    width: clamp(16rem, 23cqw, 21.25rem);
+    min-width: 0;
+  }
+  .workspace-context-collapsed { width: 2.75rem; }
+  .workspace-context-trigger { display: none; }
 }

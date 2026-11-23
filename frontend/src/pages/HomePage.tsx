@@ -53,7 +53,7 @@ export function HomePage() {
         <p className="mt-1 text-slate-500">你好，{user.display_name || user.username}</p></div>
       {upload && <Link to="/upload" className="ui-button ui-primary"><Icon name="upload" />上传新项目</Link>}
     </header>
-    <div className="grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_auto]">
+    <div className="summary-layout">
       <div className="min-w-0 space-y-5">
         <Panel><div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="font-semibold">我的待办</h2><Link to="/todos" className="ui-link text-xs">查看全部待办</Link>

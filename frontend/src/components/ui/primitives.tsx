@@ -23,7 +23,7 @@ const tones = {
   success: 'bg-emerald-50 text-emerald-700', warning: 'bg-amber-50 text-amber-800', danger: 'bg-red-50 text-red-700',
 }
 export function Badge({ children, tone = 'neutral' }: PropsWithChildren<{ tone?: keyof typeof tones }>) {
-  return <span className={`inline-flex items-center whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium ${tones[tone]}`}>{children}</span>
+  return <span className={`ui-badge rounded-md px-2 py-1 text-xs font-medium ${tones[tone]}`}>{children}</span>
 }
 
 export function Panel({ children, className = '' }: PropsWithChildren<{ className?: string }>) {
@@ -39,7 +39,7 @@ export function ListItem({ children, className = '', active = false }: PropsWith
 }
 
 export function Table({ children, label }: PropsWithChildren<{ label?: string }>) {
-  return <div className="overflow-x-auto"><table aria-label={label} className="ui-table">{children}</table></div>
+  return <div className="ui-table-scroll"><table aria-label={label} className="ui-table">{children}</table></div>
 }
 
 export function EmptyState({ title, children }: PropsWithChildren<{ title: string }>) {

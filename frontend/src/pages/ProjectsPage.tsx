@@ -29,7 +29,7 @@ export function ProjectsPage({ embedded = false }: { embedded?: boolean }) {
       <div>{!embedded && <h1 className="text-2xl font-semibold tracking-tight">全部资产</h1>}<p className="mt-1 text-slate-500">按中标状态、行业或企业浏览已入库项目。</p></div>
       <Link to="/projects/voided" className="ui-button ui-secondary">查看作废项目</Link>
     </header>
-    <div className={`grid min-w-0 items-start gap-4 lg:grid-cols-[178px_minmax(0,1fr)] ${selected ? 'xl:grid-cols-[172px_minmax(0,1fr)_auto] 2xl:grid-cols-[204px_minmax(0,1fr)_auto]' : '2xl:grid-cols-[204px_minmax(0,1fr)]'}`}>
+    <div className="browse-layout" data-context={Boolean(selected)}>
       <DirectoryTree value={classification} onChange={classify} />
       <section className="ui-panel min-w-0 overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-3">

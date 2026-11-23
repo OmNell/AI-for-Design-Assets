@@ -34,12 +34,12 @@ function SettingsForm({ initial }: { initial: AiSettings }) {
   return <form onSubmit={save} className="mt-7 space-y-6">
     <label className="block text-sm">接口地址<input className="field mt-2" required type="url" {...register('base_url')} /></label>
     <label className="block text-sm">API Key <span className="ml-2 text-xs text-slate-500">{initial.api_key_set ? '已设置' : '尚未设置'}</span><input className="field mt-2" type="password" autoComplete="new-password" placeholder={initial.api_key_set ? '留空保留已保存的密钥' : '输入 API Key'} {...register('api_key')} /></label>
-    <div className="grid grid-cols-3 gap-5">
+    <div className="field-grid">
       <label className="text-sm">识图模型<input className="field mt-2" {...register('model_vision')} /></label>
       <label className="text-sm">文本模型<input className="field mt-2" {...register('model_text')} /></label>
       <label className="text-sm">初始向量模型<input className="field mt-2" {...register('model_embed')} /></label>
     </div>
-    <div className="grid grid-cols-4 gap-5">
+    <div className="field-grid">
       <label className="text-sm">并发数<input className="field mt-2" type="number" min={1} required {...register('concurrency', { valueAsNumber: true })} /></label>
       <label className="text-sm">超时（秒）<input className="field mt-2" type="number" min={1} required {...register('timeout_s', { valueAsNumber: true })} /></label>
       <label className="text-sm">重试次数<input className="field mt-2" type="number" min={0} required {...register('retries', { valueAsNumber: true })} /></label>

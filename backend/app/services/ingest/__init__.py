@@ -31,6 +31,7 @@ from app.services.notify import NotifyService
 from app.services.oplog import OplogService
 from app.services.preflight import REQUIRED
 from app.services.review import ReviewService
+from app.services.review.policy import self_review_allowed
 from app.services.upload.fingerprint import fingerprint
 from app.services.upload.service import UploadService
 from . import vectors
@@ -140,10 +141,14 @@ class IngestService:
         submitters = set(session.scalars(select(ReviewSnapshot.submitted_by).where(ReviewSnapshot.batch_id == batch.id)))
         submitters.add(batch.uploader_id)
         if (not first or not final or first.reviewer_id != batch.first_reviewer_id or final.reviewer_id != batch.final_reviewer_id
-                or first.reviewer_id in submitters or final.reviewer_id in submitters or first.reviewer_id == final.reviewer_id
                 or any(row.checklist != dict.fromkeys(CHECKLIST, True) for row in (first, final))
                 or ReviewService._digest(snapshot.content) != snapshot.digest):
             raise JobFailure("本轮双审、回避或快照校验失败", retryable=False)
+        reviewers = {first.reviewer_id, final.reviewer_id}
+        conflicts = reviewers if len(reviewers) == 1 else reviewers & submitters
+        if any(not self_review_allowed(session, self.auth.config.review, batch, session.get(User, reviewer))
+               for reviewer in conflicts):
+            raise JobFailure("本轮审核回避校验失败", retryable=False)
         original = snapshot.content["review"]["batch"]["folder_name"]
         code, company, name = original.split("_")
         location = (final.path_change or {}).get("after", {})

@@ -37,7 +37,7 @@ export function CompanyMapPage() {
         <input aria-label={`行业 ${index + 1} 名称`} className="field max-w-xs !py-2 text-sm" value={item.name} onChange={event => setIndustries(industries.map((value, position) => position === index ? { ...value, name: event.target.value } : value))} /></li>)}</ul>
       <div className="mt-3"><Button primary={false} onClick={() => setIndustries([...industries, { name: '' }])}>新增行业</Button></div>
       <h2 className="mt-8 text-lg font-semibold">企业</h2>
-      <table className="mt-3 w-full text-left text-sm"><thead className="text-xs text-slate-500"><tr><th className="p-2">序号</th><th className="p-2">标准名（2～10 字）</th><th className="p-2">别名（顿号分隔）</th><th className="p-2">所属行业</th></tr></thead>
+      <div className="ui-table-scroll mt-3"><table className="w-full min-w-[28rem] text-left text-sm"><thead className="text-xs text-slate-500"><tr><th className="p-2">序号</th><th className="p-2">标准名（2～10 字）</th><th className="p-2">别名（顿号分隔）</th><th className="p-2">所属行业</th></tr></thead>
         <tbody>{companies.map((item, index) => {
           const update = (patch: Partial<Company & { aliasText: string }>) => setCompanies(companies.map((value, position) => position === index ? { ...value, ...patch } : value))
           return <tr key={item.id ?? `new-${index}`}><td className="p-2 tabular-nums text-slate-500">{two(item.seq)}</td>
@@ -46,9 +46,9 @@ export function CompanyMapPage() {
             <td className="p-2"><select aria-label={`企业 ${index + 1} 所属行业`} className="field !py-2 text-sm" value={item.industry_id ?? item.industry_name ?? ''}
               onChange={event => { const chosen = industries.find(value => String(value.id ?? value.name) === event.target.value); update({ industry_id: chosen?.id ?? null, industry_name: chosen?.name ?? '' }) }}>
               <option value="">选择行业</option>{industries.filter(value => value.name.trim()).map(value => <option key={value.id ?? value.name} value={value.id ?? value.name}>{value.name}</option>)}</select></td></tr>
-        })}</tbody></table>
+        })}</tbody></table></div>
       <div className="mt-3"><Button primary={false} onClick={() => setCompanies([...companies, { name: '', aliases: [], aliasText: '', industry_name: '' }])}>新增企业</Button></div>
-      <div className="mt-8 flex items-center gap-4"><Button disabled={busy} onClick={() => void save()}>保存对照表</Button>
+      <div className="mt-8 flex flex-wrap items-center gap-4"><Button disabled={busy} onClick={() => void save()}>保存对照表</Button>
         {status.ok && <p role="status" className="text-sm text-emerald-800">{status.ok}</p>}{status.error && <p role="alert" className="text-sm text-red-800">{status.error}</p>}</div></>}
   </Panel>
 }

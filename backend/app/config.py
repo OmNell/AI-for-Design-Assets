@@ -103,6 +103,7 @@ class AiConfig(Section):
 
 class ReviewConfig(Section):
     overdue_days: int = Field(default=3, gt=0)
+    self_review_admin: str = Field(default="", max_length=128)
 
 
 class PurgeConfig(Section):

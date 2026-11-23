@@ -70,7 +70,7 @@ function ProjectBrowser({ data }: { data: ProjectDetail }) {
         <CopyLink url={data.project.link_url} label="复制项目链接" />
         {operations && <Link className="ui-button ui-secondary" to={`/projects/${id}/operations`}>资产操作与作废记录</Link>}</div>
     </header>
-    <div className={`grid min-w-0 items-start gap-4 lg:grid-cols-[178px_minmax(0,1fr)] ${pick ? 'xl:grid-cols-[172px_minmax(0,1fr)_auto] 2xl:grid-cols-[204px_minmax(0,1fr)_auto]' : '2xl:grid-cols-[204px_minmax(0,1fr)]'}`}>
+    <div className="browse-layout" data-context={Boolean(pick)}>
       <DirectoryTree value={allClasses} active={data.project} onChange={value => navigate({ pathname: '/projects', search: classificationSearch(value).toString() })} />
       <div className="min-w-0 space-y-4">
         <section className="ui-panel min-w-0 overflow-hidden">

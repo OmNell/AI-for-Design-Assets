@@ -15,7 +15,7 @@ export function ProductPage() {
   if (query.isPending) return <Panel><p role="status">正在读取商品…</p></Panel>
   if (query.isError) return <Panel><p role="alert">{query.error.message}</p><Link to="/projects" className="underline">返回项目列表</Link></Panel>
   const product = query.data
-  return <div className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(300px,38%)]">
+  return <div className="product-layout">
     <Panel><AssetPreview key={product.file_id} fileId={product.file_id} name={product.display_name} /></Panel>
     <Panel>
       <p className="text-sm text-slate-600">{product.product_code} · {product.kind === 'set' ? '套装' : '单品'} · 有效</p>
@@ -27,7 +27,7 @@ export function ProductPage() {
         {operations && <Link to={`/projects/${product.project.id}/operations?product=${product.id}`} className="self-center text-sm text-blue-700 underline">商品操作</Link>}
       </div>
       <h2 className="font-semibold">已确认标签</h2>
-      <dl className="my-3 space-y-2 text-sm">{product.tags.map(tag => <div key={tag.key} className="grid grid-cols-[5.5rem_1fr] gap-2">
+      <dl className="my-3 space-y-2 text-sm">{product.tags.map(tag => <div key={tag.key} className="grid grid-cols-[min(5.5rem,35%)_minmax(0,1fr)] gap-2">
         <dt className="text-slate-500">{tag.label}</dt>
         <dd>{tag.confirmation_status === 'confirmed_unknown' ? '已确认无法判断' : tag.value || '—'}</dd></div>)}</dl>
       {product.free_text && <><h2 className="mt-5 font-semibold">自由描述</h2><p className="mt-2 whitespace-pre-wrap break-words text-sm">{product.free_text}</p></>}

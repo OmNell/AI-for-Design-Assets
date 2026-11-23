@@ -1,11 +1,11 @@
 import { Badge, Button, Dialog, Icon, Panel } from '../components/ui'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { TerminateBatchButton } from '../components/TerminateBatchButton'
 import { ThumbnailPreview } from '../components/ThumbnailPreview'
 import { checkUpload, createBatch, resumeBatch, getBatch, pauseBatch, type Batch, type Precheck } from '../api/upload'
 import { checkSupplement, createSupplement, getOperationOptions } from '../api/operations'
-import { readDrop, readInput, readPicker, type DirectorySelection } from '../lib/dirReader'
+import { canReadPicker, readDrop, readInput, readPicker, type DirectorySelection } from '../lib/dirReader'
 import { isIgnored, manifest, preflight, type Issue } from '../lib/preflight'
 import { Uploader } from '../lib/uploader'
 
@@ -27,10 +27,21 @@ export function UploadPage() {
   const [differences, setDifferences] = useState<Record<string, string[]> | null>(null)
   const [confirm, setConfirm] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [directoryStage, setDirectoryStage] = useState<'picking' | 'native' | 'reading' | null>(null)
+  const [checkingDirectory, setCheckingDirectory] = useState(false)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
   const [speed, setSpeed] = useState(0)
-  const fileInput = useRef<HTMLInputElement>(null)
+  const fileInput = useRef<HTMLInputElement | null>(null)
+  const cancelPicker = useCallback(() => {
+    setDirectoryStage(null)
+    setError('浏览器未返回文件夹，可以重新选择或直接拖入。')
+  }, [])
+  const attachFileInput = useCallback((input: HTMLInputElement | null) => {
+    fileInput.current?.removeEventListener('cancel', cancelPicker)
+    fileInput.current = input
+    input?.addEventListener('cancel', cancelPicker)
+  }, [cancelPicker])
   const uploader = useRef<Uploader | null>(null)
   const manualStop = useRef(false)
   const liveBatch = useRef<Batch | null>(null)
@@ -61,24 +72,51 @@ export function UploadPage() {
     window.addEventListener('pagehide', leaving)
     return () => { leaving(); window.removeEventListener('pagehide', leaving) }
   }, [])
+  const supportsFullPicker = canReadPicker()
+  const directoryBusy = directoryStage === 'picking' || directoryStage === 'reading'
 
   const inspect = async (value: DirectorySelection, supplement = projectId) => {
-    setError(''); setBusy(true); setSelection(value); setAcks([]); setChecked(null); setDifferences(null)
-    const files = manifest(value.entries)
-    const local = preflight({ folder: value.folder_name, entries: files }).filter(issue => !supplement || !['P02', 'P07', 'P08', 'P09'].includes(issue.rule_code))
-    setIssues(local)
+    setError(''); setBusy(true); setCheckingDirectory(true); setSelection(value); setAcks([]); setChecked(null); setDifferences(null); setIssues([])
     try {
+      const files = manifest(value.entries)
+      const local = preflight({ folder: value.folder_name, entries: files }).filter(issue => !supplement || !['P02', 'P07', 'P08', 'P09'].includes(issue.rule_code))
+      setIssues(local)
       const body = { folder_name: value.folder_name, files }
       const server = supplement ? await checkSupplement(supplement, body) : await checkUpload(body, resumeId ?? batch?.id)
       setChecked(server)
       const combined = [...local, ...server.issues]
       setIssues(combined.filter((issue, index) => combined.findIndex(item => item.rule_code === issue.rule_code && item.path === issue.path) === index))
     } catch (reason: unknown) { setError(reason instanceof Error ? reason.message : '预检失败') }
-    finally { setBusy(false) }
+    finally { setBusy(false); setCheckingDirectory(false) }
   }
-  const pick = async () => {
-    try { const value = await readPicker(); if (value) await inspect(value); else fileInput.current?.click() }
-    catch (reason: unknown) { if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason instanceof Error ? reason.message : '无法读取目录') }
+  const readDirectory = async (
+    read: () => DirectorySelection | Promise<DirectorySelection | null>,
+    stage: 'picking' | 'reading' = 'reading',
+  ) => {
+    setError('')
+    setDirectoryStage(stage)
+    try {
+      const value = await read()
+      if (value) {
+        setDirectoryStage(null)
+        await inspect(value)
+      }
+    } catch (reason: unknown) {
+      if (reason instanceof DOMException && ['AbortError', 'NotAllowedError', 'SecurityError', 'NotReadableError', 'NotFoundError'].includes(reason.name)) {
+        setError('浏览器未能读取这个文件夹。请确认已允许读取，或使用普通选择、拖入项目文件夹。')
+      } else {
+        setError(reason instanceof Error && !(reason instanceof DOMException) ? reason.message : '无法读取目录，请重新选择或拖入项目文件夹')
+      }
+    } finally { setDirectoryStage(null) }
+  }
+  const pickOrdinary = () => {
+    setError('')
+    setDirectoryStage('native')
+    fileInput.current?.click()
+  }
+  const pick = () => {
+    if (!supportsFullPicker) return pickOrdinary()
+    void readDirectory(() => readPicker(() => setDirectoryStage('reading')), 'picking')
   }
   const start = async (value: Batch) => {
     manualStop.current = false
@@ -141,8 +179,8 @@ export function UploadPage() {
   const choose = !batch || !!selection || batch.status === '上传中断' || batch.status === '上传中' && !running
   const selectionFiles = selection?.entries.filter(e => !e.is_dir && !isIgnored(e)) ?? []
   const step = batch ? batch.status === '已暂存' ? 3 : 2 : selection ? 1 : 0
-  return <div className="grid min-w-0 items-start gap-4 grid-cols-[160px_minmax(0,1fr)_minmax(230px,27%)] xl:grid-cols-[184px_minmax(0,1fr)_minmax(275px,28%)] 2xl:grid-cols-[216px_minmax(0,1fr)_minmax(310px,28%)]">
-    <Panel className="sticky top-0 !p-4"><h2 className="font-semibold">入库流程</h2>
+  return <div className="upload-layout">
+    <Panel className="!p-4"><h2 className="font-semibold">入库流程</h2>
       <ol className="mt-4 space-y-3">{['选择项目文件夹', '核对预检结果', '分片上传', '填写主图预描述'].map((title, index) =>
         <li key={title} className={`flex items-start gap-2 text-sm ${step === index ? 'font-semibold text-blue-700' : 'text-slate-600'}`} aria-current={step === index ? 'step' : undefined}>
           <span className={`grid size-5 shrink-0 place-items-center rounded-full text-xs ${step === index ? 'bg-blue-100' : 'bg-slate-100'}`}>{step > index ? <Icon name="check" className="!size-3" /> : index + 1}</span>
@@ -154,10 +192,25 @@ export function UploadPage() {
     <p className="mt-3 text-sm text-slate-500">{projectId ? '请使用目标项目编号命名补充文件夹，只放本次要补充或替换的文件。' : '一次一个项目文件夹；主图优先，资料原样保留。'}</p>
     {error && <p role="alert" className="mt-5 text-red-800">{error}</p>}
     {batch && <p className="mt-4 text-sm text-emerald-800">{batch.batch_no} · {batch.folder_name} · {batch.queued ? '排队中' : batch.status}</p>}
-    {!batch && !projectId && <fieldset className="mt-6 flex gap-7"><legend className="mb-3 text-sm">是否中标（必选）</legend>{[true, false].map(value => <label key={String(value)} className="text-sm"><input type="radio" name="won" checked={won === value} onChange={() => setWon(value)} className="mr-2" />{value ? '已中标' : '未中标'}</label>)}</fieldset>}
-    {choose && won !== null && <div className="mt-6 rounded-xl border-2 border-dashed border-blue-200 bg-blue-50 px-4 py-9 text-center" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); void readDrop(event.dataTransfer.items).then(inspect).catch((reason: Error) => setError(reason.message)) }}>
-      <p className="mb-4 text-slate-700">{resumeId ? '重新拖入同一项目文件夹，核对续传清单' : '把项目文件夹拖到这里'}</p><Button disabled={busy} onClick={pick}>选择文件夹</Button>
-      <input type="file" hidden ref={fileInput} {...{ webkitdirectory: '' }} multiple onChange={event => { if (event.target.files?.length) { try { void inspect(readInput(event.target.files)) } catch (reason: unknown) { setError(reason instanceof Error ? reason.message : '目录读取失败') } } event.target.value = '' }} />
+    {!batch && !projectId && <fieldset className="mt-6 flex flex-wrap gap-x-7 gap-y-2"><legend className="mb-3 text-sm">是否中标（必选）</legend>{[true, false].map(value => <label key={String(value)} className="text-sm"><input type="radio" name="won" checked={won === value} onChange={() => setWon(value)} className="mr-2" />{value ? '已中标' : '未中标'}</label>)}</fieldset>}
+    {choose && won !== null && <div className="mt-6 rounded-xl border-2 border-dashed border-blue-200 bg-blue-50 px-4 py-9 text-center" onDragOver={event => event.preventDefault()} onDrop={event => {
+      event.preventDefault()
+      if (!busy && !directoryBusy) void readDirectory(() => readDrop(event.dataTransfer.items))
+    }}>
+      <p className="mb-4 text-slate-700">{resumeId ? '重新拖入同一项目文件夹，核对续传清单' : '把项目文件夹拖到这里'}</p>
+      <div className="flex flex-wrap justify-center gap-2">
+        <Button disabled={busy || directoryBusy} onClick={pick}>选择文件夹</Button>
+        {supportsFullPicker && <Button primary={false} disabled={busy || directoryBusy} onClick={pickOrdinary}>使用普通选择</Button>}
+      </div>
+      {(directoryStage || checkingDirectory) && <p role="status" className="mt-3 text-sm text-slate-600">
+        {directoryStage === 'picking' || directoryStage === 'native' ? '请在浏览器对话框中确认文件夹并允许读取…' : directoryStage === 'reading' ? '正在读取文件夹…' : '正在预检文件夹…'}
+      </p>}
+      <input type="file" hidden ref={attachFileInput} {...{ webkitdirectory: '' }}
+        onChange={event => {
+          const files = Array.from(event.currentTarget.files ?? [])
+          event.currentTarget.value = ''
+          if (!busy && !directoryBusy) void readDirectory(() => readInput(files))
+        }} />
     </div>}
     {selection && !selection.preservesEmptyDirectories && <p role="alert" className="mt-4 text-amber-800">该浏览器的普通文件夹选择无法列出空目录。包含空文件夹时，请改用拖入方式，或使用 Chrome / Edge 目录选择。</p>}
     {selection && needsYear && <label className="mt-5 block text-sm">实际所属年份（必填）<input type="number" min={1} max={9999} required className="field ml-4 max-w-32" value={year} onChange={event => setYear(event.target.value)} /></label>}
@@ -168,7 +221,7 @@ export function UploadPage() {
       const color = matching.some(i => i.level === 'block') ? 'text-red-800' : matching.some(i => i.level === 'warn') ? 'text-amber-700' : matching.some(i => i.level === 'ignore') ? 'text-slate-400' : 'text-slate-600'
       return <p key={entry.rel_path} className={`break-all py-1 ${color}`} style={{ paddingLeft: (entry.rel_path.split('/').length - 1) * 12 }}>{entry.is_dir ? '▸ ' : '· '}{entry.rel_path}</p>
     })}</div>
-    <div className="max-h-96 overflow-auto space-y-3">{issues.length ? issues.map((issue, index) => <p key={index} className={`text-sm ${issue.level === 'block' ? 'text-red-800' : issue.level === 'warn' ? 'text-amber-800' : 'text-slate-400'}`}>{issue.level === 'block' ? '拦截' : issue.level === 'warn' ? '提醒' : '忽略'} · {issue.message}<span className="mt-1 block text-xs">{issue.path}</span></p>) : <p className="text-emerald-800">预检通过</p>}</div>
+    <div className="max-h-96 overflow-auto space-y-3">{issues.length ? issues.map((issue, index) => <p key={index} className={`text-sm ${issue.level === 'block' ? 'text-red-800' : issue.level === 'warn' ? 'text-amber-800' : 'text-slate-400'}`}>{issue.level === 'block' ? '拦截' : issue.level === 'warn' ? '提醒' : '忽略'} · {issue.message}<span className="mt-1 block text-xs">{issue.path}</span></p>) : checked && <p className="text-emerald-800">预检通过</p>}</div>
   </div><div className="mt-6 space-y-3">{warnings.map(code => <label key={code} className="block text-sm"><input type="checkbox" checked={acks.includes(code)} onChange={event => setAcks(event.target.checked ? [...acks, code] : acks.filter(v => v !== code))} className="mr-2" />我已知晓：{issues.find(issue => issue.rule_code === code)?.message}</label>)}</div>
     <div className="mt-7">{!projectId && !resumeId && checked?.code_status === 'exists' && checked.project_id && selection ?
       <Button disabled={busy} onClick={() => {

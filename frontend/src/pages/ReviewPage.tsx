@@ -210,9 +210,9 @@ function ReviewWorkspace({ id }: { id: number }) {
     {supplementData && <SupplementReviewPanel data={supplementData} products={products} editable={editable} busy={busy}
       preferredProduct={preferredProduct} save={saveSupplement} onDirty={setSupplementDirty} />}
 
-    <div className="grid h-[max(570px,calc(100dvh-17rem))] grid-cols-[156px_minmax(0,1fr)_minmax(255px,28%)] xl:grid-cols-[176px_minmax(0,1fr)_minmax(300px,29%)] 2xl:grid-cols-[216px_minmax(0,1fr)_minmax(320px,29%)] gap-4">
+    <div className="editor-layout review-layout">
       <div className="ui-panel min-h-0 min-w-0 overflow-hidden p-3"><div className="flex h-full flex-col">
-        <div data-testid="product-list" className="min-h-0 flex-1 overflow-y-auto pr-1"><ProductList batchId={batch.id} products={products} fields={fields} selectedId={selected?.id} onSelect={setCurrent} checked={editable ? checked : undefined} onToggle={toggle} pinCounts={pinCounts} /></div>
+        <div data-testid="product-list" className="editor-list min-h-0 flex-1 overflow-y-auto pr-1"><ProductList batchId={batch.id} products={products} fields={fields} selectedId={selected?.id} onSelect={setCurrent} checked={editable ? checked : undefined} onToggle={toggle} pinCounts={pinCounts} /></div>
         {editable && <div className="mt-2 border-t border-slate-400/20 pt-2">
           <div className="mb-2 flex items-center justify-between text-xs text-slate-500"><span>已选 {selection.length} 张</span>
             <span><button type="button" className="underline underline-offset-4" onClick={() => setChecked(new Set(items.map(item => item.id)))}>全选单品</button>
@@ -225,7 +225,7 @@ function ReviewWorkspace({ id }: { id: number }) {
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm"><span className="truncate font-medium">{selected.display_name}</span>
           {original && <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={compareOriginal} onChange={event => setCompareOriginal(event.target.checked)} />对比原主图</label>}
           {selected.kind === 'set' && <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={sideBySide} onChange={event => setSideBySide(event.target.checked)} />并排显示包含的单品</label>}</div>
-        <div className={`min-h-0 flex-1 ${original && compareOriginal || selected.kind === 'set' && sideBySide ? 'grid grid-cols-2 gap-3' : ''}`}>
+        <div className={`review-preview min-h-0 flex-1 ${original && compareOriginal || selected.kind === 'set' && sideBySide ? 'grid grid-cols-2 gap-3' : ''}`}>
           <ImageViewer key={selected.id} batchId={batch.id} fileId={selected.batch_file_id} version={selected.fingerprint ?? ''} name={selected.display_name} pins={rejectPins.filter(pin => pin.batch_product_id === selected.id)} />
           {original && compareOriginal && <div className="min-h-0 overflow-y-auto rounded-2xl bg-slate-50 p-2">
             <p className="mb-2 text-xs text-slate-600">原主图 · {original.product_code}</p><AssetPreview fileId={original.file_id} name={original.display_name} />

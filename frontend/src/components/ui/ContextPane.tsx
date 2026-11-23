@@ -9,7 +9,7 @@ export function ContextPane({ title, children, onClose }: PropsWithChildren<{ ti
   const id = useId()
   const toggle = () => onClose ? onClose() : setCollapsed(true)
   return <>
-    <aside aria-label={title} className={`hidden min-h-0 min-w-0 self-start xl:sticky xl:top-0 xl:block ${collapsed ? 'xl:w-11' : 'xl:w-[320px] 2xl:w-[340px]'}`}>
+    <aside aria-label={title} className={`workspace-context ${collapsed ? 'workspace-context-collapsed' : ''}`}>
       {collapsed ? <IconButton label={`展开${title}`} aria-expanded={false} onClick={() => setCollapsed(false)}><Icon name="panel" /></IconButton> :
         <div className="ui-panel flex max-h-[calc(100dvh-7rem)] flex-col">
           <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
@@ -19,7 +19,7 @@ export function ContextPane({ title, children, onClose }: PropsWithChildren<{ ti
           <div id={id} className="min-w-0 overflow-y-auto break-words p-4">{children}</div>
         </div>}
     </aside>
-    <div className="fixed bottom-5 right-5 z-20 shadow-sm xl:hidden">
+    <div className="workspace-context-trigger fixed bottom-5 right-5 z-20 shadow-sm">
       <IconButton label={`打开${title}`} onClick={() => setDrawer(true)}><Icon name="panel" /></IconButton>
       <Dialog open={drawer} title={title} onClose={() => setDrawer(false)}>{children}</Dialog>
     </div>

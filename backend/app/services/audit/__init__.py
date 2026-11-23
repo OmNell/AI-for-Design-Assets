@@ -17,7 +17,7 @@ from app.schemas.audit import (CHECKLIST, CHECKLIST_LABELS, AuditResponse, Audit
 from app.services.admin.company_map import batch_company, company_path, match_company, recommend
 from app.services.auth.service import AuthService, LoginContext
 from app.services.upload.service import UploadService
-from app.services.notify import NotifyService, stage_since, recused
+from app.services.notify import NotifyService, stage_since
 from app.services.ingest import IngestService
 from app.services.nas import Region
 from app.services.postops.executor import PostopExecutor
@@ -25,6 +25,7 @@ from app.services.oplog import OplogService
 from app.services.preflight import REQUIRED
 from app.services.review import ReviewService
 from app.services.review.history import pin_views, round_history
+from app.services.review.policy import recused, self_review_allowed
 
 FIRST, FINAL, REJECTED, INGESTING = "待初审", "待终审", "已驳回", "入库中"
 # 状态 → (阶段名, 需要的角色, 批次上记录审核人的字段)
@@ -70,7 +71,7 @@ class AuditService:
         stage, role, field = self._stage(batch)
         if role not in user.roles:
             raise AppError("forbidden", "当前账号没有这一级的审核权限", 403)
-        if recused(session, batch, user.id):
+        if recused(session, self.auth.config.review, batch, user):
             raise AppError("reviewer_conflict", "当前账号须回避本次审核", 403)
         if getattr(batch, field) != user.id:
             raise AppError("not_claimed", "请先领取该批次再审核", 403)
@@ -161,7 +162,7 @@ class AuditService:
                     waiting_since=since, waiting_seconds=max(0, int((now - since).total_seconds())),
                     claimed_by=PersonView(id=claimer.id, name=_name(claimer)) if claimer else None,
                     claimed_by_me=claimer is not None and claimer.id == user.id,
-                    blocked=recused(session, batch, user.id)))
+                    blocked=recused(session, self.auth.config.review, batch, user)))
             return items
 
     def claim(self, batch_id: int, actor: User, host: str, version: str) -> AuditResponse:
@@ -173,7 +174,7 @@ class AuditService:
             self._check_version(session, batch, version)
             if role not in user.roles:
                 raise AppError("forbidden", "当前账号没有这一级的审核权限", 403)
-            if recused(session, batch, user.id):
+            if recused(session, self.auth.config.review, batch, user):
                 raise AppError("reviewer_conflict", "提交人及发起人须回避，同轮初审和终审须由不同账号担任", 403)
             current = getattr(batch, field)
             if current is not None and current != user.id:
@@ -220,7 +221,7 @@ class AuditService:
         claimer_id = getattr(batch, stage_info[2]) if stage_info else None
         claimer = session.get(User, claimer_id) if claimer_id else None
         has_role = stage_info is not None and stage_info[1] in user.roles
-        blocked = recused(session, batch, user.id)
+        blocked = recused(session, self.auth.config.review, batch, user)
         mine = claimer is not None and claimer.id == user.id and has_role and not blocked
         snapshot = self.review.submitted_snapshot(session, batch)
         review = ReviewResponse.model_validate(snapshot.content["review"])
@@ -333,6 +334,7 @@ class AuditService:
                 raise AppError("checklist_incomplete", "审核清单必须全部勾选才能通过", 422, {"missing": missing})
             before = {"status": batch.status, "round": batch.round}
             row = self._draft(session, batch, stage, user)
+            self_review = self_review_allowed(session, self.auth.config.review, batch, user)
             if stage == "final":
                 path = self._path(session, batch).effective
                 if not path:
@@ -347,8 +349,9 @@ class AuditService:
                         raise AppError("path_pending", "原恢复位置已变化，请终审从目录树核定有效位置", 409)
                 first = session.scalar(select(ReviewRound).where(ReviewRound.snapshot_id == row.snapshot_id,
                     ReviewRound.stage == "first", ReviewRound.decision == "pass"))
-                if first is None or first.reviewer_id != batch.first_reviewer_id or first.reviewer_id == user.id:
-                    raise AppError("first_review_required", "本轮缺少独立初审通过记录", 409)
+                if (first is None or first.reviewer_id != batch.first_reviewer_id
+                        or (first.reviewer_id == user.id and not self_review)):
+                    raise AppError("first_review_required", "本轮缺少有效的初审通过记录", 409)
                 row.execution_session_id = login.session_id
                 if not row.path_change:
                     params = self._operation_params(session, batch)
@@ -363,8 +366,10 @@ class AuditService:
             # 通过时钉图意见作废。
             session.execute(delete(ReviewPin).where(ReviewPin.review_round_id == row.id))
             row.decision, row.checklist, row.comment, row.decided_at = "pass", dict(checklist), None, utcnow()
-            self._log(session, user, "初审通过" if stage == "first" else "终审通过", batch, before,
-                      {"status": batch.status, "round": batch.round, "final_path": batch.final_path, "checklist": dict(checklist)}, host)
+            result = {"status": batch.status, "round": batch.round, "final_path": batch.final_path, "checklist": dict(checklist)}
+            if self_review:
+                result["self_review_exception"] = True
+            self._log(session, user, "初审通过" if stage == "first" else "终审通过", batch, before, result, host)
             if stage == "final":
                 self.dispatch_ingest(session, batch, user, login.session_id)
             self.notify.emit(session, "first_passed" if stage == "first" else "final_passed", batch)

@@ -27,19 +27,34 @@ export async function readDrop(items: DataTransferItemList): Promise<DirectorySe
 
 interface PickerFile { kind: 'file'; name: string; getFile(): Promise<File> }
 interface PickerDirectory { kind: 'directory'; name: string; values(): AsyncIterable<PickerDirectory | PickerFile> }
-export async function readPicker(): Promise<DirectorySelection | null> {
-  const picker = (window as Window & { showDirectoryPicker?: () => Promise<PickerDirectory> }).showDirectoryPicker
-  if (!picker) return null
-  const root = await picker()
+type DirectoryPickerWindow = Window & { showDirectoryPicker?: (options: { mode: 'read' }) => Promise<PickerDirectory> }
+
+export function canReadPicker(): boolean {
+  return window.top === window && typeof (window as DirectoryPickerWindow).showDirectoryPicker === 'function'
+}
+
+export async function readPicker(onReading: () => void): Promise<DirectorySelection | null> {
+  if (!canReadPicker()) return null
+  const browser = window as DirectoryPickerWindow
+  const root = await browser.showDirectoryPicker?.({ mode: 'read' })
+  if (!root) return null
+  onReading()
   const entries: LocalEntry[] = []
+  const files: { path: string; handle: PickerFile }[] = []
   async function walk(directory: PickerDirectory, prefix: string) {
     for await (const child of directory.values()) {
       const path = prefix ? `${prefix}/${child.name}` : child.name
       if (child.kind === 'directory') { entries.push({ rel_path: path, is_dir: true }); await walk(child, path) }
-      else entries.push({ rel_path: path, file: await child.getFile(), is_dir: false })
+      else files.push({ path, handle: child })
     }
   }
   await walk(root, '')
+  for (let index = 0; index < files.length; index += 16) {
+    const batch = await Promise.all(files.slice(index, index + 16).map(async ({ path, handle }): Promise<LocalEntry> => ({
+      rel_path: path, file: await handle.getFile(), is_dir: false,
+    })))
+    for (const file of batch) entries.push(file)
+  }
   return { folder_name: root.name, entries, preservesEmptyDirectories: true }
 }
 

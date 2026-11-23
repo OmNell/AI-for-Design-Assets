@@ -84,14 +84,14 @@ export function AuditPage() {
       : <IngestPanel batchId={id} />)}
     {data.operation && <OperationDiff operation={data.operation} />}
 
-    <div className={data.operation && !products.length ? "grid grid-cols-1" : "grid h-[max(570px,calc(100dvh-17rem))] grid-cols-[156px_minmax(0,1fr)_minmax(255px,28%)] xl:grid-cols-[176px_minmax(0,1fr)_minmax(300px,29%)] 2xl:grid-cols-[216px_minmax(0,1fr)_minmax(320px,29%)] gap-4"}>
-      {(!data.operation || products.length > 0) && <div className="ui-panel min-h-0 min-w-0 overflow-hidden p-3"><div data-testid="product-list" className="h-full overflow-y-auto pr-1">
+    <div className={data.operation && !products.length ? "grid grid-cols-1" : "editor-layout review-layout"}>
+      {(!data.operation || products.length > 0) && <div className="ui-panel min-h-0 min-w-0 overflow-hidden p-3"><div data-testid="product-list" className="editor-list h-full overflow-y-auto pr-1">
         <ProductList batchId={batch.id} products={products} fields={fields} selectedId={selected?.id} onSelect={setCurrent} pinCounts={pinCounts} /></div></div>}
 
       {(!data.operation || products.length > 0) && <div className="ui-panel min-h-0 min-w-0 overflow-hidden p-3">{selected ? <div className="flex h-full flex-col">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm"><span className="truncate font-medium">{selected.display_name}</span>
           {selected.kind === 'set' && <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={sideBySide} onChange={event => setSideBySide(event.target.checked)} />并排显示包含的单品</label>}</div>
-        <div className={`min-h-0 flex-1 ${selected.kind === 'set' && sideBySide ? 'grid grid-cols-2 gap-3' : ''}`}>
+        <div className={`review-preview min-h-0 flex-1 ${selected.kind === 'set' && sideBySide ? 'grid grid-cols-2 gap-3' : ''}`}>
           <ImageViewer key={selected.id} batchId={batch.id} fileId={selected.batch_file_id} version={selected.fingerprint ?? ''} name={selected.display_name} pins={selectedPins}
             onPin={mine ? (x, y) => { storePins([...pins, { batch_product_id: selected.id, x, y, text: '' }]); setTab('info') } : undefined} />
           {selected.kind === 'set' && sideBySide && <div className="min-h-0 overflow-y-auto rounded-2xl bg-slate-50 p-2"><div className="grid grid-cols-2 gap-2">{items.filter(item => relationDraft.includes(item.id)).map(item =>

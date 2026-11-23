@@ -32,8 +32,7 @@ export function NasBrowserPage() {
   }
   const segments = path ? path.split('/') : []
   const refresh = () => { void query.invalidateQueries({ queryKey: ['nas-browser', path] }) }
-  return <div className={'grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(9rem,12rem)_minmax(0,1fr)] ' +
-    (picked ? 'xl:grid-cols-[minmax(9rem,12rem)_minmax(0,1fr)_auto]' : '')}>
+  return <div className="browse-layout" data-context={Boolean(picked)}>
     <NasDirectoryTree root={root} current={path} onOpen={open} />
     <section className="ui-panel min-w-0 overflow-hidden" aria-label="NAS 文件浏览">
       <div className="space-y-3 border-b border-slate-200 p-3">

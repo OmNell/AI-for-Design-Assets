@@ -91,7 +91,7 @@ function Workspace({ initial }: { initial: NasStatus }) {
     <AdminLinks />
     <h1 className="mb-4 text-2xl font-semibold">NAS 存储设置</h1>
     {error && <div className="mb-4"><ErrorState>{error}</ErrorState></div>}
-    <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px] 2xl:grid-cols-[minmax(0,1fr)_340px]">
+    <div className="settings-layout">
       <div className="min-w-0 space-y-4">
         <Panel>
           <h2 className="mb-4 font-semibold">NAS 服务器</h2>

@@ -87,8 +87,8 @@ export function PreDescriptionPage() {
     {unsaved && <p className="mt-2 text-sm text-amber-800">有未保存的描述。</p>}
     {error && <p role="alert" className="mt-2 text-sm text-red-800">{error}</p>}
     </Panel>
-    {selected ? <div className="grid min-w-0 grid-cols-[minmax(190px,1fr)_minmax(300px,2fr)_minmax(260px,1.3fr)] gap-4">
-      <Panel><div className="max-h-[65vh] space-y-4 overflow-y-auto">
+    {selected ? <div className="editor-layout">
+      <Panel><div className="editor-list space-y-4 overflow-y-auto">
         {(['item', 'set'] as const).map(type => {
           const group = products.filter(product => product.kind === type)
           return group.length > 0 && <section key={type}><h2 className="mb-2 text-sm font-semibold">{type === 'item' ? '单品主图' : '套装主图'}</h2>
@@ -100,13 +100,13 @@ export function PreDescriptionPage() {
                 <span className="text-xs text-slate-600">{drafts[product.id] ? '未保存' : labels[product.state]}</span></span></button></li>)}</ul></section>
         })}
       </div></Panel>
-      <Panel><div className="mb-3 flex items-center justify-between gap-2">
+      <Panel><div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 className="truncate text-sm font-semibold" title={selected.display_name}>{selected.display_name}</h2>
         <div className="flex shrink-0 gap-2">
           <Button primary={false} disabled={busy || index <= 0} onClick={() => select(products[index - 1])}>上一张</Button>
           <Button primary={false} disabled={busy || index >= products.length - 1} onClick={() => select(products[index + 1])}>下一张</Button>
         </div>
-      </div><div className="h-[55vh] min-h-80"><ImageViewer batchId={id} fileId={selected.batch_file_id}
+      </div><div className="h-[clamp(17rem,55dvh,38rem)]"><ImageViewer batchId={id} fileId={selected.batch_file_id}
         version={selected.fingerprint ?? ''} name={selected.display_name} /></div></Panel>
       <Panel><div className="space-y-3">
         <Badge tone={selected.state === 'ready' ? 'success' : 'warning'}>{labels[selected.state]}</Badge>

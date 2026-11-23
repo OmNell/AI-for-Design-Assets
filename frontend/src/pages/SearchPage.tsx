@@ -77,7 +77,7 @@ export function SearchPage() {
     if (result) void searchClick(result.search_id, kind, id).catch(() => undefined)
   }
   const chip = (key: string, label: string) => <button key={key} type="button" disabled={busy}
-    aria-label={`移除 ${label}`} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs hover:bg-blue-50 disabled:opacity-50"
+    aria-label={`移除 ${label}`} className="max-w-full rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-left text-xs hover:bg-blue-50 disabled:opacity-50"
     onClick={() => remove(key)}>{label} <span aria-hidden="true">×</span></button>
 
   return <div className="min-w-0 space-y-4">
@@ -110,9 +110,8 @@ export function SearchPage() {
         <p className="text-xs text-slate-500">{mode === 'quick' ? '本地匹配，不调用 AI。' : 'AI 搜索需要调用模型，响应时间可能较长。'}</p>
       </form>
     </Panel>
-    <div className={'grid min-w-0 items-start gap-4 lg:grid-cols-[190px_minmax(0,1fr)] ' +
-        (selected ? 'xl:grid-cols-[190px_minmax(0,1fr)_auto]' : '')}>
-      <Panel className="min-w-0 space-y-4 !p-4 xl:sticky xl:top-0">
+    <div className="browse-layout" data-context={Boolean(selected)}>
+      <Panel className="min-w-0 space-y-4 !p-4">
         <h2 className="font-semibold">筛选条件</h2>
         <label className="block space-y-1"><span className="text-xs text-slate-500">中标状态</span>
           <Select aria-label="中标状态" value={filters.won === null ? '' : String(filters.won)}
@@ -171,7 +170,7 @@ export function SearchPage() {
                   <p className="mt-1 text-xs text-slate-500">{row.product_code} · {row.kind === 'set' ? '套装' : '单品'}</p>
                   <Link to={`/projects/${row.project_id}`} onClick={() => track('project', row.project_id)} className="ui-link mt-2 block break-words text-xs">{row.project_code} · {row.project_name}</Link>
                   <p className="mt-1 text-xs text-slate-500">{row.company_name} · {row.won ? '已中标' : '未中标'}</p>
-                  <ul className="mt-2 flex flex-wrap gap-1">{Object.entries(row.tags).slice(0, 5).map(([key, value]) => <li key={key}><Badge>{result.field_labels[key]} · {value}</Badge></li>)}</ul>
+                  <ul className="tag-list mt-2 flex flex-wrap gap-1">{Object.entries(row.tags).slice(0, 5).map(([key, value]) => <li key={key}><Badge>{result.field_labels[key]} · {value}</Badge></li>)}</ul>
                   {!!row.related.length && <p className="mt-2 break-words text-xs text-slate-500">{row.kind === 'set' ? '包含' : '所属套装'} · {row.related.join('、')}</p>}
                   <p className="mt-2 break-words text-sm">{row.reason}</p>
                   {!!row.matches.length && <p className="mt-1 text-xs text-slate-500">命中 · {row.matches.map(key => result.field_labels[key]).join('、')}</p>}
