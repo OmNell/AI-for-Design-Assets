@@ -52,7 +52,7 @@ export interface RepairResult { project_id: number; batch_id: number | null; err
 
 export const getSystem = (): Promise<SystemParameters> => request('/api/settings/system')
 export const saveSystem = (value: SystemParameters): Promise<SystemParameters> => request('/api/settings/system', { method: 'PUT', body: JSON.stringify(value) })
-export const getRuns = (): Promise<Run[]> => request(`${api}/inspection/runs`)
+export const getRuns = (query: string): Promise<Run[]> => request(`${api}/inspection/runs?${query}`)
 export const getFindings = (query: string): Promise<Finding[]> => request(`${api}/inspection/findings?${query}`)
 export const ackFinding = (id: number): Promise<Finding> => post(`${api}/inspection/findings/${id}/ack`)
 export const runMaintenance = (kind: SystemJob): Promise<unknown> => post(`${api}/maintenance/${kind}/run`)

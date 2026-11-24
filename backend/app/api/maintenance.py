@@ -1,5 +1,6 @@
 """巡检、备份、清理、审计和参数管理。"""
 from collections.abc import Iterator
+from datetime import date
 from typing import Annotated, BinaryIO, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -36,15 +37,17 @@ def trigger(kind: SystemJob, request: Request, actor: User = Depends(admin)) -> 
 
 
 @router.get("/admin/inspection/runs", response_model=list[RunView])
-def runs(request: Request, actor: User = Depends(admin)) -> list[RunView]:
-    return request.app.state.maintenance.runs(actor)
+def runs(request: Request, page: Annotated[int, Query(ge=1)] = 1, start_date: date | None = None,
+         end_date: date | None = None, actor: User = Depends(admin)) -> list[RunView]:
+    return request.app.state.maintenance.runs(actor, page, start_date, end_date)
 
 
 @router.get("/admin/inspection/findings", response_model=list[FindingView])
 def findings(request: Request, run_id: int | None = None, kind: str | None = None, project: int | None = None,
              status: Literal["all", "open", "ack", "repaired"] = "all", page: Annotated[int, Query(ge=1)] = 1,
+             start_date: date | None = None, end_date: date | None = None,
              actor: User = Depends(admin)) -> list[FindingView]:
-    return request.app.state.maintenance.findings(actor, run_id, kind, project, status, page)
+    return request.app.state.maintenance.findings(actor, run_id, kind, project, status, page, start_date, end_date)
 
 
 @router.get("/admin/inspection/findings/{identifier}", response_model=FindingView)

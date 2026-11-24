@@ -1,7 +1,7 @@
 """隔离工作台的只读巡检、双审修复、数据库备份及临时区清理。"""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 from threading import Event
@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.db.models import BackupRecord, Batch, BatchFile, CatalogFile, InspectionFinding, Job, Link, PostopPlan, Product, Project
+from app.db.models import BackupRecord, Batch, BatchFile, CatalogFile, InspectionFinding, InspectionRun, Job, Link, PostopPlan, Product, Project
 from app.main import create_app
 from app.services import archive
 from app.services.archive import publication
@@ -53,6 +53,34 @@ def inspect(flow):
     response = flow.call("admin", "GET", f"/api/admin/inspection/findings?run_id={run['id']}")
     assert response.status_code == 200, response.text
     return run, response.json()
+
+
+def test_inspection_filters_china_calendar_dates_and_pages_history(maintained):
+    flow, project, _, _ = maintained
+    database = flow.client.app.state.database
+    midnight = datetime(2026, 11, 23, 16, tzinfo=timezone.utc)
+    with database.session() as session:
+        for index in range(102):
+            started = midnight + timedelta(minutes=index - 1)
+            job = Job(kind="inspection", status="done", payload={}, scheduled_at=started)
+            session.add(job)
+            session.flush()
+            run = InspectionRun(job_id=job.id, status="done", started_at=started, summary={})
+            session.add(run)
+            session.flush()
+            if index <= 1:
+                session.add(InspectionFinding(run_id=run.id, kind="missing", path=f"测试/{index}", project_id=project.id,
+                                              detail="模拟缺失", created_at=midnight + timedelta(days=1)))
+    base = "/api/admin/inspection"
+    dates = "start_date=2026-11-24&end_date=2026-11-24"
+    first = flow.call("admin", "GET", f"{base}/runs?{dates}").json()
+    second = flow.call("admin", "GET", f"{base}/runs?{dates}&page=2").json()
+    assert len(first) == 100 and len(second) == 1
+    assert second[0]["id"] not in {row["id"] for row in first}
+    findings = flow.call("admin", "GET", f"{base}/findings?{dates}&kind=missing").json()
+    assert [row["path"] for row in findings] == ["测试/1"]
+    assert flow.call("admin", "GET", f"{base}/runs?start_date=2026-11-25&end_date=2026-11-24").status_code == 422
+    assert flow.call("other", "GET", f"{base}/findings?{dates}").status_code == 403
 
 
 def test_readonly_drift_and_two_review_archive_repair(maintained):

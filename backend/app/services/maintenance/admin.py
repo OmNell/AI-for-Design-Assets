@@ -1,7 +1,7 @@
 """后台查询和权限受控的维护动作。"""
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import date, datetime, time, timezone
 import csv
 import json
 from io import StringIO
@@ -20,6 +20,7 @@ from app.services.auth.service import AuthService, LoginContext
 from app.services.backup.format import measure
 from app.services.catalog.media import MediaService
 from app.services.jobs import JobContext, JobFailure, JobQueue
+from app.services.maintenance.settings import CST
 from app.services.nas import NasNotFound, NasPermissionDenied, Region
 from app.services.nas.factory import create_paths
 from app.services.oplog import OplogService
@@ -44,21 +45,44 @@ def csv_export(header: tuple[str, ...], rows: Iterator[tuple]) -> str:
     return data.getvalue()
 
 
+def inspection_dates(start_date: date | None, end_date: date | None) -> tuple[datetime | None, datetime | None]:
+    if start_date and end_date and start_date > end_date:
+        raise AppError("invalid_inspection_dates", "巡检开始日期不能晚于结束日期", 422)
+    start = datetime.combine(start_date, time.min, CST).astimezone(timezone.utc) if start_date and start_date != date.min else None
+    end = datetime.combine(end_date, time.max, CST).astimezone(timezone.utc) if end_date else None
+    return start, end
+
+
 class AdminService:
     def __init__(self, auth: AuthService, queue: JobQueue, draft: DraftService, media: MediaService) -> None:
         self.auth, self.queue, self.draft, self.media = auth, queue, draft, media
         self.paths = create_paths(auth.config)
 
-    def runs(self, actor: User) -> list[RunView]:
+    def runs(self, actor: User, page: int, start_date: date | None, end_date: date | None) -> list[RunView]:
         with self.auth.database.session() as session:
             self.queue._require_admin(session, actor)
-            return [RunView.model_validate(row) for row in session.scalars(select(InspectionRun).order_by(InspectionRun.id.desc()).limit(100))]
+            start, end = inspection_dates(start_date, end_date)
+            query = select(InspectionRun)
+            if start is not None:
+                query = query.where(InspectionRun.started_at >= start)
+            if end is not None:
+                query = query.where(InspectionRun.started_at <= end)
+            return [RunView.model_validate(row) for row in session.scalars(
+                query.order_by(InspectionRun.started_at.desc(), InspectionRun.id.desc()).offset((page - 1) * 100).limit(100))]
 
     def findings(self, actor: User, run_id: int | None, kind: str | None, project: int | None, status: str,
-                 page: int) -> list[FindingView]:
+                 page: int, start_date: date | None, end_date: date | None) -> list[FindingView]:
         with self.auth.database.session() as session:
             self.queue._require_admin(session, actor)
             query = select(InspectionFinding)
+            start, end = inspection_dates(start_date, end_date)
+            if start is not None or end is not None:
+                query = query.outerjoin(InspectionRun, InspectionRun.id == InspectionFinding.run_id)
+                inspected_at = func.coalesce(InspectionRun.started_at, InspectionFinding.created_at)
+                if start is not None:
+                    query = query.where(inspected_at >= start)
+                if end is not None:
+                    query = query.where(inspected_at <= end)
             if run_id:
                 query = query.where(InspectionFinding.run_id == run_id)
             if kind:

@@ -47,17 +47,37 @@ function Inspection() {
   const [project, setProject] = useState('')
   const [state, setState] = useState('all')
   const [page, setPage] = useState(1)
+  const [runPage, setRunPage] = useState(1)
+  const [start, setStart] = useState('')
+  const [end, setEnd] = useState('')
+  const invalidDates = !!start && !!end && start > end
   const cache = useQueryClient()
-  const runs = useQuery({ queryKey: ['maintenance', 'runs'], queryFn: getRuns, refetchInterval: 4000 })
-  const params = new URLSearchParams({ status: state, page: String(page) })
+  const dates = new URLSearchParams()
+  if (start) dates.set('start_date', start)
+  if (end) dates.set('end_date', end)
+  const runParams = new URLSearchParams(dates)
+  runParams.set('page', String(runPage))
+  const runs = useQuery({ queryKey: ['maintenance', 'runs', runParams.toString()],
+    queryFn: () => getRuns(runParams.toString()), enabled: !invalidDates, refetchInterval: 4000 })
+  const params = new URLSearchParams(dates)
+  params.set('status', state)
+  params.set('page', String(page))
   if (run) params.set('run_id', run)
   if (kind) params.set('kind', kind)
   if (project) params.set('project', project)
   const findings = useQuery({ queryKey: ['maintenance', 'findings', params.toString()], queryFn: () => getFindings(params.toString()),
-    refetchInterval: runs.data?.some(row => ['running', 'queued'].includes(row.status)) ? 4000 : false })
+    enabled: !invalidDates, refetchInterval: runs.data?.some(row => ['running', 'queued'].includes(row.status)) ? 4000 : false })
   const ack = useMutation({ mutationFn: ackFinding, onSuccess: () => { void cache.invalidateQueries({ queryKey: ['maintenance', 'findings'] }); void cache.invalidateQueries({ queryKey: ['todos'] }) } })
   return <div className="space-y-4">
     <Trigger kind="inspection" />
+    <div className="flex flex-wrap items-end gap-3">
+      <label className="text-sm">巡检开始日期<input className="field" type="date" value={start}
+        onChange={event => { setStart(event.target.value); setRun(''); setRunPage(1); setPage(1) }} /></label>
+      <label className="text-sm">巡检结束日期<input className="field" type="date" value={end}
+        onChange={event => { setEnd(event.target.value); setRun(''); setRunPage(1); setPage(1) }} /></label>
+      <p className="text-xs text-slate-500">北京时间，含起止日</p>
+    </div>
+    {invalidDates ? <p role="alert" className="text-sm text-red-800">巡检开始日期不能晚于结束日期。</p> : <>
     <Load loading={runs.isPending} error={runs.error}>
       <Table columns={['运行', '状态', '扫描项目／文件', '异常／自动纠正', '耗时', '失败原因']}>
         {runs.data?.map(row => <tr key={row.id}><td><button className={linkClass} onClick={() => { setRun(String(row.id)); setPage(1) }}>#{row.id} {time(row.started_at)}</button></td>
@@ -65,11 +85,13 @@ function Inspection() {
           <td>{row.summary.count ?? '—'}／{row.summary.auto_fixed ?? '—'}
             {!!row.summary.kinds && <small className="block">{Object.entries(row.summary.kinds).map(([key, count]) => `${kindNames[key] ?? key} ${count}`).join(' · ')}</small>}</td>
           <td>{row.summary.elapsed_ms ? `${row.summary.elapsed_ms} ms` : '—'}</td><td>{row.error ?? '—'}</td></tr>)}
-      </Table>{runs.data?.length === 0 && <Quiet>尚无巡检报告。</Quiet>}
+      </Table>{runs.data?.length === 0 && <Quiet>没有符合日期条件的巡检报告。</Quiet>}
+      <Pager page={runPage} setPage={setRunPage} more={runs.data?.length === 100} />
     </Load>
     <div className="grid grid-cols-4 gap-2">
       <label className="text-sm">巡检批次<select className="field" value={run} onChange={event => { setRun(event.target.value); setPage(1) }}>
-        <option value="">全部批次</option>{runs.data?.map(row => <option key={row.id} value={row.id}>#{row.id}</option>)}</select></label>
+        <option value="">全部批次</option>{run && !runs.data?.some(row => String(row.id) === run) && <option value={run}>#{run}</option>}
+        {runs.data?.map(row => <option key={row.id} value={row.id}>#{row.id}</option>)}</select></label>
       <label className="text-sm">异常类型<select className="field" value={kind} onChange={event => { setKind(event.target.value); setPage(1) }}>
         <option value="">全部类型</option>{['moved', 'modified', 'unregistered', 'missing', 'archive_broken'].map(value => <option key={value} value={value}>{kindNames[value]}</option>)}</select></label>
       <label className="text-sm">项目 ID<input className="field" type="number" min={1} value={project} onChange={event => { setProject(event.target.value); setPage(1) }} /></label>
@@ -86,7 +108,7 @@ function Inspection() {
       </tr>)}</Table>
       {findings.data?.length === 0 && <Quiet>没有符合筛选条件的发现。</Quiet>}
       <Pager page={page} setPage={setPage} more={findings.data?.length === 100} />
-    </Load>
+    </Load></>}
     {ack.error && <p role="alert" className="text-red-800">{message(ack.error)}</p>}
   </div>
 }
