@@ -9,6 +9,9 @@ import { canReadPicker, readDrop, readInput, readPicker, type DirectorySelection
 import { isIgnored, manifest, preflight, type Issue } from '../lib/preflight'
 import { Uploader } from '../lib/uploader'
 
+// 只在当前标签页保留最近一次完整传输的实测速率。
+let lastUploadSpeed = 0
+
 const formatSize = (value: number) => value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(2)} GB` : `${(value / 1024 ** 2).toFixed(2)} MB`
 export function UploadPage() {
   const [params] = useSearchParams()
@@ -124,14 +127,28 @@ export function UploadPage() {
     startTime.current = performance.now()
     initialBytes.current = value.files.reduce((sum, file) => sum + file.bytes_received, 0)
     if (value.status === '已暂存') { setRunning(false); return }
+    let waitingForTurn = value.queued
     const job = new Uploader(value, selection!.entries, update => {
       if (manualStop.current) return
       apply(update)
+      if (waitingForTurn && !update.queued) {
+        waitingForTurn = false
+        startTime.current = performance.now()
+      }
       const transferred = update.files.reduce((sum, file) => sum + file.bytes_received, 0) - initialBytes.current
       setSpeed(transferred / Math.max((performance.now() - startTime.current) / 1000, 0.1))
     })
     uploader.current = job
-    try { const final = await job.run(); if (!manualStop.current) apply(final) }
+    try {
+      const final = await job.run()
+      if (!manualStop.current) {
+        apply(final)
+        const transferred = final.files.reduce((sum, file) => sum + file.bytes_received, 0) - initialBytes.current
+        if (final.status === '已暂存' && transferred > 0) {
+          lastUploadSpeed = transferred / Math.max((performance.now() - startTime.current) / 1000, 0.1)
+        }
+      }
+    }
     catch (reason: unknown) {
       if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason instanceof Error ? reason.message : '上传中断，请继续上传')
       try { if (!manualStop.current) apply(await pauseBatch(value.id, value.upload_token)) } catch { /* 保留已收到的进度；重新登录后继续。 */ }
@@ -178,6 +195,8 @@ export function UploadPage() {
   const ready = !busy && checked && !(checked.code_status === 'exists' && !projectId && !resumeId) && !blocked && (!needsYear || validYear) && warnings.every(code => acks.includes(code))
   const choose = !batch || !!selection || batch.status === '上传中断' || batch.status === '上传中' && !running
   const selectionFiles = selection?.entries.filter(e => !e.is_dir && !isIgnored(e)) ?? []
+  const selectionBytes = selectionFiles.reduce((sum, file) => sum + (file.file?.size ?? 0), 0)
+  const estimatedSeconds = !resumeId && !batch && lastUploadSpeed > 0 ? Math.ceil(selectionBytes / lastUploadSpeed) : 0
   const step = batch ? batch.status === '已暂存' ? 3 : 2 : selection ? 1 : 0
   return <div className="upload-layout">
     <Panel className="!p-4"><h2 className="font-semibold">入库流程</h2>
@@ -258,8 +277,10 @@ export function UploadPage() {
       <p>企业：{checked?.company_name}</p>
       <p>项目：{checked?.project_name}</p>
       <p className="break-all">{won ? '已中标' : '未中标'} · {(won ? checked?.won_path : checked?.lost_path) || '位置待定'}</p>
-      <p>{selectionFiles.length} 个文件 · {formatSize(selectionFiles.reduce((sum, file) => sum + (file.file?.size ?? 0), 0))}</p>
-      <p>开始传输后将按实际速度估算剩余时间。</p>
+      <p>{selectionFiles.length} 个文件 · {formatSize(selectionBytes)}</p>
+      <p>{estimatedSeconds > 0
+        ? `按上次传输速度预计约 ${estimatedSeconds} 秒`
+        : '开始传输后将按实际速度估算剩余时间。'}</p>
       <Button disabled={busy} onClick={() => void createOrResume()}>确认上传</Button>
     </div>
   </Dialog>

@@ -9,6 +9,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
+from weakref import WeakValueDictionary
 
 from sqlalchemy import func, or_, select, true
 from sqlalchemy.dialects.sqlite import insert
@@ -53,6 +54,8 @@ class UploadService:
         self.ai = ai
         self.database = auth.database
         self.lock = auth.lock
+        self._batch_locks: WeakValueDictionary[int, threading.Lock] = WeakValueDictionary()
+        self._writing: set[int] = set()
         self.chunk_bytes = auth.config.upload.chunk_mb * 1024 * 1024
         self.paths = create_paths(auth.config)
         self._hashes: dict[tuple[int, int], tuple[int, HashState]] = {}
@@ -118,12 +121,13 @@ class UploadService:
         return login
 
     @staticmethod
-    def _check_login(session: Session, login: LoginContext, batch: Batch | None = None) -> None:
+    def _check_login(session: Session, login: LoginContext, batch: Batch | None = None, *,
+                     committing_chunk: bool = False) -> None:
         row = session.get(UserSession, login.session_id)
         can_finish = (isinstance(login, ContinuingUpload) and batch is not None
                       and batch.id == login.batch_id and batch.status == UPLOADING
                       and batch.payload.get("upload_token_hash") == login.upload_hash)
-        if row is None or row.user_id != login.user.id or row.revoked_at is not None or (is_expired(row.expires_at) and not can_finish):
+        if row is None or row.user_id != login.user.id or row.revoked_at is not None or (is_expired(row.expires_at) and not (can_finish or committing_chunk)):
             raise AppError("session_expired", "登录已过期，请重新登录", 401)
         if batch is not None and batch.upload_session_id != login.session_id:
             raise AppError("upload_session_mismatch", "上传绑定到其他登录会话，请重新选择文件夹继续上传", 409)
@@ -534,48 +538,78 @@ class UploadService:
                 self.auth.disconnect(login.session_id, host)
                 raise
 
-    def chunk(self, batch_id: int, file_id: int, index: int, data: bytes, login: LoginContext, host: str) -> dict[str, int]:
+    @contextmanager
+    def _batch_transfer(self, batch_id: int) -> Iterator[None]:
+        # 只在短临界区取得批次锁。等待同一批次的写入时不占用全局锁。
         with self.lock:
-            conflict: int | None = None
+            lock = self._batch_locks.get(batch_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._batch_locks[batch_id] = lock
+        with lock:
+            yield
+
+    def chunk(self, batch_id: int, file_id: int, index: int, data: bytes, login: LoginContext, host: str) -> dict[str, int]:
+        with self._batch_transfer(batch_id):
             with self._transfer(login, host) as session:
                 batch, file, fs = self._receiving(session, batch_id, login, file_id)
-                self._repair(session, batch, file, fs, host)
                 chunk_size = self._chunk_size(batch)
                 offset = index * chunk_size
                 length = min(chunk_size, file.size - offset)
                 if index < 0 or length <= 0 or len(data) != length:
                     raise AppError("invalid_chunk", "分片长度或序号不正确", 422)
+                self._repair(session, batch, file, fs, host)
                 path = self._file_path(batch, file)
-                if offset < file.bytes_received and offset + len(data) <= file.bytes_received:
+                received = file.bytes_received
+                if offset < received and offset + len(data) <= received:
                     with fs.open_read(path, offset=offset) as stream:
-                        identical = stream.read(len(data)) == data
-                    if identical:
-                        return {"bytes_received": file.bytes_received}
-                    conflict = file.bytes_received
-                elif offset != file.bytes_received:
-                    conflict = file.bytes_received
-                else:
+                        if stream.read(len(data)) == data:
+                            return {"bytes_received": received}
+            if offset != received:
+                raise AppError("upload_offset_conflict", "分片偏移不一致", 409, {"bytes_received": received})
+
+            # 写入期间让其他批次使用各自的 NAS 会话。暂停、终止、恢复及文件完成仍由批次锁串行。
+            # 追加前再次校验会话，避免在准备阶段后已退出却继续写入。
+            with self._transfer(login, host) as session:
+                batch = self._batch(session, batch_id, login.user)
+                self._check_login(session, login, batch)
+                if batch.status != UPLOADING:
+                    raise AppError("batch_not_uploading", "批次当前不在上传中", 409)
+                self.auth.pool.pin(login.session_id)
+                self._writing.add(batch_id)
+            try:
+                try:
                     parent = path.rsplit("/", 1)[0]
                     if not fs.exists(parent):
                         fs.mkdir(parent, recursive=True)
                     with fs.open_write(path, append=True) as stream:
                         if stream.write(data) != len(data):
                             raise NasUnavailable("NAS 分片写入不完整，请按偏移重试")
+                except NasSessionExpired:
+                    self.auth.disconnect(login.session_id, host)
+                    raise
+
+                # NAS 成功后才确认偏移。追加期间若被撤销，保留旧偏移供重新登录后的校正。
+                with self._transfer(login, host) as session:
+                    batch = self._batch(session, batch_id, login.user)
+                    self._check_login(session, login, batch, committing_chunk=True)
+                    file = session.get(BatchFile, file_id)
                     cached = self._hashes.get((batch_id, file_id))
                     digest = cached[1] if cached and cached[0] == offset else hashlib.sha256() if offset == 0 else None
                     if digest is not None:
                         digest.update(data)
                         self._hashes[(batch_id, file_id)] = (offset + len(data), digest)
-                    file.bytes_received += len(data)
+                    file.bytes_received = offset + len(data)
                     file.upload_status = "partial"
                     self._log(session, batch, "接收上传分片", "uploader", host)
-                received = file.bytes_received
-            if conflict is not None:
-                raise AppError("upload_offset_conflict", "分片偏移不一致", 409, {"bytes_received": conflict})
-            return {"bytes_received": received}
+                    return {"bytes_received": file.bytes_received}
+            finally:
+                with self.lock:
+                    self._writing.discard(batch_id)
+                    self.auth.pool.unpin(login.session_id)
 
     def complete(self, batch_id: int, file_id: int, login: LoginContext, host: str) -> BatchResponse:
-        with self._transfer(login, host) as session:
+        with self._batch_transfer(batch_id), self._transfer(login, host) as session:
             batch = self._batch(session, batch_id, login.user)
             self._check_login(session, login, batch)
             file = session.get(BatchFile, file_id)
@@ -613,7 +647,7 @@ class UploadService:
             return self._snapshot(session, batch)
 
     def pause(self, batch_id: int, login: LoginContext, host: str) -> BatchResponse:
-        with self.lock, self.database.session() as session:
+        with self._batch_transfer(batch_id), self.lock, self.database.session() as session:
             batch = self._batch(session, batch_id, login.user)
             self._check_login(session, login, batch)
             if batch.status == UPLOADING:
@@ -625,7 +659,7 @@ class UploadService:
 
     def terminate(self, batch_id: int, login: LoginContext, reason: str, host: str, *,
                   confirmed: bool = False) -> BatchResponse:
-        with self.lock, self.database.session() as session:
+        with self._batch_transfer(batch_id), self.lock, self.database.session() as session:
             session.connection().exec_driver_sql("BEGIN IMMEDIATE")
             batch = self._batch(session, batch_id, login.user)
             self._check_login(session, login)
@@ -721,7 +755,7 @@ class UploadService:
             return self._snapshot(session, batch)
 
     def resume(self, batch_id: int, body: ResumeRequest, login: LoginContext, host: str) -> BatchResponse:
-        with self._transfer(login, host) as session:
+        with self._batch_transfer(batch_id), self._transfer(login, host) as session:
             batch = self._batch(session, batch_id, login.user)
             self._check_login(session, login)
             if batch.status not in (UPLOADING, INTERRUPTED):
@@ -815,6 +849,8 @@ class UploadService:
     def expire_idle(self) -> None:
         with self.lock, self.database.session() as session:
             for batch_id, last in tuple(self._activity.items()):
+                if batch_id in self._writing:
+                    continue
                 batch = session.get(Batch, batch_id)
                 if batch is None or batch.status != UPLOADING:
                     continue

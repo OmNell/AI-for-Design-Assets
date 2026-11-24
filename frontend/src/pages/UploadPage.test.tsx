@@ -71,6 +71,27 @@ it('文件夹经浏览器授权后立即显示读取状态，预检前保留空�
   expect(host.textContent).not.toContain('正在预检文件夹')
 })
 
+async function openUploadConfirmation(won = true) {
+  vi.stubGlobal('showDirectoryPicker', vi.fn(async () => ({
+    kind: 'directory',
+    name: project,
+    async *values() {
+      yield {
+        kind: 'directory', name: '单品',
+        async *values() {
+          yield { kind: 'file', name: '主图.jpg', getFile: async () => new File(['图片'], '主图.jpg') }
+        },
+      }
+    },
+  })))
+
+  await draw()
+  if (!won) await act(async () => host.querySelectorAll<HTMLInputElement>('input[type="radio"]')[1].click())
+  await act(async () => button('选择文件夹')!.click())
+  await act(async () => host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach(input => input.click()))
+  await act(async () => button('开始上传')!.click())
+}
+
 it.each(['AbortError', 'NotAllowedError', 'SecurityError'])('选择器返回 %s 时显示提示，可用普通选择继续', async (name) => {
   vi.stubGlobal('showDirectoryPicker', vi.fn().mockRejectedValue(new DOMException('不可读取', name)))
   const fetchMock = vi.fn(async () => Response.json(precheck))
@@ -130,25 +151,34 @@ it.each([
     won_path: path ? '01已中标项目/02酒业/07企业' : null,
     lost_path: path ? '02未中标项目/02酒业/07企业' : null,
   })))
-  vi.stubGlobal('showDirectoryPicker', vi.fn(async () => ({
-    kind: 'directory',
-    name: project,
-    async *values() {
-      yield {
-        kind: 'directory', name: '单品',
-        async *values() {
-          yield { kind: 'file', name: '主图.jpg', getFile: async () => new File(['图片'], '主图.jpg') }
-        },
-      }
-    },
-  })))
-
-  await draw()
-  if (!won) await act(async () => host.querySelectorAll<HTMLInputElement>('input[type="radio"]')[1].click())
-  await act(async () => button('选择文件夹')!.click())
-  await act(async () => host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach(input => input.click()))
-  await act(async () => button('开始上传')!.click())
+  await openUploadConfirmation(won)
   expect(document.querySelector('dialog[open]')?.textContent).toContain(
     (won ? '已中标' : '未中标') + ' · ' + (path ?? '位置待定'),
   )
+})
+
+it('新项目按上一次完成的实际传输速度预估耗时', async () => {
+  const file = { id: 3, rel_path: '单品/主图.jpg', size: 6, bytes_received: 0, upload_status: 'pending',
+    thumb_status: null, thumb_error: null }
+  const batch = { id: 2, batch_no: 'B02', project_code: 'P2026-0001', folder_name: project,
+    status: '上传中', queued: false, upload_token: 'token', chunk_bytes: 8, parallel_files: 1, files: [file] }
+  vi.stubGlobal('fetch', vi.fn(async (path: string) => {
+    if (path === '/api/batches/precheck') return Response.json(precheck)
+    if (path === '/api/batches') return Response.json(batch)
+    if (path === '/api/batches/2/files/3/chunks/0') return Response.json({ bytes_received: 6 })
+    if (path === '/api/batches/2/files/3/complete') return Response.json({
+      ...batch, status: '已暂存', upload_token: null, files: [{ ...file, bytes_received: 6, upload_status: 'done' }],
+    })
+    throw new Error('未预期的接口请求')
+  }))
+
+  await openUploadConfirmation()
+  expect(document.querySelector('dialog[open]')?.textContent).toContain('开始传输后将按实际速度估算剩余时间')
+  await act(async () => document.querySelector<HTMLButtonElement>('dialog[open] button')!.click())
+  expect(host.textContent).toContain('已暂存')
+  act(() => root.unmount())
+  root = createRoot(host)
+
+  await openUploadConfirmation()
+  expect(document.querySelector('dialog[open]')?.textContent).toMatch(/按上次传输速度预计约 \d+ 秒/)
 })

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from datetime import timedelta
 from pathlib import Path
 from typing import Iterator
@@ -399,3 +401,94 @@ def test_precheck_shows_won_and_lost_paths_for_name_and_alias(upload_client: Tes
         result = upload_client.post("/api/batches/precheck", json=body(f"P123_{name}_包装")).json()
         assert result["won_path"] == ("01已中标项目/02食品/07甲酒业" if name != "乙酒" else None)
         assert result["lost_path"] == ("02未中标项目/02食品/07甲酒业" if name != "乙酒" else None)
+
+
+def slow_nas_write(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[Event, Event]:
+    auth = client.app.state.auth
+    fs = auth.pool.get(auth.context(client.cookies.get(COOKIE_NAME), "原设备").session_id)
+    started, release = Event(), Event()
+    original_open = fs.open_write
+
+    def slow_open(*args, **kwargs):
+        started.set()
+        assert release.wait(10)
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(fs, "open_write", slow_open)
+    return started, release
+
+
+def test_other_batch_writes_while_slow_upload_is_active(upload_client: TestClient, monkeypatch) -> None:
+    client = upload_client
+    batch = create(client, body(size=4))
+    started, release = slow_nas_write(client, monkeypatch)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        first = workers.submit(chunk, client, batch, 0, b"abcd")
+        try:
+            assert started.wait(5)
+
+            def send_other_device():
+                # 不进入 lifespan，复用已启动的同一应用。
+                other = TestClient(client.app)
+                assert other.post("/api/auth/login", json={"username": "two", "password": "fake"}).status_code == 200
+                another = create(other, body("P002_另一企业_项目", size=4))
+                assert chunk(other, another, 0, b"efgh").json()["bytes_received"] == 4
+                assert file_path(other, another).read_bytes() == b"efgh"
+
+            workers.submit(send_other_device).result(timeout=5)
+            assert not first.done()
+        finally:
+            release.set()
+        assert first.result(timeout=5).json()["bytes_received"] == 4
+    assert file_path(client, batch).read_bytes() == b"abcd"
+
+
+def test_terminate_waits_for_running_chunk_and_preserves_written_data(upload_client: TestClient, monkeypatch) -> None:
+    client = upload_client
+    batch = create(client, body(size=8))
+    started, release = slow_nas_write(client, monkeypatch)
+    asked_to_terminate = Event()
+    upload = client.app.state.upload
+    original_terminate = upload.terminate
+
+    def observed_terminate(*args, **kwargs):
+        asked_to_terminate.set()
+        return original_terminate(*args, **kwargs)
+
+    monkeypatch.setattr(upload, "terminate", observed_terminate)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        receiving = workers.submit(chunk, client, batch, 0, b"abcd")
+        try:
+            assert started.wait(5)
+            ending = workers.submit(client.post, f'/api/batches/{batch["id"]}/cancel', json={"reason": "终止测试"})
+            assert asked_to_terminate.wait(5)
+            assert not ending.done()
+        finally:
+            release.set()
+        assert receiving.result(timeout=5).status_code == 200
+        assert ending.result(timeout=5).json()["status"] == "已终止"
+    assert chunk(client, batch, 1, b"efgh").status_code == 409
+    assert file_path(client, batch).read_bytes() == b"abcd"
+
+
+def test_logout_during_chunk_does_not_confirm_uncommitted_offset(upload_client: TestClient, monkeypatch) -> None:
+    client = upload_client
+    batch = create(client, body(size=8))
+    assert chunk(client, batch, 0, b"abcd").status_code == 200
+    started, release = slow_nas_write(client, monkeypatch)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        receiving = workers.submit(chunk, client, batch, 1, b"junk")
+        try:
+            assert started.wait(5)
+            logout = workers.submit(client.post, "/api/auth/logout")
+            assert logout.result(timeout=5).status_code == 200
+        finally:
+            release.set()
+        assert receiving.result(timeout=5).status_code == 401
+    assert client.post("/api/auth/login", json={"username": "one", "password": "fake"}).status_code == 200
+    resumed = client.post(f'/api/batches/{batch["id"]}/resume', json=body(size=8)).json()
+    assert resumed["files"][0]["bytes_received"] == 4
+    assert file_path(client, batch).read_bytes() == b"abcd"
+    assert chunk(client, resumed, 1, b"efgh").status_code == 200
+    done = finish(client, resumed).json()
+    assert done["files"][0]["fingerprint"] == hashlib.sha256(b"abcdefgh").hexdigest()
