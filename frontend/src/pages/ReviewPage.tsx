@@ -208,7 +208,7 @@ function ReviewWorkspace({ id }: { id: number }) {
 
     {isSupplement && supplement.isError && <Panel><p role="alert" className="text-red-800">{supplement.error.message}</p></Panel>}
     {supplementData && <SupplementReviewPanel data={supplementData} products={products} editable={editable} busy={busy}
-      preferredProduct={preferredProduct} save={saveSupplement} onDirty={setSupplementDirty} />}
+      preferredProduct={preferredProduct} version={editable ? null : batch.review_snapshot_hash} save={saveSupplement} onDirty={setSupplementDirty} />}
 
     <div className="editor-layout review-layout">
       <div className="ui-panel min-h-0 min-w-0 overflow-hidden p-3"><div className="flex h-full flex-col">

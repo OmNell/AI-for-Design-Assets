@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { changePath, claimAudit, getAudit, passAudit, rejectAudit, releaseAudit, savePins, type AuditData, type PinInput } from '../api/audit'
 import { OperationDiff } from '../components/ops/OperationDiff'
+import { SupplementAuditComparison } from '../components/ops/SupplementComparison'
 import { OperationExecution } from '../components/ops/OperationExecution'
 import { useAuthStore } from '../stores/auth'
 import { AssetPreview } from '../components/AssetPreview'
@@ -85,13 +86,18 @@ export function AuditPage() {
           data.blocked ? '本账号须回避该阶段审核。' : data.claimed_by ? `已由 ${data.claimed_by.name} 领取。` : data.can_claim ? '尚未领取。领取后才能钉意见、通过或驳回。' : '当前账号没有这一级的审核权限，仅供查看。'}</p>
         {done && <p role="status" className="mt-1 text-sm text-emerald-800">{done}</p>}
         {error && !rejecting && <p role="alert" className="mt-1 text-sm text-red-800">{error}</p>}</div>
-      <div className="flex shrink-0 gap-2">{data.can_claim && <Button disabled={busy} onClick={() => void run(() => claimAudit(id, data.version))}>领取</Button>}
-        {stage && data.claimed_by && (mine || user?.roles.includes('admin')) && <Button primary={false} disabled={busy} onClick={() => void run(() => releaseAudit(id, data.version))}>释放领取</Button>}</div>
+      <div className="flex shrink-0 flex-wrap gap-2" data-testid="review-actions">{data.can_claim && <Button disabled={busy} onClick={() => void run(() => claimAudit(id, data.version))}>领取</Button>}
+        {stage && data.claimed_by && (mine || user?.roles.includes('admin')) && <Button primary={false} disabled={busy} onClick={() => void run(() => releaseAudit(id, data.version))}>释放领取</Button>}
+        {stage && <Button primary={false} className="!border-red-200 !text-red-800" disabled={busy || !mine}
+          title={!mine ? '只有本轮领取人可以驳回' : undefined}
+          onClick={() => { setError(''); setRejecting(true) }}>驳回</Button>}
+      </div>
     </div></div>
 
     {['入库中', '入库异常', '已入库'].includes(batch.status) && (data.operation
       ? <OperationExecution batchId={id} projectId={data.operation.before.project.id} kind={data.operation.kind} />
       : <IngestPanel batchId={id} />)}
+    {data.supplement && <SupplementAuditComparison comparison={data.supplement} batchId={batch.id} version={batch.review_snapshot_hash} />}
     {data.operation && <OperationDiff operation={data.operation} />}
 
     <div className={data.operation && !products.length ? "grid grid-cols-1" : "editor-layout review-layout"}>
@@ -152,7 +158,7 @@ export function AuditPage() {
             {pathBlocked && <p data-testid="path-blocked" className="mt-3 text-xs text-amber-900">{path.company_in_tree ? '位置待定：请先点上方「修改」从目录树选择存放位置。' : '位置待定：等待管理员在对照表中录入该企业。'}</p>}
             <div className="mt-3 flex gap-3"><Button disabled={busy || !allChecked || pathBlocked} title={!allChecked ? '审核清单未全部勾选' : undefined}
               onClick={() => void run(() => passAudit(id, data.version, checks), () => { setChecks({}); setDone(stage === 'final' ? '终审已通过，已安排入库。' : '初审已通过，批次进入「待终审」。') })}>通过</Button>
-              <Button primary={false} disabled={busy} onClick={() => { setError(''); setRejecting(true) }}>驳回</Button></div></section>}
+            </div></section>}
           </div>}</div>
       </div></div>
     </div>
@@ -161,7 +167,7 @@ export function AuditPage() {
       <p className="text-sm text-slate-500">整包驳回，退回上传人；修改后重新提交会从初审重新开始。{pins.length ? `将连同 ${pins.length} 条钉图意见一起发出。` : ''}</p>
       <textarea aria-label="总体意见" rows={5} maxLength={2000} className="field mt-4 text-sm" placeholder="总体意见（必填）" value={comment} onChange={event => setComment(event.target.value)} />
       {error && <p role="alert" className="mt-3 text-sm text-red-800">{error}</p>}
-      <div className="mt-5"><Button disabled={busy || !comment.trim()} onClick={() => void run(async () => { await pinQueue.current; return rejectAudit(id, data.version, comment, pins) }, () => { setRejecting(false); setComment(''); setDone('已驳回，批次退回上传人。') })}>确认驳回</Button></div>
+      <div className="mt-5"><Button disabled={busy || !mine || !comment.trim()} onClick={() => void run(async () => { await pinQueue.current; return rejectAudit(id, data.version, comment, pins) }, () => { setRejecting(false); setComment(''); setDone('已驳回，批次退回上传人。') })}>确认驳回</Button></div>
     </Dialog>
   </div>
 }

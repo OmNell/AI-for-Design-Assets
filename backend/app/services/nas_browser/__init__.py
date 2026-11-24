@@ -15,14 +15,13 @@ from app.services.auth.service import AuthService, LoginContext
 from app.services.catalog.media import is_image
 from app.services.nas.fs import NasStat
 from app.services.nas.paths import safe_join
-from app.services.thumbs.images import ImageDecodeError, render_preview
+from app.services.thumbs.images import ImageDecodeError, PREVIEW_MAX_BYTES, render_preview
 from app.services.upload.service import UploadService
 
 from app.services.nas.browser import ReadRoot
 from .audit import NasAccessAudit
 
 PAGE_SIZE = 60
-PREVIEW_MAX_BYTES = 48 * 1024 * 1024
 
 
 def entry(path: str, name: str, stat: NasStat) -> FileEntry:

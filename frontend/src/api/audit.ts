@@ -10,7 +10,14 @@ export interface Person { id: number; name: string }
 export interface QueueItem { id: number; kind?: OperationKind | 'ingest'; batch_no: string; folder_name: string; round: number; uploader_name: string; products: number; files: number; total_size: number
   waiting_since: string; waiting_seconds: number; claimed_by: Person | null; claimed_by_me: boolean; blocked: boolean; self_review_exception?: boolean }
 export interface PathInfo { recommended: string | null; final: string | null; effective: string | null; company_name: string; company_in_tree: boolean }
-export interface AuditData { version: string; operation?: FrozenOperation | null;
+interface ComparedFile { id: number; rel_path: string; size: number; mtime: number; fingerprint: string }
+export interface SupplementComparison {
+  added: number; replaced: number; skipped: number; kept_both: number
+  materials: { original: ComparedFile; uploaded: ComparedFile }[]
+}
+export const supplementPreviewUrl = (batchId: number, fileId: number, version?: string | null): string =>
+  `/api/review/${batchId}/supplement-files/${fileId}/preview${version ? '?version=' + encodeURIComponent(version) : ''}`
+export interface AuditData { version: string; operation?: FrozenOperation | null; supplement?: SupplementComparison | null;
   review: ReviewData; stage: 'first' | 'final' | null; claimed_by: Person | null; claimed_by_me: boolean; can_claim: boolean; blocked: boolean; can_edit_path: boolean
   path: PathInfo; acks: string[]; stats: { manual_edits: number; ai_confirmed: number; confirmed_unknown: number; appended: number; removed: number }
   relations: { set_id: number; set_name: string; items: string[]; ai_count: number; manual_count: number; confirmed: boolean }[]

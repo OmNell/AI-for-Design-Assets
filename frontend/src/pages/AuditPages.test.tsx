@@ -72,6 +72,34 @@ beforeEach(() => {
 })
 afterEach(() => { act(() => root.unmount()); query.clear(); host.remove(); vi.unstubAllGlobals(); useAuthStore.getState().clear() })
 
+it('纯资料补充显示冻结的文件数量，按需并排预览新旧图片', async () => {
+  const requests: string[] = []
+  const oldFile = { id: 52, rel_path: '05 详情页/包装图.jpg', size: 12, mtime: 1, fingerprint: 'a'.repeat(64) }
+  const newFile = { ...oldFile, id: 61, size: 14, fingerprint: 'b'.repeat(64) }
+  serve(url => {
+    if (url.includes('/preview')) {
+      requests.push(url)
+      return response({ code: 'nas_permission_denied', message: 'NAS 无权限' }, 403)
+    }
+    return auditData({ review: reviewData('待初审', { products: [] }),
+      supplement: { added: 2, replaced: 1, skipped: 1, kept_both: 1, materials: [{ original: oldFile, uploaded: newFile }] } })
+  })
+  audit()
+  await until(() => host.textContent!.includes('新增 2 · 替换 1 · 跳过 1'))
+  expect(host.textContent).toContain('新增含另存 1')
+  expect(host.textContent).toContain(oldFile.fingerprint)
+  expect(host.textContent).toContain(newFile.fingerprint)
+  expect(requests).toEqual([])
+  act(() => button('并排预览新旧资料图片').click())
+  await until(() => requests.length === 2)
+  expect(requests.some(url => url.startsWith('/api/files/52/preview?'))).toBe(true)
+  expect(requests).toContain('/api/review/1/supplement-files/61/preview?version=fixture')
+  expect(host.querySelector('[aria-label="当前资料图片"]')).not.toBeNull()
+  expect(host.querySelector('[aria-label="新上传资料图片"]')).not.toBeNull()
+  expect(button('驳回').disabled).toBe(false)
+  expect(calls).toEqual([])
+})
+
 it('审核替换主图时按冻结的商品关联并排展示原图和新图', async () => {
   let previewRequested = false
   const operation: AuditData['operation'] = {
@@ -135,6 +163,7 @@ it('未领取时只能领取；本轮初审人被告知不能终审', async () =
   serve((url) => url.endsWith('/claim') ? auditData() : auditData({ claimed_by: null, claimed_by_me: false, can_claim: true })); audit()
   await until(() => !!button('领取'))
   expect(button('通过')).toBeUndefined()
+  expect(button('驳回').disabled).toBe(true)
   expect(button('钉意见')).toBeUndefined()
   act(() => button('领取').click())
   await until(() => host.querySelector('[data-testid="claim-state"]')!.textContent === '你已领取本批次，可以审核。')
@@ -143,6 +172,7 @@ it('未领取时只能领取；本轮初审人被告知不能终审', async () =
   await until(() => !!host.querySelector('[data-testid="claim-state"]'))
   expect(host.querySelector('[data-testid="claim-state"]')!.textContent).toBe('本账号须回避该阶段审核。')
   expect(button('领取')).toBeUndefined()
+  expect(button('驳回').disabled).toBe(true)
 })
 
 it('驳回必须填写总体意见，并连同钉图意见一起发出', async () => {
@@ -151,6 +181,8 @@ it('驳回必须填写总体意见，并连同钉图意见一起发出', async (
   await until(() => !!button('驳回'))
   expect(host.querySelector<HTMLInputElement>('[aria-label="第 1 条钉图意见"]')!.value).toBe('瓶盖颜色不对')
   expect([...host.querySelectorAll('[data-testid="product-list"] li')].find(row => row.textContent!.includes('酒瓶'))!.textContent).toContain('钉 1')
+  act(() => button('标签（只读）').click())
+  expect(button('驳回', host.querySelector('[data-testid="review-actions"]')!).disabled).toBe(false)
   act(() => button('驳回').click())
   const dialog = document.querySelector('dialog')!
   expect(dialog.textContent).toContain('将连同 1 条钉图意见一起发出')
@@ -160,6 +192,7 @@ it('驳回必须填写总体意见，并连同钉图意见一起发出', async (
   await until(() => calls.some(call => call.url.endsWith('/reject')))
   expect(calls.map(call => [call.url, call.body])).toEqual([['/api/review/1/reject', { comment: '标签不合理', pins: [{ batch_product_id: 2, x: 0.2, y: 0.4, text: '瓶盖颜色不对' }] }]])
   await until(() => host.textContent!.includes('已驳回，批次退回上传人。'))
+  expect(button('驳回')).toBeUndefined()
 })
 
 it('终审可从目录树修改位置；位置待定且企业不在对照表时通过按钮禁用并提示', async () => {

@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Batch, BatchFile, CatalogFile, Project
 from app.errors import AppError
+from app.schemas.audit import SupplementComparison, SupplementComparedFile, SupplementReplacement
 
 
 def active_batch_id(session: Session, project_id: int) -> int | None:
@@ -52,3 +53,37 @@ def invalidate_review(batch: Batch, file_id: int, product_id: int, kind: str) ->
         operation["batch_set_items"] = {key: members for key, members in operation.get("batch_set_items", {}).items()
                                           if key != str(product_id)}
     batch.payload = {**batch.payload, "operation": operation}
+
+
+
+def frozen_comparison(content: dict) -> SupplementComparison:
+    """使用冻结资料和商品映射还原补充决定，兼容已有审核快照。"""
+    operation = content["operation"]
+    before = operation["before"]
+    files = {row["id"]: row for row in before["files"] if row["status"] == "active"}
+    by_path = {row["rel_path"].casefold(): row for row in files.values()}
+    products = {row["id"]: row["file_id"] for row in before["products"] if row["status"] == "active"}
+    replacements = {row["id"]: row.get("existing_product_id") for row in operation["params"].get("products", [])}
+    decisions = {row["id"]: row["choice"] for row in operation["params"].get("files", [])}
+    mains = {row["batch_file_id"]: row["id"] for row in content["review"]["products"]}
+    summary = SupplementComparison()
+    for uploaded in content["files"]:
+        if uploaded.get("conflict") == "duplicate":
+            summary.skipped += 1
+            continue
+        file_id = uploaded["id"]
+        choice = decisions.get(file_id, uploaded.get("conflict_choice"))
+        product = replacements.get(mains.get(file_id))
+        prior = files.get(products.get(product)) if product else None
+        if prior is None and choice == "replace":
+            prior = by_path.get(uploaded["rel_path"].casefold())
+        if prior is not None:
+            summary.replaced += 1
+            if file_id not in mains:
+                summary.materials.append(SupplementReplacement(
+                    original=SupplementComparedFile.model_validate(prior),
+                    uploaded=SupplementComparedFile.model_validate(uploaded)))
+        else:
+            summary.added += 1
+            summary.kept_both += int(choice == "keep_both")
+    return summary

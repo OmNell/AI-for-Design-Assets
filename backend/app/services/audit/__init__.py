@@ -4,11 +4,13 @@ from __future__ import annotations
 import hashlib
 import secrets
 import json
+from io import BytesIO
+from threading import BoundedSemaphore
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.db.models import (Batch, BatchProduct, CompanyIndustryMap, Oplog, Project, ReviewPin, ReviewRound,
+from app.db.models import (AccessLog, Batch, BatchFile, BatchProduct, CompanyIndustryMap, Oplog, Project, ReviewPin, ReviewRound,
                            User, utcnow)
 from app.errors import AppError
 from app.schemas.review import ReviewResponse
@@ -19,8 +21,13 @@ from app.services.auth.service import AuthService, LoginContext
 from app.services.upload.service import UploadService
 from app.services.notify import NotifyService, stage_since
 from app.services.ingest import IngestService
-from app.services.nas import Region
+from app.services.nas import NasFs, NasNotFound, NasPermissionDenied, NasSessionExpired, NasUnavailable, Region
 from app.services.postops.executor import PostopExecutor
+from app.services.postops.supplement import frozen_comparison
+from app.services.catalog.media import is_image, public_error
+from app.services.thumbs import is_main_image
+from app.services.thumbs.images import ImageDecodeError, PREVIEW_MAX_BYTES, render_preview
+from app.services.upload.service import STAGED
 from app.services.oplog import OplogService
 from app.services.preflight import REQUIRED
 from app.services.review import ReviewService
@@ -41,6 +48,7 @@ class AuditService:
     def __init__(self, auth: AuthService, review: ReviewService, notify: NotifyService,
                  ingest: IngestService, postop: PostopExecutor) -> None:
         self.auth, self.review, self.notify, self.ingest, self.postop = auth, review, notify, ingest, postop
+        self.preview_slots = BoundedSemaphore(2)
 
     # ---- 取数与权限 ----
     @staticmethod
@@ -262,19 +270,107 @@ class AuditService:
             folder_counts=[FolderCount(name=folder.name, count=len(folder.files)) for folder in review.folders],
             history=round_history(session, batch.id),
             pins=pin_views(session, draft.id) if draft is not None and mine else [], checklist=dict(CHECKLIST_LABELS),
-            operation={"kind": batch.kind, **snapshot.content["operation"]} if "operation" in snapshot.content else None)
+            operation={"kind": batch.kind, **snapshot.content["operation"]} if "operation" in snapshot.content else None,
+            supplement=frozen_comparison(snapshot.content) if batch.kind == "supplement" else None)
+
+    @staticmethod
+    def _require_read(batch: Batch, user: User) -> None:
+        stage = STAGES.get(batch.status)
+        if not ("admin" in user.roles or stage is not None and stage[1] in user.roles
+                or user.id == batch.first_reviewer_id and "first_reviewer" in user.roles
+                or user.id == batch.final_reviewer_id and "final_reviewer" in user.roles):
+            raise AppError("forbidden", "无权查看该批次的审核页", 403)
 
     def read(self, batch_id: int, actor: User) -> AuditResponse:
         with self.auth.lock, self.auth.database.session() as session:
             user = self._user(session, actor)
             batch = self._batch(session, batch_id)
-            stage = STAGES.get(batch.status)
-            allowed = ("admin" in user.roles or stage is not None and stage[1] in user.roles
-                       or user.id == batch.first_reviewer_id and "first_reviewer" in user.roles
-                       or user.id == batch.final_reviewer_id and "final_reviewer" in user.roles)
-            if not allowed:
-                raise AppError("forbidden", "无权查看该批次的审核页", 403)
+            self._require_read(batch, user)
             return self._response(session, batch, user)
+
+    def _preview_source(self, session: Session, login: LoginContext, batch_id: int, file_id: int,
+                        version: str | None) -> tuple[str, int, str]:
+        UploadService._check_login(session, login)
+        user = self._user(session, login.user)
+        batch = self._batch(session, batch_id)
+        if batch.kind != "supplement":
+            raise AppError("preview_not_found", "没有待比较的补充图片", 404)
+        if version is None and user.id == batch.owner_id and batch.status in (STAGED, "待核对", REJECTED):
+            file = session.get(BatchFile, file_id)
+            if (file is None or file.batch_id != batch.id or file.removed or file.conflict != "conflict"
+                    or file.upload_status != "done" or file.fingerprint_kind != "full" or not file.fingerprint
+                    or is_main_image(file)):
+                raise AppError("preview_not_found", "没有待比较的补充图片", 404)
+            relative, size, sha = file.rel_path, file.size, file.fingerprint
+        else:
+            if user.id != batch.owner_id:
+                self._require_read(batch, user)
+            snapshot = self.review.submitted_snapshot(session, batch)
+            if version != snapshot.digest:
+                raise AppError("stale_review", "审核版本已变化，请刷新后重试", 409)
+            comparison = frozen_comparison(snapshot.content)
+            file = next((row.uploaded for row in comparison.materials if row.uploaded.id == file_id), None)
+            if file is None:
+                raise AppError("preview_not_found", "没有待比较的补充图片", 404)
+            relative, size, sha = file.rel_path, file.size, file.fingerprint
+        if not is_image(relative):
+            raise AppError("preview_unsupported", "该格式仅显示文件大小、时间和 SHA-256", 415)
+        return self.postop.paths.join(Region.TEMP, batch.temp_path, relative), size, sha
+
+    @staticmethod
+    def _preview_picture(fs: NasFs, path: str, size: int, sha: str) -> bytes:
+        if size > PREVIEW_MAX_BYTES:
+            raise AppError("preview_too_large", "图片超过 48 MiB，请核对文件大小、时间和 SHA-256", 413)
+        info = fs.stat(path)
+        changed = AppError("content_changed", "NAS 图片与本轮文件指纹不一致", 409)
+        if info.is_dir or info.size != size:
+            raise changed
+        digest = hashlib.sha256()
+        with fs.open_read(path) as stream, BytesIO() as source:
+            remaining = size
+            while remaining:
+                chunk = stream.read(min(remaining, 1024 * 1024))
+                if not chunk:
+                    raise changed
+                source.write(chunk)
+                digest.update(chunk)
+                remaining -= len(chunk)
+            if stream.read(1) or digest.hexdigest() != sha:
+                raise changed
+            source.seek(0)
+            try:
+                return render_preview(source, 1600)
+            except ImageDecodeError as error:
+                raise AppError("image_invalid", str(error), 422) from None
+
+    def supplement_preview(self, batch_id: int, file_id: int, version: str | None, login: LoginContext, host: str) -> bytes:
+        if not self.preview_slots.acquire(timeout=8):
+            raise AppError("preview_busy", "预览繁忙，请稍后重试", 503)
+        try:
+            with self.auth.lock, self.auth.database.session() as session:
+                source = self._preview_source(session, login, batch_id, file_id, version)
+                fs = self.auth.pool.pin(login.session_id)
+            try:
+                picture = self._preview_picture(fs, *source)
+                with self.auth.lock, self.auth.database.session() as session:
+                    if self._preview_source(session, login, batch_id, file_id, version) != source:
+                        raise AppError("content_changed", "补充图片已变化，请刷新后重试", 409)
+            except (AppError, NasNotFound, NasPermissionDenied, NasSessionExpired, NasUnavailable) as error:
+                self._record_supplement_preview(login, file_id, host, public_error(error)[0])
+                raise
+            finally:
+                self.auth.pool.unpin(login.session_id)
+        finally:
+            self.preview_slots.release()
+        self._record_supplement_preview(login, file_id, host, "allowed")
+        return picture
+
+    def _record_supplement_preview(self, login: LoginContext, file_id: int, host: str, outcome: str) -> None:
+        with self.auth.database.session() as session:
+            session.add(AccessLog(user_id=login.user.id, session_id=login.session_id, kind="supplement_preview",
+                                  target_id=file_id, logical_id=secrets.token_urlsafe(16), outcome=outcome, client_host=host))
+            OplogService(session).write(login.user.id, ",".join(login.user.roles), "预览补充图片", "batch_file",
+                                        str(file_id), None, {"outcome": outcome}, "成功" if outcome == "allowed" else "异常", host)
 
     # ---- 审核动作 ----
     def _replace_pins(self, session: Session, batch: Batch, draft: ReviewRound, user: User,

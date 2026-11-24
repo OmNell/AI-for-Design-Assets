@@ -52,7 +52,7 @@ export interface OperationInput {
   relation_batch_items?: Record<string, number[]>
 }
 export interface SupplementFile {
-  id: number; rel_path: string; fingerprint?: string | null; conflict: 'new' | 'duplicate' | 'conflict' | null
+  id: number; rel_path: string; size?: number; mtime?: number; fingerprint?: string | null; conflict: 'new' | 'duplicate' | 'conflict' | null
   file_id?: number | null; choice?: 'replace' | 'keep_both' | null
 }
 export interface PurgeFile {

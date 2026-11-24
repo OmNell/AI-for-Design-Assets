@@ -121,6 +121,27 @@ class PinsRequest(BaseModel):
     pins: list[PinInput] = Field(max_length=200)
 
 
+class SupplementComparedFile(BaseModel):
+    id: int
+    rel_path: str
+    size: int
+    mtime: int
+    fingerprint: str
+
+
+class SupplementReplacement(BaseModel):
+    original: SupplementComparedFile
+    uploaded: SupplementComparedFile
+
+
+class SupplementComparison(BaseModel):
+    added: int = 0
+    replaced: int = 0
+    skipped: int = 0
+    kept_both: int = 0
+    materials: list[SupplementReplacement] = Field(default_factory=list)
+
+
 class AuditResponse(BaseModel):
     version: str
     review: ReviewResponse
@@ -140,6 +161,7 @@ class AuditResponse(BaseModel):
     pins: list[PinView]
     checklist: dict[str, str]
     operation: dict | None = None
+    supplement: SupplementComparison | None = None
 
 
 class PathRequest(BaseModel):

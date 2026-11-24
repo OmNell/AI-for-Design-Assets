@@ -1,11 +1,12 @@
 """审核、对照表、目录树与待办路由。"""
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Request, Response
 
 from app.api.dependencies import client_host, require_login, require_role
 from app.api.dependencies import require_login_context
 from app.services.auth.service import LoginContext
+from app.services.catalog.media import NO_CACHE
 from app.db.models import User
 from app.schemas.audit import (AuditResponse, CompanyMap, PassRequest, PathRequest, PinsRequest, QueueItem, RejectRequest,
                                TodoItem, TreeRoot)
@@ -42,6 +43,13 @@ def queue(stage: Literal["first", "final"], request: Request, user: User = Depen
 @router.get("/review/{batch_id}", response_model=AuditResponse)
 def read(batch_id: int, request: Request, user: User = Depends(require_login)) -> AuditResponse:
     return request.app.state.audit.read(batch_id, user)
+
+
+@router.get("/review/{batch_id}/supplement-files/{file_id}/preview")
+def supplement_preview(batch_id: int, file_id: int, request: Request, version: str | None = None,
+                       login: LoginContext = Depends(require_login_context)) -> Response:
+    picture = request.app.state.audit.supplement_preview(batch_id, file_id, version, login, client_host(request))
+    return Response(picture, media_type="image/jpeg", headers=NO_CACHE)
 
 
 @router.post("/review/{batch_id}/claim", response_model=AuditResponse)

@@ -11,6 +11,7 @@ from typing import BinaryIO
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 VARIANT_SIZES = (300, 1600, 1024)
+PREVIEW_MAX_BYTES = 48 * 1024 * 1024
 
 
 class ImageDecodeError(Exception):

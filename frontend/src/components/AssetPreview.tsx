@@ -5,8 +5,8 @@ import { getPreview } from '../api/catalog'
 import { ZoomImage } from './review/ImageViewer'
 import type { ThumbState } from './review/Thumb'
 
-export function AssetPreview({ fileId, name, warning, verifiedOnly = false, compact = false }: {
-  fileId: number; name: string; warning?: string | null; verifiedOnly?: boolean; compact?: boolean
+export function AssetPreview({ fileId, name, warning, verifiedOnly = false, compact = false, stagedUrl }: {
+  fileId: number; name: string; warning?: string | null; verifiedOnly?: boolean; compact?: boolean; stagedUrl?: string
 }) {
   const [image, setImage] = useState<ThumbState>({ status: 'pending', message: '正在读取图片…' })
   const [allow, setAllow] = useState(false)
@@ -17,7 +17,7 @@ export function AssetPreview({ fileId, name, warning, verifiedOnly = false, comp
     const abort = new AbortController()
     let objectUrl = ''
     setImage({ status: 'pending', message: '正在读取图片…' })
-    getPreview(`/api/files/${fileId}/preview?transfer=${transfer}&allow_changed=${allow}`, abort.signal)
+    getPreview(stagedUrl ?? `/api/files/${fileId}/preview?transfer=${transfer}&allow_changed=${allow}`, abort.signal)
       .then(async response => {
         const blob = await response.blob()
         if (abort.signal.aborted) return
@@ -31,7 +31,7 @@ export function AssetPreview({ fileId, name, warning, verifiedOnly = false, comp
         setImage({ status: 'failed', message: reason instanceof Error ? reason.message : '无法读取图片' })
       })
     return () => { abort.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl) }
-  }, [fileId, allow, transfer, warning])
+  }, [fileId, allow, transfer, warning, stagedUrl])
   const showWarning = warning || changed
   return <div className="space-y-3">
     {showWarning && <div role="alert" className="rounded-xl bg-amber-100 p-3 text-sm text-amber-900">
@@ -41,7 +41,7 @@ export function AssetPreview({ fileId, name, warning, verifiedOnly = false, comp
     {(!showWarning || allow) && <div className={compact ? "h-[min(42vh,380px)] bg-slate-50" : "h-[min(64vh,670px)] bg-slate-50"}>
       <ZoomImage key={fileId} image={image} name={name} />
     </div>}
-    {(!showWarning || allow) && image.status === 'ready' && <a className="inline-block text-sm text-blue-700 underline" target="_blank" rel="noreferrer"
+    {!stagedUrl && (!showWarning || allow) && image.status === 'ready' && <a className="inline-block text-sm text-blue-700 underline" target="_blank" rel="noreferrer"
       href={`/api/files/${fileId}/preview?original=true&transfer=${transfer}&allow_changed=${allow}`}>打开原图</a>}
   </div>
 }
