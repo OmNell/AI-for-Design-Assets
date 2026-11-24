@@ -26,6 +26,8 @@ class Issue(BaseModel):
 
 
 class PrecheckResponse(BaseModel):
+    won_path: str | None = None
+    lost_path: str | None = None
     project_code: str
     company_name: str
     project_name: str

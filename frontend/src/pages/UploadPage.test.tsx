@@ -12,6 +12,8 @@ let root: Root
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  HTMLDialogElement.prototype.showModal ??= function () { this.open = true }
+  HTMLDialogElement.prototype.close ??= function () { this.open = false }
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -116,4 +118,37 @@ it('普通选择窗口关闭且未返回文件时清除等待状态', async () =
   await act(async () => input.dispatchEvent(new Event('cancel', { bubbles: true })))
   expect(host.querySelector('[role="status"]')).toBeNull()
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('可以重新选择或直接拖入')
+})
+
+it.each([
+  { won: true, path: '01已中标项目/02酒业/07企业' },
+  { won: false, path: '02未中标项目/02酒业/07企业' },
+  { won: true, path: null },
+])('确认上传显示与中标状态对应的归档建议（$path）', async ({ won, path }) => {
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+    ...precheck,
+    won_path: path ? '01已中标项目/02酒业/07企业' : null,
+    lost_path: path ? '02未中标项目/02酒业/07企业' : null,
+  })))
+  vi.stubGlobal('showDirectoryPicker', vi.fn(async () => ({
+    kind: 'directory',
+    name: project,
+    async *values() {
+      yield {
+        kind: 'directory', name: '单品',
+        async *values() {
+          yield { kind: 'file', name: '主图.jpg', getFile: async () => new File(['图片'], '主图.jpg') }
+        },
+      }
+    },
+  })))
+
+  await draw()
+  if (!won) await act(async () => host.querySelectorAll<HTMLInputElement>('input[type="radio"]')[1].click())
+  await act(async () => button('选择文件夹')!.click())
+  await act(async () => host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach(input => input.click()))
+  await act(async () => button('开始上传')!.click())
+  expect(document.querySelector('dialog[open]')?.textContent).toContain(
+    (won ? '已中标' : '未中标') + ' · ' + (path ?? '位置待定'),
+  )
 })

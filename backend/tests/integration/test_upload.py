@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, update
 
 from app.config import DevUser, Settings, PathsConfig
-from app.db.models import Batch, BatchFile, PreflightAck, Project, UserSession, utcnow
+from app.db.models import Batch, BatchFile, CompanyIndustryMap, PreflightAck, Project, UserSession, utcnow
 from app.main import create_app
 from app.services.auth.service import COOKIE_NAME, UPLOAD_DEVICE_COOKIE
 
@@ -389,3 +389,13 @@ def test_nas_disconnect_pauses_and_requires_relogin_with_offset(upload_client: T
     resumed = client.post(f'/api/batches/{batch["id"]}/resume', json=body()).json()
     assert resumed["files"][0]["bytes_received"] == 4
     assert chunk(client, resumed, 1, b"efgh").status_code == 200
+
+
+def test_precheck_shows_won_and_lost_paths_for_name_and_alias(upload_client: TestClient) -> None:
+    with upload_client.app.state.database.session() as session:
+        session.add(CompanyIndustryMap(company_name="甲酒业", aliases=["甲酒"], company_seq=7,
+                                       industry_name="食品", industry_seq=2))
+    for name in ("甲酒业", "甲酒", "乙酒"):
+        result = upload_client.post("/api/batches/precheck", json=body(f"P123_{name}_包装")).json()
+        assert result["won_path"] == ("01已中标项目/02食品/07甲酒业" if name != "乙酒" else None)
+        assert result["lost_path"] == ("02未中标项目/02食品/07甲酒业" if name != "乙酒" else None)

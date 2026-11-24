@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Batch, BatchFile, BatchProduct, HCodeSequence, PreflightAck, Project, User, UserSession, utcnow
 from app.errors import AppError
 from app.schemas.upload import AiProgress, Issue, BatchProductResponse, BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, PreDescriptionInput, PreDescriptionProduct, PreDescriptionView, ResumeRequest, UploadFileResponse
+from app.services.admin.company_map import match_company, recommended_path
 from app.services.auth.service import AuthService, LoginContext, is_expired, token_hash
 from app.services.nas import NasFs, NasNotFound, NasSessionExpired, NasUnavailable, Region
 from app.services.nas.factory import create_paths
@@ -139,9 +140,12 @@ class UploadService:
         if project is None:
             with self.database.session() as session:
                 project_id = session.scalar(select(Project.id).where(Project.project_code == parts[0]))
+                company = match_company(session, parts[1])
+                won_path, lost_path = recommended_path(company, True), recommended_path(company, False)
                 exists = project_id is not None
                 busy = self._active_ingest(session, parts[0], resume_id)
         else:
+            won_path = lost_path = project.current_path
             exists, busy = False, False
             project_id = project.id
         root_name = self.paths.root(Region.TEMP)
@@ -164,7 +168,7 @@ class UploadService:
             parts = [project.project_code, project.company_name, project.project_name]
         if busy and not exists:
             issues.append(Issue(rule_code="P02", level="block", path=body.folder_name, message="此立项编号已有进行中的首次入库批次"))
-        return PrecheckResponse(project_code=parts[0], company_name=parts[1], project_name=parts[2],
+        return PrecheckResponse(won_path=won_path, lost_path=lost_path, project_code=parts[0], company_name=parts[1], project_name=parts[2],
                                 code_status="exists" if exists else "need_h_code" if parts[0] == "H" else "new",
                                 issues=issues, path_prefix_length=prefix, project_id=project_id)
 

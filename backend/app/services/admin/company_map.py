@@ -38,11 +38,14 @@ def match_company(session: Session, name: str) -> CompanyIndustryMap | None:
 
 
 def recommend(session: Session, batch: Batch) -> str | None:
-    row = match_company(session, batch_company(batch))
+    return recommended_path(match_company(session, batch_company(batch)), batch.won)
+
+
+def recommended_path(row: CompanyIndustryMap | None, won: bool) -> str | None:
     if row is None:
         return None
     try:
-        return company_path(batch.won, row)
+        return company_path(won, row)
     except NasPermissionDenied:
         return None
 

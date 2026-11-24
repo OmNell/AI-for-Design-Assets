@@ -252,6 +252,16 @@ export function UploadPage() {
     {['AI 处理中', 'AI 处理失败', '待核对'].includes(batch.status) && <p className="mt-5 text-emerald-800"><a href={`/batches/${batch.id}`} className="underline underline-offset-4">查看 AI 进度与结果</a></p>}
   </Panel>}
     </div>
-  <Dialog open={confirm} title="确认上传" onClose={() => setConfirm(false)}><div className="space-y-3 text-sm"><p>编号：{batch?.project_code ?? (checked?.project_code === 'H' ? `系统将发放 H${year}-四位流水` : checked?.project_code)}</p><p>企业：{checked?.company_name}</p><p>项目：{checked?.project_name}</p><p>{won ? '已中标' : '未中标'} · 位置待定</p><p>{selectionFiles.length} 个文件 · {formatSize(selectionFiles.reduce((sum, file) => sum + (file.file?.size ?? 0), 0))}</p><Button disabled={busy} onClick={() => void createOrResume()}>确认上传</Button></div></Dialog>
+  <Dialog open={confirm} title="确认上传" onClose={() => setConfirm(false)}>
+    <div className="space-y-3 text-sm">
+      <p>编号：{batch?.project_code ?? (checked?.project_code === 'H' ? `系统将发放 H${year}-四位流水` : checked?.project_code)}</p>
+      <p>企业：{checked?.company_name}</p>
+      <p>项目：{checked?.project_name}</p>
+      <p className="break-all">{won ? '已中标' : '未中标'} · {(won ? checked?.won_path : checked?.lost_path) || '位置待定'}</p>
+      <p>{selectionFiles.length} 个文件 · {formatSize(selectionFiles.reduce((sum, file) => sum + (file.file?.size ?? 0), 0))}</p>
+      <p>开始传输后将按实际速度估算剩余时间。</p>
+      <Button disabled={busy} onClick={() => void createOrResume()}>确认上传</Button>
+    </div>
+  </Dialog>
   </div>
 }
