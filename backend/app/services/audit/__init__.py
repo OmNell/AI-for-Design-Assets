@@ -151,18 +151,21 @@ class AuditService:
             now = utcnow()
             rows = sorted(session.scalars(select(Batch).where(Batch.status == status)), key=lambda row: (stage_since(row), row.id))
             items: list[QueueItem] = []
+            config = self.auth.config.review
             for batch in rows:
                 snapshot = self.review.submitted_snapshot(session, batch)
                 files = snapshot.content["files"]
                 claimer = session.get(User, getattr(batch, field)) if getattr(batch, field) else None
                 since = stage_since(batch)
+                exception = role in user.roles and self_review_allowed(session, config, batch, user)
                 items.append(QueueItem(id=batch.id, kind=batch.kind, batch_no=batch.batch_no, folder_name=str(batch.payload["folder_name"]),
                     round=batch.round, uploader_name=_name(session.get(User, batch.uploader_id)),
                     products=len(snapshot.content["review"]["products"]), files=len(files), total_size=sum(file["size"] for file in files),
                     waiting_since=since, waiting_seconds=max(0, int((now - since).total_seconds())),
                     claimed_by=PersonView(id=claimer.id, name=_name(claimer)) if claimer else None,
                     claimed_by_me=claimer is not None and claimer.id == user.id,
-                    blocked=recused(session, self.auth.config.review, batch, user)))
+                    blocked=not exception and recused(session, config, batch, user),
+                    self_review_exception=exception))
             return items
 
     def claim(self, batch_id: int, actor: User, host: str, version: str) -> AuditResponse:

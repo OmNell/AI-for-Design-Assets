@@ -169,6 +169,25 @@ it('队列显示上传人、商品数、文件量、等待时长、轮次与领�
   expect([formatWaiting(30), formatWaiting(7200)]).toEqual(['1 分钟', '2 小时'])
 })
 
+it.each(['first', 'final'] as const)('%s 队列解释指定管理员例外，并只标记服务端确认的批次', async stage => {
+  const entry = { batch_no: 'B7', round: 1, uploader_name: 'one', products: 1, files: 1, total_size: 10,
+    waiting_since: '', waiting_seconds: 120, claimed_by: null, claimed_by_me: false }
+  serve(() => [
+    { ...entry, id: 7, kind: 'ingest', folder_name: 'P1_企业_首次入库', blocked: false, self_review_exception: true },
+    { ...entry, id: 8, kind: 'supplement', folder_name: 'P2_企业_资料补充', blocked: true, self_review_exception: false },
+  ])
+  mount(<QueuePage stage={stage} />, stage === 'first' ? '/first-review' : '/final-review')
+  await until(() => host.querySelectorAll('tbody tr').length === 2)
+  expect(host.textContent).toContain('本人上传并提交的首次入库批次')
+  expect(host.textContent).toContain('入库后操作须遵守回避规则')
+  const [first, second] = host.querySelectorAll('tbody tr')
+  expect(first.textContent).toContain('适用自审例外')
+  expect(first.querySelector('a')?.textContent).toBe('进入审核')
+  expect(second.textContent).toContain('本账号须回避')
+  expect(second.textContent).not.toContain('适用自审例外')
+  expect(second.querySelector('a')?.textContent).toBe('查看')
+})
+
 it('对照表页新增行业和企业，别名按顿号拆分后保存', async () => {
   login(['admin'])
   const saved = { industries: [{ id: 1, name: '酒业', seq: 1 }, { id: 2, name: '金融', seq: 2 }], companies: [{ id: 1, name: '茅台', aliases: ['贵州茅台'], industry_id: 1, industry_name: '酒业', seq: 1 }, { id: 2, name: '招商银行', aliases: ['招行', 'CMB'], industry_id: 2, industry_name: '金融', seq: 1 }] }

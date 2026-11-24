@@ -55,16 +55,25 @@ def test_configured_admin_can_self_review_own_upload_through_formal_ingest(setti
         flow = Flow(client)
         roles = ["uploader", "first_reviewer", "final_reviewer"]
         assert flow.audit("one", "claim").json()["code"] == "reviewer_conflict"
+        before = flow.call("one", "GET", "/api/review/queue?stage=first").json()[0]
+        assert before["blocked"] and not before["self_review_exception"]
         flow.roles("one", roles + ["admin"])
         assert flow.call("admin", "PUT", "/api/admin/company-map", CATALOG).status_code == 200
         assert flow.todos("one")["first_review"] == 1
         queue = flow.call("one", "GET", "/api/review/queue?stage=first").json()
         assert queue[0]["id"] == flow.bid and not queue[0]["blocked"]
+        assert queue[0]["self_review_exception"]
+        other_admin = flow.call("admin", "GET", "/api/review/queue?stage=first").json()[0]
+        assert not other_admin["self_review_exception"]
         assert flow.audit("one", "claim").json()["claimed_by_me"]
         assert flow.audit("one", "pass", {"checklist": {}}).status_code == 422
         assert flow.audit("one", "pass", ALL).status_code == 200
         assert flow.todos("one")["final_review"] == 1
+        final = flow.call("one", "GET", "/api/review/queue?stage=final").json()[0]
+        assert final["self_review_exception"] and not final["blocked"]
         flow.roles("one", roles)
+        no_longer_allowed = flow.call("one", "GET", "/api/review/queue?stage=final").json()[0]
+        assert no_longer_allowed["blocked"] and not no_longer_allowed["self_review_exception"]
         assert flow.audit("one", "claim").json()["code"] == "reviewer_conflict"
         flow.roles("one", roles + ["admin"])
         assert flow.audit("one", "claim").json()["claimed_by_me"]
