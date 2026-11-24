@@ -15,6 +15,7 @@ from sqlalchemy import select
 from app.db.models import BackupRecord, Batch, BatchFile, CatalogFile, InspectionFinding, Job, Link, PostopPlan, Product, Project
 from app.main import create_app
 from app.services import archive
+from app.services.archive import publication
 from app.services.backup.format import inventory
 from app.services.inspection import InspectionService
 from app.services.maintenance.settings import CST
@@ -379,8 +380,12 @@ def test_stable_10k_metadata_scan(maintained):
         session.flush()
         session.add_all(Link(kind="file", target_id=row.id, link_id=f"fixture_file_{row.id}") for row in rows)
     final = next(row for row in app.state.auth.pool._sessions.values() if row.permissions.get(Region.FORMAL) == "write")
+    root = paths.join(Region.FORMAL, project.current_path)
     with app.state.database.session() as session:
-        archive.rebuild(session, session.get(Project, project.id), final, paths.join(Region.FORMAL, project.current_path))
+        row = session.get(Project, project.id)
+        archive.rebuild(session, row, final, root)
+        # 合成的正式目录同时备有与扩容后档案一致的恢复凭据。
+        archive.write(final, root, {publication.RECEIPT: publication.document(archive.from_catalog(session, row))}, replace=True)
     started = perf_counter()
     run, findings = inspect(flow)
     elapsed = perf_counter() - started

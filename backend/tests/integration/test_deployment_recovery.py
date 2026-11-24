@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from app.db.database import Database
-from app.db.models import CatalogFile, Link, Product, ProductTag, Project, ProductRelation, User
+from app.db.models import Batch, CatalogFile, InspectionFinding, Link, Product, ProductTag, Project, ProductRelation, User
 from app.main import create_app
 from app.services.archive import publication
 from app.services.jobs import JobFailure
@@ -20,7 +20,7 @@ from app.services.nas import Region
 from app.services.nas.factory import create_paths
 from app.services.recovery import rebuild, rebuild_auxiliary, scan
 from test_catalog_access import published
-from test_maintenance import maintained
+from test_maintenance import inspect, maintained
 from test_postop_execution import approve, create, state, submit
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -97,6 +97,80 @@ def test_unpublished_version_blocks_automatic_fallback_and_manual_evidence(maint
     older = next(row for row in candidates if row["version"] == 0)
     report, chosen = scan(fs, root, {project.project_code.casefold(): {**older, "basis": "人工核对上一批准发布记录和未提交日志"}})
     assert len(chosen) == 1 and chosen[0].path == project.current_path
+
+
+@pytest.mark.parametrize("receipt_written", [False, True])
+def test_receipt_and_sql_commit_can_resume_independently(maintained, monkeypatch, receipt_written):
+    flow, project, settings, _ = maintained
+    app = flow.client.app
+    original = publication.seal
+    params = {"project_name": "发布检查点演练"}
+    bid = create(flow, project, "rename", params)
+    submit(flow, bid, params)
+
+    def interrupted(*args):
+        if receipt_written:
+            original(*args)
+        raise JobFailure("模拟凭据写入或 SQLite 提交中断", retryable=False)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(publication, "seal", interrupted)
+        approve(flow)
+        assert app.state.jobs.wait_idle(8)
+    assert state(flow, bid)["status"] == "入库异常"
+    with app.state.database.session() as session:
+        current = session.get(Project, project.id)
+        assert current.current_path == project.current_path
+        assert current.asset_version == 0
+    root = create_paths(settings).root(Region.FORMAL)
+    fs = app.state.auth.pool.system()
+    report, chosen = scan(fs, root)
+    if receipt_written:
+        assert not report["unresolved"]
+        assert [candidate.version for candidate in chosen] == [1]
+    else:
+        assert report["unresolved"] and not chosen
+
+    response = flow.call("final", "POST", f"/api/operations/{bid}/execute", {})
+    assert response.status_code == 200, response.text
+    assert app.state.jobs.wait_idle(8)
+    assert state(flow, bid)["status"] == "已入库"
+    report, chosen = scan(fs, root)
+    assert not report["unresolved"]
+    assert [candidate.version for candidate in chosen] == [1]
+
+
+def test_legacy_receipt_is_reported_and_repaired_by_two_stage_review(maintained, monkeypatch):
+    flow, project, settings, _ = maintained
+    app = flow.client.app
+    paths = create_paths(settings)
+    root = paths.join(Region.FORMAL, project.current_path)
+    final = next(fs for fs in app.state.auth.pool._sessions.values() if fs.permissions.get(Region.FORMAL) == "write")
+    final.delete(root + "/" + publication.RECEIPT)
+    _, findings = inspect(flow)
+    finding = next(row for row in findings if row["kind"] == "archive_broken")
+    assert "发布凭据缺失" in finding["detail"]
+    assert flow.call("admin", "POST", f"/api/projects/{project.id}/archive/repair").status_code == 201
+    with app.state.database.session() as session:
+        bid = session.scalar(select(Batch.id).where(Batch.kind == "archive_repair"))
+    submit(flow, bid, {}, "admin")
+
+    def fail_before_receipt(*args):
+        raise JobFailure("模拟档案修复写凭据前中断", retryable=False)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(publication, "seal", fail_before_receipt)
+        approve(flow)
+        assert app.state.jobs.wait_idle(8)
+    assert state(flow, bid)["status"] == "入库异常"
+    with app.state.database.session() as session:
+        assert session.get(InspectionFinding, finding["id"]).resolved_at is None
+
+    assert flow.call("final", "POST", f"/api/operations/{bid}/execute", {}).status_code == 200
+    assert app.state.jobs.wait_idle(8)
+    assert state(flow, bid)["status"] == "已入库"
+    report, chosen = scan(app.state.auth.pool.system(), paths.root(Region.FORMAL))
+    assert not report["unresolved"] and [candidate.path for candidate in chosen] == [project.current_path]
 
 
 def test_missing_receipt_needs_review_and_vector_failure_keeps_gate(maintained, tmp_path, monkeypatch):

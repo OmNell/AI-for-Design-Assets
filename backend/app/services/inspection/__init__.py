@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.db.models import (Batch, CatalogFile, ExpectedDeletion, HistoryVersion, IngestPlan, InspectionFinding,
                            InspectionRun, Job, PostopPlan, Project, utcnow)
 from app.services import archive
-from app.services.archive.publication import RECEIPT
+from app.services.archive import publication
 from app.services.admin.company_map import WON_FOLDERS
 from app.services.auth.service import AuthService
 from app.services.catalog.locator import VISIBLE_PROJECTS
@@ -23,7 +23,7 @@ from app.services.nas import NasFs, NasNotFound, Region, safe_join
 from app.services.nas.factory import create_paths
 from app.services.nas.fs import NasStat
 from app.services.oplog import OplogService
-from app.services.postops.shadow import MARKER, WORKSPACE, physical
+from app.services.postops.shadow import MARKER, RECEIPT_FILES, WORKSPACE, physical
 from app.services.upload.fingerprint import fingerprint
 
 
@@ -201,8 +201,11 @@ class InspectionService:
         with self.auth.database.session() as session:
             data = archive.from_catalog(session, project)
             docs = {archive.PROJECT_FILE, *(row["archive_rel_path"] for row in data["products"])}
-            known.update(safe_join(root, doc) for doc in docs | {MARKER, RECEIPT, "_工作台入库校验"})
-            problems = archive.verify(session, project, fs, self.paths.join(Region.FORMAL, root))
+            known.update(safe_join(root, doc) for doc in docs | {MARKER, "_工作台入库校验"} | RECEIPT_FILES)
+            absolute = self.paths.join(Region.FORMAL, root)
+            problems = archive.verify(session, project, fs, absolute)
+            if not problems and root == project.current_path and not publication.confirmed(fs, absolute, data, root):
+                problems.append("NAS 恢复发布凭据缺失或不匹配，需双审修复")
         for issue in problems:
             finding("archive_broken", root, issue)
         if not problems and root != project.current_path:
@@ -297,7 +300,7 @@ class InspectionService:
                     found.append(Finding("missing", root, "已保留历史版本目录丢失", data["project"]["id"]))
                 continue
             known.update(safe_join(root, path) for path in
-                         {MARKER, RECEIPT, archive.PROJECT_FILE, *(row["archive_rel_path"] for row in data["products"])})
+                         {MARKER, archive.PROJECT_FILE, *(row["archive_rel_path"] for row in data["products"])} | RECEIPT_FILES)
             cutoff = datetime.fromisoformat(published).timestamp() if published else float("inf")
             for row in data["files"]:
                 path = safe_join(root, physical(data, row))

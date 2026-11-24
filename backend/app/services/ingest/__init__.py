@@ -465,6 +465,8 @@ class IngestService:
         with self.auth.lock, self.auth.database.session() as session:
             session.connection().exec_driver_sql("BEGIN IMMEDIATE")
             current = self._for_job(session, context).batch
+            if self.auth.pool.get(context.job.run_as_session_id) is not fs:
+                raise JobFailure("终审 NAS 会话已变更，请重新登录后继续", retryable=False)
             project = session.get(Project, current.project_id)
             if not archive.matches_catalog(session, project, data):
                 raise JobFailure("卡片柜与已核验的入库清单不一致", retryable=False)
@@ -476,7 +478,7 @@ class IngestService:
             self.notify.emit(session, "ingested", current)
             if self.on_published:
                 self.on_published(session)
-        publication.seal(self.auth, context, batch.id, execution.target)
+            publication.seal(session, current, fs, execution.target, data)
 
     def _cache_thumbs(self, batch: Batch, data: archive.Manifest, frozen_files: list[dict]) -> None:
         root = Path(self.auth.config.paths.data_dir) / "thumbs"

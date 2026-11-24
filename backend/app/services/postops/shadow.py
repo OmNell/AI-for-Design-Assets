@@ -18,7 +18,8 @@ from app.services.upload.fingerprint import fingerprint
 WORKSPACE = "_工作台准备"
 VERSIONS = "_工作台版本"
 MARKER = "_工作台版本标记"
-RESERVED = {archive.PROJECT_FILE, MARKER, RECEIPT, *archive.PRODUCT_DIR.values()}
+RECEIPT_FILES = {RECEIPT, RECEIPT + ".tmp"}
+RESERVED = {archive.PROJECT_FILE, MARKER, *RECEIPT_FILES, *archive.PRODUCT_DIR.values()}
 CopyGuard = Callable[[], AbstractContextManager[None]]
 
 
@@ -114,7 +115,8 @@ class ShadowTree:
         docs = archive.documents(self.plan.manifest)
         if archive.parse(self.fs, root) != archive._canonical(self.plan.manifest):
             raise JobFailure("入库后档案核验失败", retryable=False)
-        files = {path for path, is_dir in IngestService._files(self.fs, root, {MARKER}) if not is_dir}
+        ignored = {MARKER, *RECEIPT_FILES} if root == self.target else {MARKER}
+        files = {path for path, is_dir in IngestService._files(self.fs, root, ignored) if not is_dir}
         if files != self.plan.sources.keys() | docs.keys():
             raise JobFailure("发布目录的文件清单与审核数据不一致", retryable=False)
         for relative, row in self.plan.sources.items():

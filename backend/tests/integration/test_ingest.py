@@ -12,6 +12,7 @@ from app.db.database import Database
 from app.db.models import Batch, BatchProduct, CatalogFile, HistoryVersion, IngestPlan, Job, Link, Oplog, Product, ProductEmbedding, Project, ReviewRound, User
 from app.main import create_app
 from app.services import archive
+from app.services.archive import publication
 from app.services.jobs import JobFailure
 from app.services.nas import Region
 from app.services.nas.factory import create_paths
@@ -187,6 +188,33 @@ def test_each_durable_checkpoint_can_resume(settings, tmp_path, monkeypatch, che
             assert not manifest or plan.manifest == manifest
             assert len(list(session.scalars(select(Product)))) == 1
             assert len(list(session.scalars(select(Link)))) == 3
+
+
+def test_initial_ingest_waits_for_nas_receipt(settings, tmp_path, monkeypatch):
+    app = app_for(settings, tmp_path)
+    with TestClient(app) as client:
+        flow = Flow(client)
+
+        def interrupted(*args):
+            raise JobFailure("模拟 NAS 写凭据失败", retryable=False)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(publication, "seal", interrupted)
+            start(flow)
+            assert app.state.jobs.wait_idle(8)
+        result = progress(flow)
+        assert result["status"] == "入库异常" and result["step"] == 8
+        with app.state.database.session() as session:
+            batch = session.get(Batch, flow.bid)
+            project = session.get(Project, batch.project_id)
+            assert project.status == "ingest_error"
+            link = session.scalar(select(Link.link_id).where(Link.kind == "project", Link.target_id == project.id))
+        assert flow.call("other", "GET", "/l/" + link).status_code == 404
+        assert resume(flow)["status"] == "已入库"
+        fs = app.state.auth.pool.system()
+        target = create_paths(settings).join(Region.FORMAL, project.current_path)
+        assert publication.confirmed(fs, target, archive.parse(fs, target), project.current_path)
+        assert flow.call("other", "GET", "/l/" + link).json()["target_id"] == project.id
 
 
 def test_rename_before_sql_checkpoint_and_two_resume_requests(settings, tmp_path, monkeypatch):

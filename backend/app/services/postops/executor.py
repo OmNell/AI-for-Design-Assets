@@ -335,7 +335,7 @@ class PostopExecutor:
                       {"path": plan.target_path, "version": project.asset_version, "kind": batch.kind})
             self.notify.emit(session, "ingested", batch)
             self.indexes.sync_after_publish(session)
-        publication.seal(self.auth, context, plan.batch_id, tree.target)
+            publication.seal(session, batch, tree.fs, tree.target, plan.manifest)
 
     def on_job_state(self, session: Session, job: Job) -> None:
         if job.status != "failed":
@@ -369,7 +369,7 @@ class PostopExecutor:
                 row.resolved_at = utcnow()
             self._log(session, batch, "档案修复并核验", None, {"project_id": project.id, "paths": list(operation["repair"])})
             self.notify.emit(session, "ingested", batch)
-        publication.seal(self.auth, context, batch.id, root)
+            publication.seal(session, batch, fs, root, data)
 
     def handle(self, context: JobContext) -> None:
         if context.fs is None:

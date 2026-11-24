@@ -5,13 +5,17 @@ import hashlib
 
 from app.errors import AppError
 from app.services import archive
+from app.services.archive import publication
 from app.services.nas import NasFs, safe_join
 from app.services.upload.fingerprint import fingerprint
 
 
-def target_documents(data: dict) -> dict[str, dict]:
+def target_documents(data: dict, *, include_receipt: bool = True) -> dict[str, dict]:
+    docs = archive.documents(data)
+    if include_receipt:
+        docs[publication.RECEIPT] = publication.document(data)
     return {path: {"rel_path": path, "fingerprint": hashlib.sha256(body.encode()).hexdigest(),
-                   "size": len(body.encode())} for path, body in archive.documents(data).items()}
+                   "size": len(body.encode())} for path, body in docs.items()}
 
 
 def existing_document(fs: NasFs, root: str, path: str) -> dict | None:
@@ -30,7 +34,9 @@ def changes(fs: NasFs, root: str, before: dict) -> dict:
 
 
 def check(fs: NasFs, root: str, data: dict, frozen: dict) -> None:
-    if target_documents(data) != {path: entry["after"] for path, entry in frozen.items()}:
+    # 兼容升级前已冻结的档案修复批次。
+    target = target_documents(data, include_receipt=publication.RECEIPT in frozen)
+    if target != {path: entry["after"] for path, entry in frozen.items()}:
         raise AppError("archive_repair_changed", "当前卡片柜的档案内容与审核目标不符", 409)
     for path, entry in frozen.items():
         if existing_document(fs, root, path) not in (entry["before"], entry["after"]):
