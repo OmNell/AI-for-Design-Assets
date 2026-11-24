@@ -31,6 +31,8 @@ from .indexes import active_products, inputs_for
 from .scoring import Candidate, fallback, fuse, lexical
 from .store import VectorStore
 
+CANDIDATE_LIMIT = 60
+
 CODE = re.compile(r"(?=.*\d)[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*", re.ASCII)
 PRIVATE_PATTERN = re.compile(
     r"(?i)(?:https?://\S+|\\\\[^\s]+|[A-Z]:[\\/][^\s]+|(?:[\w.\-\u3400-\u9fff]+[/\\]){2,}[^\s]+"
@@ -179,9 +181,15 @@ class SearchService:
                 raise
             return False
 
-    def _project_hits(self, rows: Iterable[tuple[Project, str | None]], login: LoginContext, host: str) -> tuple[list[SearchProjectHit], bool]:
-        visible, denied = [], False
+    def _project_hits(self, rows: Iterable[tuple[Project, str | None]], login: LoginContext, host: str,
+                      candidate_codes: list[str] | None = None) -> tuple[list[SearchProjectHit], bool]:
+        visible: list[SearchProjectHit] = []
+        denied = False
+        selected = candidate_codes if candidate_codes is not None else visible
+        limit = CANDIDATE_LIMIT if candidate_codes is not None else 5
         for row, reason in rows:
+            if len(selected) >= limit:
+                break
             try:
                 self.catalog.authorize_project(row, login, host)
             except (NasPermissionDenied, NasNotFound, NasUnavailable):
@@ -191,9 +199,10 @@ class SearchService:
                 current = session.get(Project, row.id)
                 if (current and current.status == "active"
                         and (row.current_path, row.asset_version) == (current.current_path, current.asset_version)):
-                    visible.append(SearchProjectHit(**self.catalog._row(session, current).model_dump(), reason=reason))
-            if len(visible) >= 5:
-                break
+                    if len(visible) < 5:
+                        visible.append(SearchProjectHit(**self.catalog._row(session, current).model_dump(), reason=reason))
+                    if candidate_codes is not None:
+                        candidate_codes.append(current.project_code)
         return visible, denied
 
     def _vectors(self, query: str, model: vectors.Model | None, dimension: int | None,
@@ -245,11 +254,17 @@ class SearchService:
 
     def _hits(self, ids: list[int], products: dict[int, Product], candidates: dict[int, Candidate],
               lexical_scores: dict[int, tuple[float, list[str], float]], similarities: dict[int, float],
-              reasons: dict[int, str], projects: dict[int, Project], login: LoginContext, limit: int) -> tuple[list[SearchHit], bool]:
-        results, denied = [], False
+              reasons: dict[int, str], projects: dict[int, Project], login: LoginContext, limit: int,
+              candidate_codes: list[str] | None = None) -> tuple[list[SearchHit], bool]:
+        results: list[SearchHit] = []
+        denied = False
+        selected = candidate_codes if candidate_codes is not None else results
+        target = CANDIDATE_LIMIT if candidate_codes is not None else limit
         with self.auth.database.session() as session:
             session.connection().exec_driver_sql("BEGIN")
             for pid in ids:
+                if len(selected) >= target:
+                    break
                 product, candidate = products[pid], candidates[pid]
                 if not self._authorized(product, login):
                     denied = True
@@ -259,6 +274,10 @@ class SearchService:
                 # 这一行的标签、向量和关系必须来自同一资产版本。
                 if (project is None or project.status != "active"
                         or (project.asset_version, project.current_path) != (before.asset_version, before.current_path)):
+                    continue
+                if candidate_codes is not None:
+                    candidate_codes.append(product.product_code)
+                if len(results) >= limit:
                     continue
                 left, right = ((ProductRelation.set_product_id, ProductRelation.item_product_id) if product.kind == "set"
                                else (ProductRelation.item_product_id, ProductRelation.set_product_id))
@@ -273,8 +292,6 @@ class SearchService:
                     url=self.catalog.url(self.catalog.link_id(session, "product", pid)), tags=candidate.tags, related=[row.display_name for row in related if self._authorized(row, login)],
                     matches=fields, keyword_score=score or relaxed, similarity=similarities.get(pid),
                     reason=reasons.get(pid) or ("关键词匹配" if score or relaxed else "语义相近" if pid in similarities else "编号精确匹配")))
-                if len(results) == limit:
-                    break
         return results, denied
 
     def search(self, body: SearchRequest, login: LoginContext, host: str) -> SearchResult:
@@ -315,6 +332,8 @@ class SearchService:
         hits: list[SearchHit] = []
         project_hits: list[SearchProjectHit] = []
         exact = denied = False
+        product_codes: list[str] | None = [] if body.include_candidates else None
+        project_codes: list[str] | None = [] if body.include_candidates else None
         with self.auth.database.session() as session:
             session.connection().exec_driver_sql("BEGIN")
             self.catalog.media._check_login(session, login)
@@ -330,10 +349,12 @@ class SearchService:
                     project_rows = ((row, quick.explain(count, evidence, words)[0]) for row, count, evidence in
                         session.execute(quick.ranked_projects(projects, query, words).execution_options(yield_per=32)))
                     product_rows = session.execute(quick.ranked_products(scope, query, words).execution_options(yield_per=32))
-                project_hits, denied = self._project_hits(project_rows, login, host)
+                project_hits, denied = self._project_hits(project_rows, login, host, project_codes)
                 # 分批补齐已匹配记录的卡片字段，避免为全库商品读取标签和 NAS 文件。
                 ordered = iter(product_rows)
-                while len(hits) < body.limit and (page := list(islice(ordered, 32))):
+                selected = product_codes if product_codes is not None else hits
+                target = CANDIDATE_LIMIT if product_codes is not None else body.limit
+                while len(selected) < target and (page := list(islice(ordered, 32))):
                     products = {row.id: row for row, _, _ in page}
                     project_map = {row.id: row for row in session.scalars(select(Project).where(
                         Project.id.in_({item.project_id for item in products.values()})))}
@@ -342,19 +363,24 @@ class SearchService:
                                else ("编号精确匹配", []) for row, count, evidence in page}
                     scores = {row.id: (float(count), details[row.id][1], 0.0) for row, count, _ in page}
                     visible, filtered = self._hits(list(products), products, candidates, scores, {},
-                        {pid: evidence[0] for pid, evidence in details.items()}, project_map, login, body.limit - len(hits))
+                        {pid: evidence[0] for pid, evidence in details.items()}, project_map, login,
+                        body.limit - len(hits), product_codes)
                     hits.extend(visible)
                     denied = denied or filtered
                 exact = direct and bool(hits or project_hits)
+        if product_codes is None:
+            product_codes = [row.product_code for row in hits]
         return SearchResult(search_id=0, mode="quick", products=hits, projects=project_hits, conditions=conditions,
             warnings=[], degraded=False, exact=exact, permission_filtered=denied, index_generation=None,
-            candidate_codes=[row.product_code for row in hits], keyword_candidates=sum(hit.keyword_score > 0 for hit in hits),
+            candidate_codes=product_codes, keyword_candidates=0 if exact else len(product_codes),
+            project_candidate_codes=project_codes if project_codes is not None else [row.project_code for row in project_hits],
             vector_candidates=0, field_labels=FIXED_FIELDS, usage=[], elapsed_ms=0), redactor
 
     def _semantic_search(self, body: SearchRequest, login: LoginContext, host: str) -> tuple[SearchResult, Redactor]:
         exact, projects, project_map, products, candidates, redactor, model, dimension, digests = self._semantic_snapshot(body, login)
         query = redactor.clean(body.query)
-        projects, denied = self._project_hits(((row, None) for row in projects), login, host)
+        project_codes: list[str] | None = [] if body.include_candidates else None
+        projects, denied = self._project_hits(((row, None) for row in projects), login, host, project_codes)
         warnings: list[str] = []
         conditions, similarities, scores, reasons = Conditions(), {}, {}, {}
         generation = None
@@ -407,7 +433,7 @@ class SearchService:
                         vector_ids.append(pid)
                     if len(vector_ids) == 50:
                         break
-                shortlist = fuse(keyword_ids, vector_ids)
+                shortlist = fuse(keyword_ids, vector_ids, limit=CANDIDATE_LIMIT)
                 local = sorted(shortlist, key=lambda pid: (-scores[pid][0], -scores[pid][2], -similarities.get(pid, -1), pid))
                 # 召回融合约束候选集合，降级结果严格按关键词优先。
                 order, reasons = self._rank(local, candidates, vector_query if body.remove else private_query, redactor, warnings) if local else ([], {})
@@ -416,6 +442,7 @@ class SearchService:
             conditions=SearchConditions.model_validate(conditions.model_dump()),
             warnings=warnings, degraded=bool(warnings), exact=exact, permission_filtered=denied or filtered, index_generation=generation,
             candidate_codes=[products[pid].product_code for pid in shortlist], keyword_candidates=len(keyword_ids),
+            project_candidate_codes=project_codes if project_codes is not None else [row.project_code for row in projects],
             vector_candidates=len(vector_ids), field_labels=FIXED_FIELDS, usage=usage, elapsed_ms=0), redactor
 
     def click(self, body: ClickRequest, login: LoginContext, host: str) -> None:

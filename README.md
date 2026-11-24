@@ -485,7 +485,13 @@ python -m pytest backend/tests/bailian -m bailian -q -s --tb=short
 - 首次正式入库使用已配置的初始向量模型。正式代次一旦建立，由索引指针决定当前查询和新项目的入库模型。升级时应使用供应商能够同时调用的确切模型 ID。自填版本用于识别代次，供应商实际接收的仍是模型 ID。
 - 查询理解缓存包含查询文本、字段说明与版本、文本模型及 `ai.model_text_version`。企业标识、账号、NAS 路径和已知凭据在外发文本中剔除。
 
-开发考卷可通过 `python -m pytest backend/tests/integration/test_hybrid_search.py::test_search_exam_demo -s` 重现。业务方填写真实题库后，使用 `python scripts/run_exam.py --url http://固定内网入口:8080 --user 验收账号 --exam 真实题库.yaml` 运行。脚本从终端读取密码，输出召回、Top 3、Top 10、平均/P95 耗时、调用和 token 统计。若提供每百万输入及输出 token 单价，则输出估算费用。
+开发考卷可通过 `python -m pytest backend/tests/integration/test_hybrid_search.py::test_search_exam_demo -s` 重现。业务方填写真实题库后，用同一个验收账号运行双模式考卷。
+
+```bash
+python scripts/run_exam.py --url http://固定内网入口:8080 --user 验收账号 --exam 真实题库.yaml --mode both
+```
+
+脚本从终端读取密码。默认 `--mode both`，也可使用 `--mode quick` 或 `--mode semantic` 单独测试。JSON 的 `modes` 按模式分别记录候选召回、Top 3、Top 10、无结果正确率、平均及 P95 耗时、AI 降级、接口错误、模型调用及 token 用量。两种模式跑同一套题，准确率统计包含请求失败的题。耗时依据成功请求测量，包含考卷额外的候选权限检查。候选召回在页面数量截断前统计，每类最多 60 个有权查看的候选。传入每百万输入及输出 token 单价后会估算费用。接口错误或快速匹配出现模型调用时，命令返回非零。
 
 Alembic 头为 `0018_search`。生产升级前沿用一致性数据库快照流程，保留原向量及正式模型指针。
 

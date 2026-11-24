@@ -204,10 +204,18 @@ def test_search_exam_demo(settings, tmp_path, monkeypatch):
         start(flow)
         assert client.app.state.jobs.wait_idle(8) and progress(flow)["status"] == "已入库"
         cases = yaml.safe_load((Path(__file__).resolve().parents[1] / "search_exam.yaml").read_text())["cases"]
-        results = evaluate(cases, lambda query: search(flow, query))
-    print(json.dumps(results, ensure_ascii=False))
-    assert results["cases"] == 10 and results["errors"] == 0
-    assert results["candidate_recall"] == 1 and results["top10_hit_rate"] == 1 and results["empty_correct"] == 1
+        compared = {
+            mode: evaluate(cases, lambda query: search(flow, query, mode=mode, include_candidates=True), mode=mode)
+            for mode in ("quick", "semantic")
+        }
+    print(json.dumps(compared, ensure_ascii=False))
+    for result in compared.values():
+        assert result["cases"] == 10 and result["errors"] == 0
+        assert result["empty_correct"] == 1
+    semantic, quick = compared["semantic"], compared["quick"]
+    assert semantic["candidate_recall"] == 1 and semantic["top10_hit_rate"] == 1
+    assert 0 < quick["candidate_recall"] < semantic["candidate_recall"]
+    assert quick["ai_calls"] == quick["vector_candidates"] == quick["degraded_queries"] == 0
 
 
 def test_search_scrubs_credentials_and_hides_inactive_assets(published_search, monkeypatch):

@@ -41,6 +41,7 @@ class SearchRequest(BaseModel):
     company: str = Field(default="", max_length=120)
     remove: list[str] = Field(default_factory=list, max_length=24)
     limit: int = Field(default=10, ge=1, le=10)
+    include_candidates: bool = False
 
 
 class ClickRequest(BaseModel):
@@ -93,6 +94,7 @@ class SearchResult(BaseModel):
     permission_filtered: bool
     index_generation: int | None
     candidate_codes: list[str]
+    project_candidate_codes: list[str] = Field(default_factory=list)
     keyword_candidates: int
     vector_candidates: int
     field_labels: dict[str, str]

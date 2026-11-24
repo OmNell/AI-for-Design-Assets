@@ -8,7 +8,8 @@ from sqlalchemy import event, func, select
 from app.db.models import AiCall, CompanyIndustryMap, Product, ProductTag, Project, SearchLog
 from app.services.ai.client import AiClient
 from app.services.ingest import vectors
-from app.services.nas import NasPermissionDenied
+from app.services.nas import NasPermissionDenied, Region
+from app.services.nas.factory import create_paths
 from test_hybrid_search import published_search, search
 
 
@@ -125,7 +126,7 @@ def test_quick_has_no_ai_or_vector_dependency(assets, monkeypatch):
     event.listen(app.state.database.engine, "before_cursor_execute", record)
     try:
         quick(flow, code)
-        result = quick(flow, "咖啡器具")
+        result = quick(flow, "咖啡器具", include_candidates=True)
     finally:
         event.remove(app.state.database.engine, "before_cursor_execute", record)
     assert result["products"] and not attempted
@@ -141,6 +142,62 @@ def test_quick_has_no_ai_or_vector_dependency(assets, monkeypatch):
     for kind, identifier in (("product", row["id"]), ("project", row["project_id"])):
         body = {"search_id": result["search_id"], "kind": kind, "id": identifier}
         assert flow.call("one", "POST", "/api/search/click", body).status_code == 204
+
+
+def test_exam_candidates_include_matches_beyond_the_visible_limit(assets, monkeypatch):
+    flow, (project_code, first, second, *_) = assets
+    baseline = quick(flow, "陶瓷红杯", limit=1)
+    measured = quick(flow, "陶瓷红杯", limit=1, include_candidates=True)
+    assert measured["products"] == baseline["products"]
+    assert baseline["candidate_codes"] == [first]
+    assert measured["candidate_codes"] == [first, second]
+    assert measured["keyword_candidates"] == 2
+    assert quick(flow, project_code, include_candidates=True)["project_candidate_codes"] == [project_code]
+
+    auth = flow.client.app.state.auth
+    fs = auth.pool.get(auth.context(flow.cookies["one"], "测试").session_id)
+    raw = fs._open_raw
+
+    def restricted(path, mode):
+        if path.endswith("磨砂雨伞.jpg"):
+            raise NasPermissionDenied("不允许读取候选商品的主图")
+        return raw(path, mode)
+
+    monkeypatch.setattr(fs, "_open_raw", restricted)
+    measured = quick(flow, "陶瓷红杯", limit=1, include_candidates=True)
+    assert measured["permission_filtered"]
+    assert measured["candidate_codes"] == [first]
+
+
+
+def test_project_candidates_are_measured_beyond_five_cards(published_search, monkeypatch):
+    flow = published_search
+    auth = flow.client.app.state.auth
+    fs = auth.pool.get(auth.context(flow.cookies["final"], "测试").session_id)
+    paths = create_paths(auth.config)
+    codes = [f"P{index:03}" for index in range(101, 108)]
+    with auth.database.session() as session:
+        for code in codes:
+            folder = f"{code}_试验企业_新春考卷"
+            fs.mkdir(paths.join(Region.FORMAL, folder), recursive=True)
+            session.add(Project(project_code=code, company_name="试验企业", project_name="新春考卷",
+                                folder_name=folder, current_path=folder, won=True))
+
+    reader = auth.pool.get(auth.context(flow.cookies["one"], "测试").session_id)
+    original = reader.list
+
+    def restricted(path):
+        if codes[-1] in path:
+            raise NasPermissionDenied("不允许查看最后一个候选")
+        return original(path)
+
+    monkeypatch.setattr(reader, "list", restricted)
+    for mode in ("quick", "semantic"):
+        result = search(flow, "新春考卷", mode=mode, include_candidates=True)
+        assert [row["project_code"] for row in result["projects"]] == codes[:5]
+        assert result["project_candidate_codes"] == codes[:6]
+        assert result["permission_filtered"]
+
 
 
 def test_quick_respects_file_acl_and_published_state(assets, monkeypatch):
