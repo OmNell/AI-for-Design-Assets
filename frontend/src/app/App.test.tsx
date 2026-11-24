@@ -44,6 +44,17 @@ it('未登录访问深层路径跳登录页', async () => {
   expect(host.querySelector('input[type="password"]')).not.toBeNull()
   expect(host.textContent).not.toContain('DSM 证书验证已关闭')
 })
+it.each<[Role[], string]>([
+  [['uploader', 'first_reviewer'], '/'],
+  [['first_reviewer'], '/search'],
+  [['admin'], '/search'],
+])('登录后按上传角色选择默认入口（%j）', async (assigned, destination) => {
+  roles = assigned; logged = true
+  window.history.replaceState({}, '', '/login')
+  act(() => root.render(<App />))
+  await until(() => window.location.pathname === destination)
+})
+
 it.each([false, true])('证书验证关闭时明确显示测试提示（已登录 %s）', async (isSignedIn) => {
   logged = isSignedIn; mode = 'prod'; dsmVerifySsl = false
   window.history.replaceState({}, '', '/')

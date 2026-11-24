@@ -18,8 +18,8 @@ export function LoginPage() {
   const { register, handleSubmit, resetField, formState: { isSubmitting, errors } } = useForm<FormValues>()
   const state: unknown = useLocation().state
   const returnTo = typeof state === 'object' && state !== null && 'returnTo' in state && typeof state.returnTo === 'string'
-    && safeLoginReturn(state.returnTo) ? state.returnTo : '/'
-  if (user) return <Navigate to={returnTo} replace />
+    && safeLoginReturn(state.returnTo) ? state.returnTo : undefined
+  if (user) return <Navigate to={returnTo ?? (user.roles.includes('uploader') ? '/' : '/search')} replace />
   const submit = handleSubmit(async values => {
     setError('')
     try { useAuthStore.getState().setUser(await login(values.username, values.password)) }
