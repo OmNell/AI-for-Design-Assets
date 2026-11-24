@@ -31,8 +31,8 @@ def bulk(id: int, body: BulkRequest, request: Request, user: User = Depends(requ
 
 @router.get("/tag-values", response_model=list[TagValue])
 def tag_values(request: Request, field: str = Query(min_length=1, max_length=64), q: str = Query(default="", max_length=500),
-               batch_id: int | None = None, user: User = Depends(require_login)) -> list[TagValue]:
-    return request.app.state.review.tag_values(field, q, batch_id, user)
+               batch_id: int | None = None, login: LoginContext = Depends(require_login_context)) -> list[TagValue]:
+    return request.app.state.review.tag_values(field, q, batch_id, login, client_host(request))
 
 
 @router.post("/batches/{id}/products/{pid}/retry-ai", response_model=ProductUpdate)

@@ -11,10 +11,11 @@ import pytest
 from sqlalchemy import select
 import uvicorn
 
-from app.db.models import AccessLog, Batch, CatalogFile, InspectionFinding, Link, Product, Project
+from app.db.models import AccessLog, Batch, CatalogFile, InspectionFinding, Link, Product, ProductTag, Project
 from app.services.auth.service import COOKIE_NAME
 from app.services.nas import Region
 from app.services.nas.factory import create_paths
+from test_ai_pipeline import confirm, uploaded
 from test_ingest import app_for, progress, start
 from test_two_stage_review import Flow
 
@@ -68,6 +69,46 @@ def test_catalog_search_filters_and_detail(published):
         assert flow.call("one", "GET", "/api/projects").json()["total"] == 0
         assert flow.call("one", "GET", base).status_code == 404
         assert flow.call("one", "GET", f"/api/products/{products['item'].id}").status_code == 404
+
+
+def test_review_tag_suggestions_merge_authorized_published_values_with_draft(published):
+    flow, project, _, _, products, _ = published
+    db = flow.client.app.state.database
+    with db.session() as session:
+        rows = session.scalars(select(ProductTag).join(Product).where(
+            Product.project_id == project.id, ProductTag.field_key == "material").order_by(Product.id)).all()
+        rows[0].terms = ["历史橡木", "历史橡木", "历史柚木", "ABS历史塑料"]
+        rows[1].terms = ["历史橡木", *(f"历史材质{i:02}" for i in range(25))]
+        rows[2].terms, rows[2].confirmation_status = ["历史未确认"], "pending"
+
+    url = "/api/tag-values?field=material"
+    oak = [{"term": "历史橡木", "count": 2}]
+    assert flow.call("one", "GET", url + "&q=橡木").json() == oak
+    assert flow.call("one", "GET", url + "&q=abs").json() == [{"term": "ABS历史塑料", "count": 1}]
+    ranked = flow.call("one", "GET", url + "&q=历史").json()
+    assert len(ranked) == 20 and ranked[:1] == oak
+    assert all(row["term"] != "历史未确认" for row in ranked)
+    assert flow.call("one", "GET", url + "&q=未确认").json() == []
+    assert flow.call("other", "GET", url + "&q=历史").json() == []
+
+    flow.sign_in("one")
+    draft = confirm(flow.client, uploaded(flow.client, ["单品/新杯.jpg"], project_code="P002"))
+    product = draft["products"][0]
+    response = flow.call("one", "PATCH", f"/api/batches/{draft['id']}/products/{product['id']}",
+                         {"tags": {"material": "历史橡木、历史橡木、历史草稿用词"}})
+    assert response.status_code == 200, response.text
+    draft_url = url + f"&batch_id={draft['id']}"
+    assert flow.call("one", "GET", draft_url + "&q=橡木").json() == [{"term": "历史橡木", "count": 3}]
+    assert flow.call("one", "GET", draft_url + "&q=草稿").json() == [{"term": "历史草稿用词", "count": 1}]
+    assert flow.call("other", "GET", draft_url + "&q=草稿").status_code == 403
+
+    with db.session() as session:
+        session.get(Product, products["item"].id).status = "voided"
+    assert flow.call("one", "GET", url + "&q=柚木").json() == []
+    with db.session() as session:
+        session.get(Project, project.id).status = "voided"
+    assert flow.call("one", "GET", url + "&q=历史").json() == []
+    assert flow.call("one", "GET", draft_url + "&q=橡木").json() == [{"term": "历史橡木", "count": 1}]
 
 
 def test_stream_ranges_headers_pause_and_transfer_log(published):

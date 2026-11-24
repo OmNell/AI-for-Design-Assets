@@ -128,13 +128,13 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             upload = UploadService(application.state.auth, thumbs, ai)
             application.state.upload = upload
             system.upload = upload
-            application.state.review = ReviewService(application.state.auth, thumbs, ai)
+            application.state.catalog = CatalogService(application.state.auth)
+            application.state.review = ReviewService(application.state.auth, thumbs, ai, application.state.catalog)
             application.state.auth.on_close = upload.session_closed
             application.state.notify = NotifyService(application.state.auth)
             application.state.company_map = CompanyMapService(application.state.auth)
             ingest = IngestService(application.state.auth, jobs, ai, application.state.notify)
             application.state.ingest = ingest
-            application.state.catalog = CatalogService(application.state.auth)
             store = VectorStore()
             with database.session() as session:
                 logger.info("向量计算后端：%s", store.backend(session))

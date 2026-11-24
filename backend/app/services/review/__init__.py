@@ -16,7 +16,8 @@ import time
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Batch, BatchFile, BatchProduct, Oplog, PreflightAck, ReviewRound, ReviewSnapshot, TagField, User, utcnow
+from app.db.models import (Batch, BatchFile, BatchProduct, CatalogFile, Oplog, PreflightAck, Product, ProductTag,
+                           Project, ReviewRound, ReviewSnapshot, TagField, User, utcnow)
 from app.errors import AppError
 from app.schemas.review import (BulkRequest, FolderFile, FolderGroup, OwnerResponse, Pending, ProductPatch, ProductUpdate,
                                 RelationView, ReviewBatch, ReviewField, ReviewProduct, ReviewResponse, TagValue, TagView)
@@ -27,7 +28,8 @@ from app.services.ai import pre_descriptions as descriptions
 from app.services.ai.vision import has_visual_evidence
 from app.services.ai.parsing import split_terms
 from app.services.auth.service import AuthService, LoginContext
-from app.services.nas import NasAlreadyExists, NasUnavailable, NasPermissionDenied, Region, safe_join
+from app.services.catalog import CatalogService
+from app.services.nas import NasAlreadyExists, NasNotFound, NasUnavailable, NasPermissionDenied, Region, safe_join
 from app.services.nas.factory import create_paths
 from app.services.oplog import OplogService
 from app.services.postops.supplement import catalog_files, classify_file, invalidate_review
@@ -64,8 +66,8 @@ def undo_nas_on_error() -> Iterator[ExitStack]:
 
 
 class ReviewService:
-    def __init__(self, auth: AuthService, thumbs: ThumbService, ai: AiService) -> None:
-        self.auth, self.thumbs, self.ai = auth, thumbs, ai
+    def __init__(self, auth: AuthService, thumbs: ThumbService, ai: AiService, catalog: CatalogService) -> None:
+        self.auth, self.thumbs, self.ai, self.catalog = auth, thumbs, ai, catalog
         self.paths = create_paths(auth.config)
         self.operation_snapshot: Callable[[Session, Batch, dict], dict] | None = None
 
@@ -314,24 +316,60 @@ class ReviewService:
                     self._log(session, user, "批量修改商品标签", "batch_product", product.id, {"tags": before}, {"tags": after}, host)
             return self._response(session, batch, user)
 
-    def tag_values(self, field: str, q: str, batch_id: int | None, actor: User) -> list[TagValue]:
+    def tag_values(self, field: str, q: str, batch_id: int | None, login: LoginContext, host: str) -> list[TagValue]:
+        if field not in FIXED_FIELDS:
+            raise AppError("unknown_field", "字段不在固定标签清单内", 422)
+
+        needle = q.strip().casefold()
+        def matches(terms: object) -> set[str]:
+            if not isinstance(terms, list):
+                return set()
+            return {term for term in terms if isinstance(term, str) and term.strip() and needle in term.casefold()}
+
+        query = (select(Project, ProductTag.terms).select_from(ProductTag)
+                 .join(Product, Product.id == ProductTag.product_id)
+                 .join(Project, Project.id == Product.project_id)
+                 .join(CatalogFile, CatalogFile.id == Product.file_id)
+                 .where(ProductTag.field_key == field, ProductTag.confirmation_status == "confirmed_value",
+                        Project.status == "active", Product.status == "active",
+                        CatalogFile.status == "active", CatalogFile.project_id == Project.id))
+        candidates: dict[int, tuple[Project, Counter[str]]] = {}
+        with self.auth.database.session() as session:
+            UploadService._check_login(session, login)
+            if batch_id is not None:
+                self._readable(session, batch_id, login.user)
+            for project, terms in session.execute(query):
+                if matched := matches(terms):
+                    if project.id not in candidates:
+                        candidates[project.id] = (project, Counter())
+                    candidates[project.id][1].update(matched)
+
+        visible: list[tuple[Project, Counter[str]]] = []
+        for project, counts in candidates.values():
+            try:
+                self.catalog.authorize_project(project, login, host)
+            except (NasNotFound, NasPermissionDenied):
+                continue
+            visible.append((project, counts))
+
+        counter: Counter[str] = Counter()
         with self.auth.lock, self.auth.database.session() as session:
-            self._user(session, actor)
-            if field not in FIXED_FIELDS:
-                raise AppError("unknown_field", "字段不在固定标签清单内", 422)
-            # WP09 建立正式商品库之前，仅从当前有权读取的批次提供输入参考。
-            if batch_id is None:
-                return []
-            self._readable(session, batch_id, actor)
-            needle = q.strip().casefold()
-            counter: Counter[str] = Counter()
-            for product in active_products(session, batch_id):
-                tag = _tag(product.tags.get(field))
-                for term in (tag.get("terms") or []) if tag else []:
-                    if isinstance(term, str) and term and needle in term.casefold():
-                        counter[term] += 1
-            ranked = sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:20]
-            return [TagValue(term=term, count=count) for term, count in ranked]
+            UploadService._check_login(session, login)
+            self._user(session, login.user)
+            if batch_id is not None:
+                self._readable(session, batch_id, login.user)
+                for product in active_products(session, batch_id):
+                    tag = _tag(product.tags.get(field))
+                    if tag:
+                        counter.update(matches(tag.get("terms")))
+            # 校验检查权限期间正式位置及版本没有变化，避免返回旧版本的用词。
+            for before, counts in visible:
+                current = session.get(Project, before.id)
+                if (current and current.status == "active"
+                        and (current.current_path, current.asset_version) == (before.current_path, before.asset_version)):
+                    counter.update(counts)
+        ranked = sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:20]
+        return [TagValue(term=term, count=count) for term, count in ranked]
 
     # ---- 单张重试、套装关系 ----
     def retry_ai(self, batch_id: int, product_id: int, login: LoginContext, host: str) -> ProductUpdate:
