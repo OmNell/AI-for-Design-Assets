@@ -56,6 +56,16 @@ def state(flow, batch_id, actor="final"):
     return response.json()
 
 
+def interrupt_after_install(patch):
+    install = ShadowTree.install
+
+    def interrupted(tree):
+        install(tree)
+        raise JobFailure("测试安装正式版本后中断", retryable=False)
+
+    patch.setattr(ShadowTree, "install", interrupted)
+
+
 def test_retag_keeps_old_version_until_vector_is_ready_and_resumes(settings, tmp_path, monkeypatch):
     app = app_for(settings, tmp_path)
     with TestClient(app) as client:
@@ -109,14 +119,8 @@ def test_whole_project_void_then_restore_from_split_install(settings, tmp_path, 
         params = {"project": True, "reason": "退档"}
         batch_id = create(flow, project, "void", params)
         submit(flow, batch_id, params)
-        install = ShadowTree.install
-
-        def interrupted(tree):
-            install(tree)
-            raise JobFailure("测试移动后中断", retryable=False)
-
         with monkeypatch.context() as patch:
-            patch.setattr(ShadowTree, "install", interrupted)
+            interrupt_after_install(patch)
             approve(flow)
             assert app.state.jobs.wait_idle(8)
         assert state(flow, batch_id)["status"] == "入库异常"
@@ -131,7 +135,13 @@ def test_whole_project_void_then_restore_from_split_install(settings, tmp_path, 
         params["reason"] = "重新使用"
         batch_id = create(flow, project, "restore", params)
         submit(flow, batch_id, params)
-        approve(flow)
+        with monkeypatch.context() as patch:
+            interrupt_after_install(patch)
+            approve(flow)
+            assert app.state.jobs.wait_idle(8)
+        assert state(flow, batch_id)["status"] == "入库异常"
+        assert flow.call("other", "GET", "/l/" + link).json()["status"] == "voided"
+        assert flow.call("final", "POST", f"/api/operations/{batch_id}/execute", {}).status_code == 200
         assert app.state.jobs.wait_idle(8)
         assert state(flow, batch_id)["status"] == "已入库"
         with app.state.database.session() as session:
@@ -224,7 +234,14 @@ def test_move_preserves_identity_and_reuses_vectors(settings, tmp_path, monkeypa
         params = {"company_id": project.company_id, "won": False, "reason": "核准中标状态错误"}
         batch_id = create(flow, project, "move", params, "admin")
         submit(flow, batch_id, params, "admin")
-        approve(flow)
+        with monkeypatch.context() as patch:
+            interrupt_after_install(patch)
+            approve(flow)
+            assert app.state.jobs.wait_idle(8)
+        assert state(flow, batch_id)["status"] == "入库异常"
+        with app.state.database.session() as session:
+            assert session.get(Project, project.id).current_path == project.current_path
+        assert flow.call("final", "POST", f"/api/operations/{batch_id}/execute", {}).status_code == 200
         assert app.state.jobs.wait_idle(8)
         assert state(flow, batch_id)["status"] == "已入库"
         with app.state.database.session() as session:

@@ -72,6 +72,35 @@ beforeEach(() => {
 })
 afterEach(() => { act(() => root.unmount()); query.clear(); host.remove(); vi.unstubAllGlobals(); useAuthStore.getState().clear() })
 
+it('审核替换主图时按冻结的商品关联并排展示原图和新图', async () => {
+  let previewRequested = false
+  const operation: AuditData['operation'] = {
+    kind: 'supplement',
+    params: { products: [{ id: 1, existing_product_id: 8 }] },
+    before: {
+      project: { id: 3, project_code: 'P2026-0012', project_name: '礼盒', company_name: '泸州老窖', won: true, status: 'active' },
+      files: [], products: [{ id: 8, file_id: 42, product_code: 'P2026-0012-001', display_name: '旧礼盒', kind: 'set', status: 'active' }],
+    },
+  }
+  serve(url => {
+    if (url.startsWith('/api/files/42/preview?')) {
+      previewRequested = true
+      expect(url).toContain('allow_changed=false')
+      return response({ code: 'content_changed', message: 'NAS 文件已变化' }, 409)
+    }
+    return auditData({ operation })
+  })
+  audit()
+  await until(() => previewRequested && host.textContent!.includes('NAS 上的内容已经变化'))
+  expect(host.querySelector('[aria-label="原主图"]')?.textContent).toContain('P2026-0012-001')
+  expect(host.textContent).toContain('待审新主图 · 礼盒')
+  expect(button('查看当前 NAS 图片')).toBeUndefined()
+  const toggle = [...host.querySelectorAll('label')].find(label => label.textContent === '对比原主图')
+  act(() => toggle!.querySelector('input')!.click())
+  expect(host.querySelector('[aria-label="原主图"]')).toBeNull()
+  expect(calls).toEqual([])
+})
+
 it('审核信息面板按示意展示，初审没有修改位置的控件，标签页只读', async () => {
   serve(() => auditData()); audit()
   await until(() => !!host.querySelector('[data-testid="audit-info"]'))

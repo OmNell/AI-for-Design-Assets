@@ -6,6 +6,7 @@ import { changePath, claimAudit, getAudit, passAudit, rejectAudit, releaseAudit,
 import { OperationDiff } from '../components/ops/OperationDiff'
 import { OperationExecution } from '../components/ops/OperationExecution'
 import { useAuthStore } from '../stores/auth'
+import { AssetPreview } from '../components/AssetPreview'
 import { IngestPanel } from '../components/IngestPanel'
 import { ImageViewer } from '../components/review/ImageViewer'
 import { ProductList, RoundHistory } from '../components/review/ProductList'
@@ -27,6 +28,7 @@ export function AuditPage() {
   const [current, setCurrent] = useState<number | null>(null)
   const [tab, setTab] = useState<'info' | 'tags'>('info')
   const [sideBySide, setSideBySide] = useState(false)
+  const [compareOriginal, setCompareOriginal] = useState(true)
   const [checks, setChecks] = useState<Record<string, boolean>>({})
   const [pins, setPins] = useState<PinInput[]>([])
   const [editingPath, setEditingPath] = useState(false)
@@ -48,6 +50,14 @@ export function AuditPage() {
   const { review, path, stage } = data
   const { batch, fields, products } = review
   const selected = products.find(product => product.id === current) ?? products[0]
+  const operation = data.operation
+  const assignment = operation?.kind === 'supplement' && selected
+    ? operation.params.products?.find(row => row.id === selected.id && 'existing_product_id' in row)
+    : undefined
+  const original = assignment && 'existing_product_id' in assignment
+    ? operation?.before.products.find(row => row.id === assignment.existing_product_id) : undefined
+  const comparing = !!original && compareOriginal
+  const comparingSet = selected?.kind === 'set' && sideBySide && !comparing
   const items = products.filter(product => product.kind === 'item')
   const mine = data.claimed_by_me
   const allChecked = Object.keys(data.checklist).every(item => checks[item])
@@ -90,11 +100,20 @@ export function AuditPage() {
 
       {(!data.operation || products.length > 0) && <div className="ui-panel min-h-0 min-w-0 overflow-hidden p-3">{selected ? <div className="flex h-full flex-col">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm"><span className="truncate font-medium">{selected.display_name}</span>
-          {selected.kind === 'set' && <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={sideBySide} onChange={event => setSideBySide(event.target.checked)} />并排显示包含的单品</label>}</div>
-        <div className={`review-preview min-h-0 flex-1 ${selected.kind === 'set' && sideBySide ? 'grid grid-cols-2 gap-3' : ''}`}>
-          <ImageViewer key={selected.id} batchId={batch.id} fileId={selected.batch_file_id} version={selected.fingerprint ?? ''} name={selected.display_name} pins={selectedPins}
-            onPin={mine ? (x, y) => { storePins([...pins, { batch_product_id: selected.id, x, y, text: '' }]); setTab('info') } : undefined} />
-          {selected.kind === 'set' && sideBySide && <div className="min-h-0 overflow-y-auto rounded-2xl bg-slate-50 p-2"><div className="grid grid-cols-2 gap-2">{items.filter(item => relationDraft.includes(item.id)).map(item =>
+          {original && <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={compareOriginal}
+            onChange={event => setCompareOriginal(event.target.checked)} />对比原主图</label>}
+          {selected.kind === 'set' && !comparing && <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={sideBySide} onChange={event => setSideBySide(event.target.checked)} />并排显示包含的单品</label>}</div>
+        <div className={`review-preview min-h-0 flex-1 ${comparing || comparingSet ? 'grid grid-cols-2 gap-3' : ''}`}>
+          {comparing && original && <section className="min-h-0 min-w-0 overflow-y-auto rounded-2xl bg-slate-50 p-2" aria-label="原主图">
+            <h3 className="mb-2 break-words text-xs font-medium">原主图 · {original.product_code}</h3>
+            <AssetPreview key={original.file_id} fileId={original.file_id} name={original.display_name} verifiedOnly compact />
+          </section>}
+          <div className="flex min-h-0 min-w-0 flex-col">
+            {comparing && <h3 className="mb-2 break-words p-2 text-xs font-medium">待审新主图 · {selected.display_name}</h3>}
+            <div className="min-h-0 flex-1"><ImageViewer key={selected.id} batchId={batch.id} fileId={selected.batch_file_id} version={selected.fingerprint ?? ''} name={selected.display_name} pins={selectedPins}
+            onPin={mine ? (x, y) => { storePins([...pins, { batch_product_id: selected.id, x, y, text: '' }]); setTab('info') } : undefined} /></div>
+          </div>
+          {comparingSet && <div className="min-h-0 overflow-y-auto rounded-2xl bg-slate-50 p-2"><div className="grid grid-cols-2 gap-2">{items.filter(item => relationDraft.includes(item.id)).map(item =>
             <button type="button" key={item.id} className="rounded-xl bg-slate-50 p-1.5 text-left hover:bg-slate-50" onClick={() => setCurrent(item.id)}>
               <Thumb batchId={batch.id} fileId={item.batch_file_id} version={item.fingerprint ?? ''} size={1024} alt={`${item.display_name} 图片`} className="aspect-square w-full" />
               <span className="mt-1 block truncate text-xs">{item.display_name}</span></button>)}</div></div>}

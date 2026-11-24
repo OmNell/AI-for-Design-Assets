@@ -5,7 +5,9 @@ import { getPreview } from '../api/catalog'
 import { ZoomImage } from './review/ImageViewer'
 import type { ThumbState } from './review/Thumb'
 
-export function AssetPreview({ fileId, name, warning }: { fileId: number; name: string; warning?: string | null }) {
+export function AssetPreview({ fileId, name, warning, verifiedOnly = false, compact = false }: {
+  fileId: number; name: string; warning?: string | null; verifiedOnly?: boolean; compact?: boolean
+}) {
   const [image, setImage] = useState<ThumbState>({ status: 'pending', message: '正在读取图片…' })
   const [allow, setAllow] = useState(false)
   const [changed, setChanged] = useState(false)
@@ -34,12 +36,12 @@ export function AssetPreview({ fileId, name, warning }: { fileId: number; name: 
   return <div className="space-y-3">
     {showWarning && <div role="alert" className="rounded-xl bg-amber-100 p-3 text-sm text-amber-900">
       <p>{warning || 'NAS 上的内容已经变化，当前图片未经审核确认。'}</p>
-      {!allow && <Button primary={false} className="mt-2" onClick={() => setAllow(true)}>查看当前 NAS 图片</Button>}
+      {!allow && !verifiedOnly && <Button primary={false} className="mt-2" onClick={() => setAllow(true)}>查看当前 NAS 图片</Button>}
     </div>}
-    {(!showWarning || allow) && <div className="h-[min(64vh,670px)] bg-slate-50">
+    {(!showWarning || allow) && <div className={compact ? "h-[min(42vh,380px)] bg-slate-50" : "h-[min(64vh,670px)] bg-slate-50"}>
       <ZoomImage key={fileId} image={image} name={name} />
     </div>}
-    {image.status === 'ready' && <a className="inline-block text-sm text-blue-700 underline" target="_blank" rel="noreferrer"
+    {(!showWarning || allow) && image.status === 'ready' && <a className="inline-block text-sm text-blue-700 underline" target="_blank" rel="noreferrer"
       href={`/api/files/${fileId}/preview?original=true&transfer=${transfer}&allow_changed=${allow}`}>打开原图</a>}
   </div>
 }
