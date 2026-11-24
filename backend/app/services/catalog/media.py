@@ -4,11 +4,14 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
+from functools import lru_cache
+from io import BytesIO
 import re
 import secrets
 from typing import BinaryIO, Iterator
 from urllib.parse import quote, urlencode
 
+from PIL import Image, ImageDraw
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -24,6 +27,19 @@ from .locator import AssetLocator, CHUNK_SIZE, ReadAsset, reference
 
 NO_CACHE = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png")
+
+
+@lru_cache(maxsize=len(VARIANT_SIZES))
+def thumbnail_placeholder(size: int) -> bytes:
+    image = Image.new("RGB", (size, size), "#f1f5f9")
+    drawing = ImageDraw.Draw(image)
+    left, top, right, bottom = size // 4, size // 3, size * 3 // 4, size * 2 // 3
+    drawing.rectangle((left, top, right, bottom), outline="#94a3b8", width=max(1, size // 100))
+    drawing.line(((left, bottom), (size // 2, top + size // 12), (right, bottom)),
+                 fill="#94a3b8", width=max(1, size // 100))
+    output = BytesIO()
+    image.save(output, "JPEG")
+    return output.getvalue()
 
 
 def is_image(name: str) -> bool:
@@ -248,6 +264,8 @@ class MediaService:
                 warning = bool(asset.warning)
         except ImageDecodeError:
             self.record(login, "preview", file_id, host, "decode_error", transfer)
+            if product_id is not None:
+                return thumbnail_placeholder(size), {**NO_CACHE, "X-Asset-Thumbnail": "placeholder"}
             raise AppError("image_invalid", "图片无法解码，请下载后查看", 422) from None
         except (AppError, NasNotFound, NasPermissionDenied, NasSessionExpired, NasUnavailable) as error:
             self.record(login, "preview", file_id, host, public_error(error)[0], transfer)

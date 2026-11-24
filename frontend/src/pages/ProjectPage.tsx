@@ -34,6 +34,7 @@ function ProjectBrowser({ data }: { data: ProjectDetail }) {
   const [transfer, setTransfer] = useState<BatchTransfer>()
   const [error, setError] = useState('')
   const files = useQuery({ queryKey: ['project-files', id], queryFn: () => getProjectFiles(id), enabled: mode === 'files' })
+  const productById = new Map(data.products_list.map(item => [item.id, item]))
   const path = folder ? folder.split('/') : []
   const prefix = folder ? folder + '/' : ''
   const listed = (files.data ?? []).flatMap(row => {
@@ -132,14 +133,29 @@ function ProjectBrowser({ data }: { data: ProjectDetail }) {
                 <ViewSwitch view={views.products} onChange={value => setViews({ ...views, products: value })} /></div>
               {!data.products_list.length ? <EmptyState title="暂无有效商品" /> :
                 <ul className={views.products === 'grid' ? 'grid grid-cols-[repeat(auto-fill,minmax(min(100%,10rem),1fr))] gap-3 p-3' : 'divide-y divide-slate-100'}>
-                  {data.products_list.map(item => <li key={item.id} className={`min-w-0 p-3 ${views.products === 'grid' ? 'rounded-lg border border-slate-200' : ''} ${pick?.kind === 'product' && pick.id === item.id ? 'bg-blue-50' : ''}`}>
-                    <button type="button" onClick={() => setPick({ kind: 'product', id: item.id })} onDoubleClick={() => navigate(`/products/${item.id}`)} className={`w-full min-w-0 text-left ${views.products === 'list' ? 'flex items-center gap-3' : ''}`}>
-                      <div className={views.products === 'list' ? 'w-14 shrink-0' : 'mb-2'}><FileThumbnail src={thumbUrl(item.id)} name={item.display_name} /></div>
-                      <span className="min-w-0"><span className="block break-words font-medium">{item.display_name}</span><span className="text-xs text-slate-500">{item.product_code} · {item.kind === 'set' ? '套装' : '单品'}</span></span>
-                    </button>
-                    <div className="mt-2 flex flex-wrap gap-1">{item.tags.slice(0, 3).map((tag, index) => <Badge key={index}>{tag}</Badge>)}</div>
-                    <Link to={`/products/${item.id}`} className="ui-link mt-2 inline-block text-xs">打开商品</Link>
-                  </li>)}
+                  {data.products_list.map(item => {
+                    const members = item.kind === 'set' ? item.related.flatMap(id => {
+                      const member = productById.get(id)
+                      return member?.kind === 'item' ? [member] : []
+                    }) : []
+                    return <li key={item.id} className={`min-w-0 p-3 ${views.products === 'grid' ? 'rounded-lg border border-slate-200' : ''} ${pick?.kind === 'product' && pick.id === item.id ? 'bg-blue-50' : ''}`}>
+                      <button type="button" onClick={() => setPick({ kind: 'product', id: item.id })} onDoubleClick={() => navigate(`/products/${item.id}`)} className={`w-full min-w-0 text-left ${views.products === 'list' ? 'flex items-center gap-3' : ''}`}>
+                        <div className={views.products === 'list' ? 'w-14 shrink-0' : 'mb-2'}><FileThumbnail src={thumbUrl(item.id)} name={item.display_name} /></div>
+                        <span className="min-w-0"><span className="block break-words font-medium">{item.display_name}</span><span className="text-xs text-slate-500">{item.product_code} · {item.kind === 'set' ? '套装' : '单品'}</span></span>
+                      </button>
+                      <div className="mt-2 flex flex-wrap gap-1">{item.tags.slice(0, 3).map((tag, index) => <Badge key={index}>{tag}</Badge>)}</div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                        <Link to={`/products/${item.id}`} className="ui-link">打开商品</Link>
+                        <CopyLink url={item.link_url} label="复制商品链接" />
+                      </div>
+                      {item.kind === 'set' && <details className="mt-2 break-words text-xs">
+                        <summary className="cursor-pointer">包含的单品（{members.length}）</summary>
+                        {members.length ? <ul className="mt-2 space-y-1">{members.map(member => <li key={member.id}>
+                          <Link to={`/products/${member.id}`} className="ui-link">{member.display_name}</Link>
+                        </li>)}</ul> : <p className="mt-2 text-slate-500">无关联单品</p>}
+                      </details>}
+                    </li>
+                  })}
                 </ul>}
             </>}
             {mode === 'history' && (data.history.length ? <Table label="历史版本">

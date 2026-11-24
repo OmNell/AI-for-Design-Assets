@@ -101,6 +101,36 @@ it('项目页能进入资料夹、查看文件详情、选择文件并切换商�
   await seen('暂无历史版本')
 })
 
+it('套装卡片能直接展开其单品和复制永久链接', async () => {
+  const item = { ...brief, id: 56, kind: 'item', display_name: '礼盒内酒杯', related: [55] }
+  const setLink = domain + '/l/set'
+  const copy = vi.fn(async () => undefined)
+  const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } })
+  mockFetch(url => url === '/api/projects/42'
+    ? { project, products_list: [{ ...brief, related: [56], link_url: setLink }, item], folders: [], history: [], logs: [] }
+    : [])
+  mount('/projects/42', <ProjectPage />)
+  await seen('商品资产')
+  act(() => [...host.querySelectorAll('button')].find(node => node.textContent === '商品资产')!.click())
+  await seen('包含的单品（1）')
+  const detail = host.querySelector('details')!
+  expect(detail.open).toBe(false)
+  act(() => detail.querySelector('summary')!.click())
+  expect(detail.open).toBe(true)
+  expect(detail.querySelector('a')?.getAttribute('href')).toBe('/products/56')
+  const link = host.querySelector<HTMLInputElement>('input[aria-label="复制商品链接地址"]')
+  expect(link?.value).toBe(setLink)
+  try {
+    act(() => [...host.querySelectorAll('button')].find(node => node.textContent === '复制商品链接')!.click())
+    await seen('已复制')
+    expect(copy).toHaveBeenCalledWith(setLink)
+  } finally {
+    if (clipboard) Object.defineProperty(navigator, 'clipboard', clipboard)
+    else Reflect.deleteProperty(navigator, 'clipboard')
+  }
+})
+
 it('目录按中标、行业和企业筛选，并使用已有项目读取接口定位', async () => {
   const mock = mockFetch(url => url === '/api/catalog/tree' ? [{ won: true, folder: '01已中标项目', industries: [
     { id: 8, name: '酒业', companies: [{ id: 15, name: '企业' }] },

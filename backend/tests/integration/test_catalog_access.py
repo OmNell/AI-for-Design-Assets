@@ -1,5 +1,6 @@
 """通过 WP09 正常发布的项目验证 WP10 访问链路。"""
 import hashlib
+from io import BytesIO
 import socket
 from threading import Thread
 import time
@@ -7,6 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from fastapi.testclient import TestClient
 import httpx
+from PIL import Image
 import pytest
 from sqlalchemy import select
 import uvicorn
@@ -141,6 +143,25 @@ def test_stream_ranges_headers_pause_and_transfer_log(published):
     with client.app.state.database.session() as session:
         rows = list(session.scalars(select(AccessLog).where(AccessLog.kind == "download", AccessLog.outcome == "allowed")))
         assert len(rows) == 1
+
+
+def test_thumbnail_decode_failure_returns_placeholder_only_after_access_check(published, monkeypatch):
+    from app.services.catalog import media
+
+    flow, _, _, _, products, _ = published
+    product = products["item"]
+    def unreadable(*args):
+        raise media.ImageDecodeError("模拟图片无法解码")
+    monkeypatch.setattr(media.MediaService, "_official_thumb", lambda *args: None)
+    monkeypatch.setattr(media, "render_variants", unreadable)
+    url = f"/api/thumbs/{product.id}/300"
+    assert flow.call("other", "GET", url).status_code == 403
+    response = flow.call("one", "GET", url)
+    assert response.status_code == 200
+    assert response.headers["X-Asset-Thumbnail"] == "placeholder"
+    with Image.open(BytesIO(response.content)) as image:
+        assert image.format == "JPEG" and image.size == (300, 300)
+    assert flow.call("one", "GET", f"/api/files/{product.file_id}/preview").json()["code"] == "image_invalid"
 
 
 def test_preview_authorizes_even_when_warm_and_logs_once(published):
