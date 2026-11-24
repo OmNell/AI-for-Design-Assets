@@ -71,6 +71,7 @@ def test_configured_admin_can_self_review_own_upload_through_formal_ingest(setti
         assert flow.audit("one", "pass", ALL).status_code == 200
         assert app.state.jobs.wait_idle(8)
         assert progress(flow, "one")["status"] == "已入库"
+        assert flow.todos("one")["ingested"] == 1
         with app.state.database.session() as session:
             batch = session.get(Batch, flow.bid)
             assert batch.uploader_id == batch.first_reviewer_id == batch.final_reviewer_id == flow.users["one"]
@@ -94,6 +95,14 @@ def test_full_ingest_preserves_links_and_restores_from_nas(settings, tmp_path):
         data = progress(flow)
         assert (data["status"], data["step"], data["vectors_ready"], data["files"]) == ("已入库", 9, 3, 4), data
         assert flow.call("other", "GET", flow.base + "/ingest").status_code == 403
+        for actor in ("one", "first", "final"):
+            todos = flow.call(actor, "GET", "/api/todos").json()
+            completion = next(item for item in todos if item["key"] == "ingested")
+            assert completion["count"] == 1 and completion["link"] == f"/batches/{flow.bid}"
+            assert [row["id"] for row in completion["batches"]] == [flow.bid]
+            assert flow.call(actor, "GET", flow.batch).json()["status"] == "已入库"
+        for actor in ("other", "admin"):
+            assert "ingested" not in flow.todos(actor)
         final_session = next(row for row in app.state.auth.pool._sessions.values() if row.permissions.get(Region.FORMAL) == "write")
         paths = create_paths(settings)
         with app.state.database.session() as session:
@@ -207,6 +216,8 @@ def test_partial_vectors_and_restart_only_retry_missing(settings, tmp_path, monk
         assert app.state.jobs.wait_idle(8)
         state = progress(flow)
         assert (state["status"], state["step"], state["vectors_ready"]) == ("入库异常", 8, 1), state
+        assert "ingested" not in flow.todos("one")
+        assert flow.todos("final")["ingest"] == 1
         with app.state.database.session() as session:
             success = session.scalar(select(ProductEmbedding).where(ProductEmbedding.state == "ready"))
             success_id, prior_blob = success.product_id, success.embedding
@@ -220,6 +231,9 @@ def test_partial_vectors_and_restart_only_retry_missing(settings, tmp_path, monk
         fake = restarted.state.ai.client()
         monkeypatch.setattr(fake, "embed", lambda text, batch: [0.25] * 32)
         assert resume(flow)["status"] == "已入库"
+        for _ in range(2):
+            todos = flow.todos("final")
+            assert todos["ingested"] == 1 and "ingest" not in todos
         with restarted.state.database.session() as session:
             assert [(row.state, row.attempts) for row in session.scalars(
                 select(ProductEmbedding).where(ProductEmbedding.product_id != success_id))] == [("ready", 2)]

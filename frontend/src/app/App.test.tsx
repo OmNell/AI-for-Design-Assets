@@ -106,3 +106,19 @@ it('会话失效后换账号，不展示前一个账号缓存的批次详情', a
   expect(host.textContent).not.toContain('前一账号的私有批次')
   expect(host.textContent).toContain('正在加载批次')
 })
+
+it('我的待办显示 AI 超时和已入库批次的直达链接', async () => {
+  logged = true
+  window.history.replaceState({}, '', '/todos')
+  const originalFetch = fetch
+  vi.stubGlobal('fetch', vi.fn((url: string, options: RequestInit) => url === '/api/todos' ? Promise.resolve(response([
+    { key: 'ai_stalled', label: 'AI 处理超时', count: 1, link: '/batches/41', batches: [{ id: 41, label: '待处理批次' }] },
+    { key: 'ingested', label: '入库完成', count: 1, link: '/batches/42', batches: [{ id: 42, label: '已入库批次' }] },
+  ])) : originalFetch(url, options)))
+  act(() => root.render(<App />))
+  await until(() => !!host.querySelector('[data-testid="todos"]'))
+  const todos = [...host.querySelectorAll('[data-testid="todos"] a')]
+  expect(todos.map(node => [node.textContent, node.getAttribute('href')])).toEqual([
+    ['AI 处理超时1', '/batches/41'], ['入库完成1', '/batches/42'],
+  ])
+})

@@ -177,6 +177,7 @@ def test_updated_hint_for_next_batch_and_stall_alert_is_deduplicated(client: Tes
     assert len(result['products'][0]['tags']) == 11
     assert result['tag_labels']['category'] == '品类'
     assert any(field['key'] == 'category' and field['hint'] == '仅描述图中可见细节' for field in seen)
+    client.app.state.ai.shutdown()
     with client.app.state.database.session() as session:
         batch = session.get(Batch, result['id'])
         batch.status = 'AI 处理中'
@@ -185,8 +186,34 @@ def test_updated_hint_for_next_batch_and_stall_alert_is_deduplicated(client: Tes
     client.app.state.ai.check_stalls()
     with client.app.state.database.session() as session:
         assert len(list(session.scalars(select(AiAlert)))) == 1
-    login(client, 'admin')
-    assert len(client.get('/api/admin/ai-alerts').json()) == 1
+    def stalled() -> list[dict]:
+        return [item for item in client.get("/api/todos").json() if item["key"] == "ai_stalled"]
+
+    batch_id = result["id"]
+    reminder = stalled()
+    assert len(reminder) == 1 and reminder[0]["count"] == 1
+    assert reminder[0]["link"] == f"/batches/{batch_id}"
+    assert [row["id"] for row in reminder[0]["batches"]] == [batch_id]
+    login(client, "two")
+    assert stalled() == []
+    login(client, "admin")
+    assert stalled() == reminder
+    assert len(client.get("/api/admin/ai-alerts").json()) == 1
+
+    with client.app.state.database.session() as session:
+        batch = session.get(Batch, batch_id)
+        batch.payload = {**batch.payload, "ai_last_progress": utcnow().isoformat()}
+    assert stalled() == []
+    with client.app.state.database.session() as session:
+        batch = session.get(Batch, batch_id)
+        batch.payload = {**batch.payload, "ai_run": "下一轮", "ai_last_progress": (utcnow() - timedelta(hours=2)).isoformat()}
+    assert stalled() == []
+    client.app.state.ai.check_stalls()
+    assert stalled() == reminder
+    with client.app.state.database.session() as session:
+        session.get(Batch, batch_id).status = "AI 处理失败"
+    assert stalled() == []
+    assert any(item["key"] == "ai_failed" for item in client.get("/api/todos").json())
 
 
 def test_production_payload_has_only_review_image_and_sanitized_candidate_text(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

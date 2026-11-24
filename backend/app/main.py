@@ -131,7 +131,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             application.state.catalog = CatalogService(application.state.auth)
             application.state.review = ReviewService(application.state.auth, thumbs, ai, application.state.catalog)
             application.state.auth.on_close = upload.session_closed
-            application.state.notify = NotifyService(application.state.auth)
+            application.state.notify = NotifyService(application.state.auth, application.state.ai_settings)
             application.state.company_map = CompanyMapService(application.state.auth)
             ingest = IngestService(application.state.auth, jobs, ai, application.state.notify)
             application.state.ingest = ingest

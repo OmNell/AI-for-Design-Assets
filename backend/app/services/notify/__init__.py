@@ -3,13 +3,15 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Batch, InspectionFinding, InspectionRun, Job, User, utcnow
+from app.db.models import AiAlert, Batch, InspectionFinding, InspectionRun, Job, User, utcnow
 from app.errors import AppError
 from app.schemas.audit import TodoBatch, TodoItem
 from app.services.admin.company_map import batch_company, match_company
+from app.services.ai.orchestrator import PROCESSING, ai_run_stalled
+from app.services.ai.settings import AiSettingsService
 from app.services.auth.service import AuthService
 from app.services.review.policy import recused
 
@@ -35,8 +37,9 @@ def stage_since(batch: Batch) -> datetime:
 
 
 class NotifyService:
-    def __init__(self, auth: AuthService) -> None:
+    def __init__(self, auth: AuthService, ai_settings: AiSettingsService) -> None:
         self.auth = auth
+        self.ai_settings = ai_settings
 
     def emit(self, session: Session, event: str, batch: Batch) -> None:
         """业务事件的统一出口。站内待办不落表，由 todos() 按状态汇总；这里只负责外发渠道。"""
@@ -76,6 +79,17 @@ class NotifyService:
                 add("final_review", "待终审", [row for row in batches if row.status == "待终审" and row.final_reviewer_id in (None, user.id) and not recused(session, self.auth.config.review, row, user)], "/final-review")
             failed = [row for row in batches if row.status == "AI 处理失败" and ("admin" in roles or row.owner_id == user.id)]
             add("ai_failed", "AI 处理失败", failed, single(failed, "/batches/{id}") if failed else "/")
+            stalled_query = (select(Batch)
+                .join(AiAlert, (AiAlert.batch_id == Batch.id) & (AiAlert.run_id == Batch.payload["ai_run"].as_string()))
+                .where(Batch.status == PROCESSING).order_by(Batch.id))
+            if "admin" not in roles:
+                stalled_query = stalled_query.where(Batch.owner_id == user.id)
+            alarmed = list(session.scalars(stalled_query))
+            if alarmed:
+                minutes = self.ai_settings._effective(session).stall_alert_min
+                stalled = [row for row in alarmed if ai_run_stalled(row, now, minutes)]
+                add("ai_stalled", "AI 处理超时", stalled, single(stalled, "/batches/{id}"))
+
             if "admin" in roles:
                 waiting = [row for row in batches if row.status in ("待初审", "待终审")
                            and match_company(session, batch_company(row)) is None]
@@ -87,6 +101,16 @@ class NotifyService:
             unfinished = [row for row in batches if row.status in ("入库中", "入库异常") and (
                 "admin" in roles or ("final_reviewer" in roles and row.final_reviewer_id == user.id))]
             add("ingest", "入库未完成", unfinished, single(unfinished, "/review/{id}"))
+
+            recipients = [Batch.uploader_id == user.id]
+            if roles & {"first_reviewer", "admin"}:
+                recipients.append(Batch.first_reviewer_id == user.id)
+            if roles & {"final_reviewer", "admin"}:
+                recipients.append(Batch.final_reviewer_id == user.id)
+            completed = list(session.scalars(select(Batch).where(Batch.status == "已入库",
+                Batch.kind.in_(("ingest", "supplement")), or_(*recipients)).order_by(Batch.updated_at.desc(), Batch.id.desc())))
+            add("ingested", "入库完成", completed, single(completed, "/batches/{id}"))
+
             if "admin" in roles:
                 findings = session.scalar(select(func.count(InspectionFinding.id)).where(
                     InspectionFinding.acknowledged_at.is_(None), InspectionFinding.resolved_at.is_(None)))

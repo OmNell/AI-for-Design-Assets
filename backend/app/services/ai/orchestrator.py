@@ -37,6 +37,14 @@ RELATION_FLAGS = ("empty_relation", "relation_recheck")
 HUMAN_SOURCES = ("manual", "ai_confirmed")
 
 
+def ai_run_stalled(batch: Batch, now: datetime, minutes: int) -> bool:
+    raw = batch.payload.get("ai_last_progress")
+    last = datetime.fromisoformat(raw) if isinstance(raw, str) else batch.updated_at
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return (now - last).total_seconds() > minutes * 60
+
+
 def active_products(session: Session, batch_id: int, kind: str | None = None) -> list[BatchProduct]:
     """核对阶段移除的主图保留记录但不再参与打标、展示与提交。"""
     query = select(BatchProduct).join(BatchFile, BatchFile.id == BatchProduct.batch_file_id).where(
@@ -386,16 +394,15 @@ class AiService:
             product.ai_status, product.ai_error = "done", None
 
     def check_stalls(self) -> None:
-        minutes = self.settings.effective().stall_alert_min
         with self.auth.lock, self.auth.database.session() as session:
+            minutes = self.settings._effective(session).stall_alert_min
+            now = utcnow()
             for batch in session.scalars(select(Batch).where(Batch.status == PROCESSING)):
                 run = batch.payload.get("ai_run")
                 if not run:
                     continue
-                last = datetime.fromisoformat(batch.payload.get("ai_last_progress", batch.updated_at.isoformat()))
-                if last.tzinfo is None:
-                    last = last.replace(tzinfo=timezone.utc)
-                if (utcnow() - last).total_seconds() > minutes * 60 and session.scalar(select(AiAlert.id).where(AiAlert.batch_id == batch.id, AiAlert.run_id == run)) is None:
+                if ai_run_stalled(batch, now, minutes) and session.scalar(
+                        select(AiAlert.id).where(AiAlert.batch_id == batch.id, AiAlert.run_id == run)) is None:
                     session.add(AiAlert(batch_id=batch.id, run_id=run, reason=f"AI 处理中超过 {minutes} 分钟无进展"))
                     OplogService(session).write(None, "system", "AI 处理停滞提醒", "batch", str(batch.id), None,
                                                {"reason": "AI 处理停滞"}, "失败", "后台检测")
