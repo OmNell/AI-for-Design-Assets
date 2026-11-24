@@ -8,7 +8,7 @@ from typing import Annotated, Callable, Iterator
 import anyio
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 
 from app.api.dependencies import client_host, require_login_context
 from app.errors import AppError, error_response
@@ -85,9 +85,15 @@ class AssetResponse(StreamingResponse):
         self.lease = lease
         self.delivery = delivery
         self.sent = False
+        self.sent_bytes = 0
 
     async def stream_response(self, send: Send) -> None:
-        await super().stream_response(send)
+        async def count_sent(message: Message) -> None:
+            await send(message)
+            if message["type"] == "http.response.body":
+                self.sent_bytes += len(message.get("body", b""))
+
+        await super().stream_response(count_sent)
         self.sent = True
 
     def close(self) -> None:

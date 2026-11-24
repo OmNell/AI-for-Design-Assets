@@ -28,6 +28,13 @@ function ImagePreview({ path, name }: { path: string; name: string }) {
     : <LoadingState>正在加载预览…</LoadingState>
 }
 
+function DownloadLink({ path }: { path: string }) {
+  const [href] = useState(() => nasDownloadUrl(path))
+  return <a className="ui-button ui-primary" href={href}
+    onClick={event => { event.currentTarget.href = nasDownloadUrl(path) }}
+    onAuxClick={event => { if (event.button === 1) event.currentTarget.href = nasDownloadUrl(path) }}>下载文件</a>
+}
+
 export function NasFileDetails({ root, path, onClose, onOpen }: { root: string; path: string; onClose: () => void; onOpen: (path: string) => void }) {
   const info = useQuery({ queryKey: ['nas-browser', path, 'info'], queryFn: ({ signal }) => getNasInfo(path, signal) })
   const [copyStatus, setCopyStatus] = useState('')
@@ -51,7 +58,7 @@ export function NasFileDetails({ root, path, onClose, onOpen }: { root: string; 
       </dl>
       <div className="flex flex-wrap gap-2">
         {item.is_dir ? <Button onClick={() => onOpen(item.path)}>打开目录</Button> :
-          <a className="ui-button ui-primary" href={nasDownloadUrl(item.path)}>下载文件</a>}
+          <DownloadLink key={item.path} path={item.path} />}
         <Button primary={false} onClick={() => void copy()}>复制路径</Button>
       </div>
       {copyStatus && <p role="status" className="text-sm text-slate-600">{copyStatus}</p>}

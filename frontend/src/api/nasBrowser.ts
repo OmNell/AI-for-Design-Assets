@@ -31,6 +31,10 @@ export const getNasDirectory = (path: string, filter: BrowseFilters, signal?: Ab
   request<NasDirectory>(endpoint('list', { ...filter, path, page: String(filter.page) }), { signal })
 export const getNasInfo = (path: string, signal?: AbortSignal) => request<NasInfo>(endpoint('info', { path }), { signal })
 export const nasPreviewUrl = (path: string, size: 300 | 1600) => endpoint('preview', { path, size: String(size) })
-export const nasDownloadUrl = (path: string) => endpoint('download', { path })
+export const nasDownloadUrl = (path: string) => {
+  const transfer = Array.from(crypto.getRandomValues(new Uint8Array(12)),
+    byte => byte.toString(16).padStart(2, '0')).join('')
+  return endpoint('download', { path, transfer })
+}
 export const getNasPreview = (path: string, signal: AbortSignal) =>
   requestResponse(nasPreviewUrl(path, 1600), { signal }).then(response => response.blob())

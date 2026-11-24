@@ -70,7 +70,15 @@ it('首次以 NAS 为来源，按需展开，进入文件夹后切换缩略图�
   await click(button(image.name) ?? host.querySelector<HTMLButtonElement>('button[aria-pressed] img')?.closest('button') ?? undefined)
   await until(() => host.textContent!.includes('未纳入资产库') && host.querySelector('img[alt$="预览"]') !== null)
   const link = host.querySelector<HTMLAnchorElement>('a[href*="nas-browser/download"]')!
-  expect(new URL(link.href).searchParams.get('path')).toBe(image.path)
+  const original = new URL(link.href).searchParams
+  expect(original.get('path')).toBe(image.path)
+  expect(original.get('transfer')).toMatch(/^[0-9a-f]{24}$/)
+  link.addEventListener('click', event => event.preventDefault())
+  await act(async () => link.click())
+  const first = new URL(link.href).searchParams.get('transfer')
+  await act(async () => link.click())
+  expect(first).not.toBe(original.get('transfer'))
+  expect(new URL(link.href).searchParams.get('transfer')).not.toBe(first)
   expect(fetchMock.mock.calls.some(([url]) => url.startsWith('/api/projects'))).toBe(false)
 })
 

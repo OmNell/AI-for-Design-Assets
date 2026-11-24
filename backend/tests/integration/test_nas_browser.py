@@ -8,7 +8,7 @@ from PIL import Image
 from sqlalchemy import func, select
 
 from app.config import Settings
-from app.db.models import CatalogFile, Oplog, Product, Project
+from app.db.models import AccessLog, CatalogFile, Oplog, Product, Project
 from app.main import create_app
 from app.services.nas.errors import NasUnavailable
 from app.services.nas.fs import NasStream
@@ -89,7 +89,10 @@ def test_empty_catalog_browses_one_level_and_downloads_without_import(browser, m
     with client.app.state.database.session() as session:
         assert all(session.scalar(select(func.count(model.id))) == 0 for model in (Project, Product, CatalogFile))
         audit = session.scalars(select(Oplog).where(Oplog.action == "NAS 文件下载")).all()
-        assert [row.result for row in audit] == ["开始", "完成"]
+        assert [row.result for row in audit] == ["开始"]
+        access = session.scalar(select(AccessLog).where(AccessLog.kind == "nas_download"))
+        assert access.target_path == file_path and access.delivery == "sent"
+        assert access.byte_ranges == [[0, 6]]
 
 
 def test_empty_folder_and_current_directory_filter(browser):
@@ -205,6 +208,110 @@ def test_large_download_range_stream_sizes_and_release(browser, monkeypatch):
     assert rejected.headers["Content-Range"] == f"bytes */{length}"
     context = client.app.state.auth.context(client.cookies["nas_workbench_session"], "本机")
     assert not client.app.state.auth.pool.get(context.session_id)._streams
+
+
+def test_active_preview_is_audited_once_without_thumbnail_traffic(browser):
+    client, root = browser
+    path = "测试商品.jpg"
+    Image.new("RGB", (40, 20)).save(root / path)
+    login(client)
+    for _ in range(2):
+        assert client.get(BASE + "/preview", params={"path": path, "size": 300}).status_code == 200
+    with client.app.state.database.session() as session:
+        assert session.scalar(select(func.count(AccessLog.id))) == 0
+
+    for _ in range(2):
+        assert client.get(BASE + "/preview", params={"path": path, "size": 1600}).status_code == 200
+    assert client.get(BASE + "/preview", params={"path": "工作台临时区/保密.jpg"}).status_code == 403
+    with client.app.state.database.session() as session:
+        records = list(session.scalars(select(AccessLog).order_by(AccessLog.id)))
+        assert [(row.kind, row.outcome, row.target_path) for row in records] == [
+            ("nas_preview", "allowed", path), ("nas_preview", "nas_permission_denied", None)]
+        actions = session.scalars(select(Oplog).where(Oplog.action == "NAS 文件预览").order_by(Oplog.ts)).all()
+        assert [row.result for row in actions] == ["成功", "异常"]
+        assert "保密.jpg" not in str(actions[1].after)
+
+
+@pytest.mark.parametrize("use_transfer", [False, True])
+def test_ranges_combine_only_after_all_bytes_are_sent(browser, use_transfer):
+    client, root = browser
+    path = "分段资料.pdf"
+    content = b"abcdefghijkl"
+    (root / path).write_bytes(content)
+    login(client)
+    endpoint = BASE + "/download"
+    params = {"path": path}
+    if use_transfer:
+        params["transfer"] = "logical_download_1"
+
+    def get_range(start, end):
+        result = client.get(endpoint, params=params, headers={"Range": f"bytes={start}-{end}"})
+        assert result.status_code == 206 and result.content == content[start:end + 1]
+
+    assert client.head(endpoint, params=params).status_code == 200
+    with client.app.state.database.session() as session:
+        assert session.scalar(select(func.count(AccessLog.id))) == 0
+    get_range(8, 11)
+    get_range(0, 5)
+    get_range(1, 4)
+    with client.app.state.database.session() as session:
+        items = session.scalars(select(AccessLog)).all()
+        assert len(items) == 1 and items[0].delivery == "partial"
+        assert items[0].byte_ranges == [[0, 6], [8, 12]]
+        assert "logical_download_1" not in items[0].logical_id
+
+    get_range(6, 7)
+    get_range(9, 11)
+    with client.app.state.database.session() as session:
+        items = session.scalars(select(AccessLog)).all()
+        assert len(items) == 1 and items[0].delivery == "sent"
+        assert items[0].byte_ranges == [[0, len(content)]]
+        assert session.scalar(select(func.count(Oplog.ts)).where(Oplog.action == "NAS 文件下载")) == 1
+
+    if use_transfer:
+        login(client)  # 同账号另一设备的登录不能复用第一次的审计记录。
+        get_range(0, 5)
+    else:
+        assert client.get(endpoint, params=params).content == content
+    with client.app.state.database.session() as session:
+        assert session.scalar(select(func.count(AccessLog.id))) == 2
+
+
+
+def test_interrupted_download_resumes_in_one_audit_record(browser, monkeypatch):
+    client, root = browser
+    chunk_size = 1024 ** 2
+    path = "中断资料.psd"
+    (root / path).write_bytes(b"a" * chunk_size + b"tail")
+    login(client)
+    call_count = 0
+    read = NasStream.read
+
+    def fail_after_first_chunk(self, size=-1):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise NasUnavailable("模拟 NAS 传输中断")
+        return read(self, size)
+
+    endpoint = BASE + "/download"
+    params = {"path": path, "transfer": "interrupted_download"}
+    with monkeypatch.context() as patch:
+        patch.setattr(NasStream, "read", fail_after_first_chunk)
+        with pytest.raises(OSError, match="NAS 文件传输中断"):
+            client.get(endpoint, params=params)
+    with client.app.state.database.session() as session:
+        row = session.scalar(select(AccessLog))
+        assert row.delivery == "interrupted" and row.byte_ranges == [[0, chunk_size]]
+        record_id = row.id
+
+    tail = client.get(endpoint, params=params, headers={"Range": f"bytes={chunk_size}-"})
+    assert tail.status_code == 206 and tail.content == b"tail"
+    with client.app.state.database.session() as session:
+        records = list(session.scalars(select(AccessLog)))
+        assert [(row.id, row.delivery, row.byte_ranges) for row in records] == [
+            (record_id, "sent", [[0, chunk_size + 4]])]
+
 
 
 def test_large_directory_is_paged_without_opening_children(browser):

@@ -1,16 +1,17 @@
 """NAS 工作目录下的只读 HTTP 入口。"""
+from collections.abc import Iterator
 from contextlib import ExitStack
 from typing import Annotated, Literal
 
 from anyio import from_thread
 from fastapi import APIRouter, Depends, Query, Request, Response
 
-from app.api.catalog import AssetResponse
+from app.api.catalog import AssetResponse, Transfer
 from app.api.dependencies import client_host, require_login_context
 from app.errors import AppError, error_response
 from app.schemas.nas_browser import BrowseQuery, DirectoryPage, FileInfo
 from app.services.auth.service import LoginContext
-from app.services.catalog.media import NO_CACHE, RangeError, file_headers, parse_range, read_chunks
+from app.services.catalog.media import NO_CACHE, RangeError, file_headers, parse_range, public_error, read_chunks
 from app.services.nas.errors import NasError, NasUnavailable
 from app.services.nas_browser import NasBrowser
 
@@ -36,13 +37,22 @@ def info(request: Request, response: Response, login: Login, path: PathQuery = "
 
 @router.get("/preview", responses={200: {"content": {"image/jpeg": {}}}})
 def preview(request: Request, login: Login, path: PathQuery, size: Literal["300", "1600"] = "1600") -> Response:
-    image = request.app.state.nas_browser.preview(login, path, int(size))
+    browser: NasBrowser = request.app.state.nas_browser
+    host = client_host(request)
+    try:
+        item, image = browser.preview(login, path, int(size))
+    except (NasError, AppError) as error:
+        if size == "1600":
+            browser.audit.record(login, "nas_preview", host, None, public_error(error)[0])
+        raise
+    if size == "1600":
+        browser.audit.record(login, "nas_preview", host, item.path, "allowed")
     return Response(image, media_type="image/jpeg", headers=NO_CACHE)
 
 
 @router.get("/download")
 @router.head("/download")
-def download(request: Request, login: Login, path: PathQuery) -> Response:
+def download(request: Request, login: Login, path: PathQuery, transfer: Transfer = None) -> Response:
     browser: NasBrowser = request.app.state.nas_browser
     head = request.method == "HEAD"
     host = client_host(request)
@@ -52,32 +62,41 @@ def download(request: Request, login: Login, path: PathQuery) -> Response:
         item, stream = lease.enter_context(browser.open(login, path))
         audited_path = item.path
         # 原始文件没有已登记的强校验器，带 If-Range 的请求回退为完整传输。
-        span = parse_range(request.headers.get("range") if not request.headers.get("if-range") else None, item.size)
+        requested = request.headers.get("range")
+        span = parse_range(requested if not request.headers.get("if-range") else None, item.size)
         headers = file_headers(item.name, item.size, item.modified_at.timestamp(), span, inline=False)
         status = 206 if span else 200
         if head:
             lease.close()
             return Response(status_code=status, media_type="application/octet-stream", headers=headers)
+        offset = span[0] if span else 0
         if span:
-            stream.seek(span[0])
-        browser.record(login, host, audited_path, "续传" if span else "开始")
+            stream.seek(offset)
+        record_id = browser.audit.start(login, item, host, transfer, resume=span is not None)
 
         def delivered(sent: bool) -> None:
-            browser.record(login, host, audited_path, "完成" if sent else "中断")
+            browser.audit.delivered(record_id, item.size, offset, response.sent_bytes, sent)
 
-        return AssetResponse(read_chunks(stream, int(headers["Content-Length"])), lease, delivered,
-                             status_code=status, media_type="application/octet-stream", headers=headers)
+        def body() -> Iterator[bytes]:
+            try:
+                yield from read_chunks(stream, int(headers["Content-Length"]))
+            except NasError:
+                raise OSError("NAS 文件传输中断，可重新登录或续传") from None
+
+        response = AssetResponse(body(), lease, delivered,
+                                 status_code=status, media_type="application/octet-stream", headers=headers)
+        return response
     except RangeError as error:
         lease.close()
         if not head:
-            browser.record(login, host, audited_path, "范围无效")
+            browser.audit.record(login, "nas_download", host, audited_path, error.code, transfer)
         response = error_response(416, error.code, error.message)
         response.headers.update({**NO_CACHE, "Content-Range": f"bytes */{error.size}", "Accept-Ranges": "bytes"})
         return response
-    except (NasError, AppError):
+    except (NasError, AppError) as error:
         lease.close()
         if not head:
-            browser.record(login, host, audited_path, "拒绝")
+            browser.audit.record(login, "nas_download", host, audited_path, public_error(error)[0], transfer)
         raise
     except BaseException:
         lease.close()

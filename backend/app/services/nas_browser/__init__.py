@@ -15,11 +15,11 @@ from app.services.auth.service import AuthService, LoginContext
 from app.services.catalog.media import is_image
 from app.services.nas.fs import NasStat
 from app.services.nas.paths import safe_join
-from app.services.oplog import OplogService
 from app.services.thumbs.images import ImageDecodeError, render_preview
 from app.services.upload.service import UploadService
 
 from app.services.nas.browser import ReadRoot
+from .audit import NasAccessAudit
 
 PAGE_SIZE = 60
 PREVIEW_MAX_BYTES = 48 * 1024 * 1024
@@ -35,6 +35,7 @@ def entry(path: str, name: str, stat: NasStat) -> FileEntry:
 class NasBrowser:
     def __init__(self, auth: AuthService) -> None:
         self.auth = auth
+        self.audit = NasAccessAudit(auth)
         self.preview_slots = BoundedSemaphore(2)
 
     def root(self, login: LoginContext) -> ReadRoot:
@@ -88,7 +89,7 @@ class NasBrowser:
         with self.root(login).open(path) as (metadata, stream):
             yield entry(path, path.rsplit("/", 1)[-1], metadata), stream
 
-    def preview(self, login: LoginContext, path: str, size: int) -> bytes:
+    def preview(self, login: LoginContext, path: str, size: int) -> tuple[FileEntry, bytes]:
         if not self.preview_slots.acquire(timeout=8):
             raise AppError("preview_busy", "预览繁忙，请稍后重试", 503)
         try:
@@ -98,13 +99,8 @@ class NasBrowser:
                 if item.size > PREVIEW_MAX_BYTES:
                     raise AppError("preview_too_large", "原图过大，请下载后查看", 413)
                 try:
-                    return render_preview(stream, size)
+                    return item, render_preview(stream, size)
                 except ImageDecodeError as error:
                     raise AppError("preview_unavailable", str(error), 415) from None
         finally:
             self.preview_slots.release()
-
-    def record(self, login: LoginContext, host: str, path: str | None, result: str) -> None:
-        with self.auth.database.session() as session:
-            OplogService(session).write(login.user.id, ",".join(login.user.roles), "NAS 文件下载", "nas_file", None,
-                                        None, {"path": path} if path else None, result, host)

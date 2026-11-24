@@ -437,6 +437,8 @@ class AccessLog(Base):
     session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"))
     kind: Mapped[str] = mapped_column(String)
     target_id: Mapped[int] = mapped_column(Integer)
+    target_path: Mapped[str | None] = mapped_column(String)
+    byte_ranges: Mapped[list[list[int]] | None] = mapped_column(JSON)
     logical_id: Mapped[str] = mapped_column(String)
     outcome: Mapped[str] = mapped_column(String)
     delivery: Mapped[str | None] = mapped_column(String)
