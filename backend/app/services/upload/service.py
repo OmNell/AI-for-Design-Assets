@@ -1,6 +1,7 @@
 """上传状态机：所有文件操作用上传人的 NasFs，文件内容只经过有界分片。"""
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import re
 import secrets
@@ -36,6 +37,12 @@ TERMINATABLE = {UPLOADING, INTERRUPTED, STAGED, "AI 处理中", "AI 处理失败
 H_CODE = re.compile(r"H([0-9]{4})-([0-9]{4})")
 AI = "AI 处理中"
 UPLOAD_ROLES = {"uploader", "first_reviewer", "final_reviewer"}
+
+
+@dataclass(frozen=True)
+class ContinuingUpload(LoginContext):
+    batch_id: int
+    upload_hash: str
 
 
 class UploadService:
@@ -78,6 +85,27 @@ class UploadService:
             raise AppError("forbidden", "当前账号没有上传权限", 403)
         return batch
 
+    def authorize_file(self, batch_id: int, token: str | None, cookie: str | None,
+                       device: str, host: str) -> LoginContext:
+        with self.lock, self.database.session() as session:
+            sid = self._pinned.get(batch_id)
+            row = session.get(UserSession, sid) if sid is not None else None
+            if row and row.revoked_at is None and (cookie or is_expired(row.expires_at)):
+                batch = session.get(Batch, batch_id)
+                expected = batch.payload.get("upload_token_hash") if batch else None
+                if (batch and batch.upload_session_id == sid and batch.status == UPLOADING
+                        and time.monotonic() - self._activity.get(batch_id, float("-inf")) <= 60
+                        and not batch.payload.get("queued") and expected and token
+                        and secrets.compare_digest(token_hash(token), expected)
+                        and device.isascii() and secrets.compare_digest(device, self.auth.upload_device(row.token_hash))
+                        and (not cookie or token_hash(cookie) == row.token_hash)
+                        and session.scalar(select(BatchFile.id).where(BatchFile.batch_id == batch_id,
+                            BatchFile.bytes_received > 0).limit(1)) is not None):
+                    user = session.get(User, row.user_id)
+                    self._batch(session, batch_id, user)
+                    return ContinuingUpload(user, row.id, batch_id, expected)
+        return self.authorize(batch_id, token, cookie, host)
+
     def authorize(self, batch_id: int, token: str | None, cookie: str | None, host: str) -> LoginContext:
         login = self.auth.context(cookie, host)
         with self.lock, self.database.session() as session:
@@ -91,7 +119,10 @@ class UploadService:
     @staticmethod
     def _check_login(session: Session, login: LoginContext, batch: Batch | None = None) -> None:
         row = session.get(UserSession, login.session_id)
-        if row is None or row.user_id != login.user.id or row.revoked_at is not None or is_expired(row.expires_at):
+        can_finish = (isinstance(login, ContinuingUpload) and batch is not None
+                      and batch.id == login.batch_id and batch.status == UPLOADING
+                      and batch.payload.get("upload_token_hash") == login.upload_hash)
+        if row is None or row.user_id != login.user.id or row.revoked_at is not None or (is_expired(row.expires_at) and not can_finish):
             raise AppError("session_expired", "登录已过期，请重新登录", 401)
         if batch is not None and batch.upload_session_id != login.session_id:
             raise AppError("upload_session_mismatch", "上传绑定到其他登录会话，请重新选择文件夹继续上传", 409)
@@ -784,7 +815,7 @@ class UploadService:
                 if batch is None or batch.status != UPLOADING:
                     continue
                 login = session.get(UserSession, batch.upload_session_id) if batch.upload_session_id is not None else None
-                if login is None or login.revoked_at is not None or is_expired(login.expires_at) or time.monotonic() - last > 60:
+                if login is None or login.revoked_at is not None or time.monotonic() - last > 60:
                     self._interrupt(session, batch, "上传请求或登录超时")
 
     def shutdown(self) -> None:

@@ -67,6 +67,10 @@ class SessionPool:
                 raise NasSessionExpired("NAS 会话已过期，请重新登录") from None
             return current
 
+    def is_pinned(self, login_session_id: int) -> bool:
+        with self._lock:
+            return bool(self._pins.get(login_session_id))
+
     def pin(self, login_session_id: int) -> BaseFs:
         with self._lock:
             current = self.get(login_session_id)

@@ -9,7 +9,7 @@ from app.db.models import User
 from app.errors import AppError
 from app.schemas.auth import Role
 from app.schemas.upload import BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, PreDescriptionInput, PreDescriptionView, ResumeRequest, TerminateBatchRequest
-from app.services.auth.service import COOKIE_NAME, LoginContext
+from app.services.auth.service import COOKIE_NAME, UPLOAD_DEVICE_COOKIE, LoginContext
 
 router = APIRouter(prefix="/api/batches")
 
@@ -31,6 +31,11 @@ class ChunkResponse(BaseModel):
 
 def upload_user(request: Request, id: int, x_upload_token: str | None = Header(default=None)) -> LoginContext:
     return request.app.state.upload.authorize(id, x_upload_token, request.cookies.get(COOKIE_NAME), client_host(request))
+
+
+def file_upload_user(request: Request, id: int, x_upload_token: str | None = Header(default=None)) -> LoginContext:
+    return request.app.state.upload.authorize_file(id, x_upload_token, request.cookies.get(COOKIE_NAME),
+                                                  request.cookies.get(UPLOAD_DEVICE_COOKIE, ""), client_host(request))
 
 
 @router.post("/precheck", response_model=PrecheckResponse)
@@ -68,7 +73,7 @@ def state(id: int, request: Request, login: LoginContext = Depends(upload_user))
 
 
 @router.put("/{id}/files/{file_id}/chunks/{index}", response_model=ChunkResponse)
-async def chunk(id: int, file_id: int, index: int, request: Request, login: LoginContext = Depends(upload_user)) -> ChunkResponse:
+async def chunk(id: int, file_id: int, index: int, request: Request, login: LoginContext = Depends(file_upload_user)) -> ChunkResponse:
     limit = await run_in_threadpool(request.app.state.upload.body_limit, id, login)
     data = await request.app.state.upload.read_body(request.stream(), limit)
     result = await run_in_threadpool(request.app.state.upload.chunk, id, file_id, index, data, login, client_host(request))
@@ -76,7 +81,7 @@ async def chunk(id: int, file_id: int, index: int, request: Request, login: Logi
 
 
 @router.post("/{id}/files/{file_id}/complete", response_model=BatchResponse)
-def complete(id: int, file_id: int, request: Request, login: LoginContext = Depends(upload_user)) -> BatchResponse:
+def complete(id: int, file_id: int, request: Request, login: LoginContext = Depends(file_upload_user)) -> BatchResponse:
     return request.app.state.upload.complete(id, file_id, login, client_host(request))
 
 

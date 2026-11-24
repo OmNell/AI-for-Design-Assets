@@ -12,7 +12,7 @@ from sqlalchemy import select, update
 from app.config import DevUser, Settings, PathsConfig
 from app.db.models import Batch, BatchFile, PreflightAck, Project, UserSession, utcnow
 from app.main import create_app
-from app.services.auth.service import COOKIE_NAME
+from app.services.auth.service import COOKIE_NAME, UPLOAD_DEVICE_COOKIE
 
 from test_ai_pipeline import describe_all
 
@@ -123,13 +123,23 @@ def test_queue_h_code_cancel(upload_client: TestClient) -> None:
 
 
 @pytest.mark.parametrize("termination", ["expire", "logout"])
-def test_upload_token_requires_login_after_expiry_or_logout(upload_client: TestClient, termination: str) -> None:
+def test_active_upload_survives_expiry_but_logout_requires_resume(upload_client: TestClient, termination: str) -> None:
     client = upload_client
     batch = create(client)
     assert chunk(client, batch, 0, b"abcd").status_code == 200
     if termination == "expire":
         with client.app.state.database.session() as session:
             session.execute(update(UserSession).values(expires_at=utcnow() - timedelta(hours=1)))
+        assert client.get('/api/auth/me').status_code == 401
+        assert COOKIE_NAME not in client.cookies
+        client.app.state.upload.expire_idle()
+        assert client.get('/api/batches').status_code == 401
+        assert client.get(f'/api/batches/{batch["id"]}/upload-state', headers=headers(batch)).status_code == 401
+        assert chunk(client, batch, 1, b"efgh").status_code == 200
+        assert chunk(client, batch, 2, b"ij").status_code == 200
+        assert finish(client, batch).json()["status"] == "已暂存"
+        assert chunk(client, batch, 0, b"abcd").status_code == 401
+        return
     else:
         assert client.post('/api/auth/logout').status_code == 200
     assert chunk(client, batch, 1, b"efgh").status_code == 401
@@ -140,6 +150,35 @@ def test_upload_token_requires_login_after_expiry_or_logout(upload_client: TestC
     resumed = client.post(f'/api/batches/{batch["id"]}/resume', json=body()).json()
     assert resumed["files"][0]["bytes_received"] == 4
     assert chunk(client, resumed, 1, b"efgh").status_code == 200
+
+
+@pytest.mark.parametrize("case", ["unstarted", "wrong_token", "other_device", "logout", "disabled", "idle"])
+def test_expired_upload_continuation_is_scoped(upload_client: TestClient, case: str) -> None:
+    client = upload_client
+    batch = create(client)
+    if case != "unstarted":
+        assert chunk(client, batch, 0, b"abcd").status_code == 200
+    with client.app.state.database.session() as session:
+        session.execute(update(UserSession).values(expires_at=utcnow() - timedelta(hours=1)))
+        if case == "disabled":
+            from app.db.models import User
+            session.execute(update(User).values(enabled=False))
+    client.cookies.delete(COOKIE_NAME)
+    if case == "other_device":
+        client.cookies.delete(UPLOAD_DEVICE_COOKIE)
+    elif case == "wrong_token":
+        batch["upload_token"] = "wrong"
+    elif case == "logout":
+        assert client.post("/api/auth/logout").status_code == 200
+    elif case == "idle":
+        upload = client.app.state.upload
+        upload._activity[batch["id"]] -= 65
+        upload.expire_idle()
+    assert chunk(client, batch, 1, b"efgh").status_code in (401, 403)
+    if case == "unstarted":
+        assert not file_path(client, batch).exists()
+    else:
+        assert file_path(client, batch).stat().st_size == 4
 
 
 def test_resume_same_manifest_changed_manifest_and_reset(upload_client: TestClient) -> None:

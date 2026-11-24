@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import secrets
 import threading
 import logging
@@ -19,6 +20,7 @@ from app.services.auth.backends import AuthBackend, AuthUnavailable
 from app.services.nas import NasPermissionDenied, NasSessionExpired, NasUnavailable, SessionPool
 from app.services.oplog import OplogService
 
+UPLOAD_DEVICE_COOKIE = "nas_upload_device"
 COOKIE_NAME = "nas_workbench_session"
 
 
@@ -43,8 +45,13 @@ class AuthService:
         self.backend = backend
         self.config = config
         self.lock = threading.RLock()
+        self._device_key = secrets.token_bytes(32)
         self.on_login: Callable[[int, int], None] | None = None
         self.on_close: Callable[[int, str], None] | None = None
+
+    def upload_device(self, digest: str) -> str:
+        signature = hmac.digest(self._device_key, digest.encode(), "sha256").hex()
+        return digest + "." + signature
 
     def _failed_login(self, username: str, host: str) -> None:
         with self.database.session() as session:
@@ -141,6 +148,8 @@ class AuthService:
                 if user is None or not user.enabled:
                     failure = AppError("login_required", "账号已停用，请重新登录", 401)
                 elif is_expired(login.expires_at):
+                    if self.pool.is_pinned(login.id):
+                        raise AppError("session_expired", "登录已过期，请重新登录", 401)
                     failure = AppError("session_expired", "登录已过期，请重新登录", 401)
                 elif require_nas:
                     try:
@@ -157,10 +166,15 @@ class AuthService:
             assert user is not None
             return LoginContext(user, login.id)
 
-    def logout(self, token: str, host: str) -> None:
+    def logout(self, token: str, host: str, device: str = "") -> None:
+        digest = token_hash(token)
+        if not token and len(device) == 129 and device.isascii():
+            candidate = device[:64]
+            if secrets.compare_digest(device, self.upload_device(candidate)):
+                digest = candidate
         with self.lock:
             with self.database.session() as session:
-                login = session.scalar(select(UserSession).where(UserSession.token_hash == token_hash(token)))
+                login = session.scalar(select(UserSession).where(UserSession.token_hash == digest))
                 if login is None or login.revoked_at is not None:
                     raise AppError("login_required", "请先登录", 401)
                 user = session.get(User, login.user_id)
