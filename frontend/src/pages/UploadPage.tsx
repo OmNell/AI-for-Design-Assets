@@ -267,7 +267,7 @@ export function UploadPage() {
       {batch.status === '上传中断' && <Button onClick={() => { setBatch(null); navigate(`/upload?resume=${batch.id}${replaceTarget ? `&replace=${replaceTarget}` : ''}`) }}>重新拖入继续</Button>}
       {batch.status === '已暂存' && (projectId ? <Link to={`/batches/${batch.id}/operation${replaceQuery}`} className="self-center text-sm text-blue-700 underline">核对补充文件</Link> : <Link to={'/batches/' + batch.id + '/pre-descriptions'} className="ui-button ui-primary">填写主图预描述</Link>)}</div>
     {batch.termination_reason && <p className="mt-5 text-sm text-slate-600">终止原因：{batch.termination_reason}</p>}
-    {batch.status === '已暂存' && <p className="mt-5 text-emerald-800">{batch.files.length} 个文件已到达临时区，指纹已计算；空目录已保留。</p>}
+    {batch.status === '已暂存' && <p className="mt-5 text-emerald-800">{batch.files.length} 个文件已到达临时区，指纹已计算。</p>}
     {['AI 处理中', 'AI 处理失败', '待核对'].includes(batch.status) && <p className="mt-5 text-emerald-800"><a href={`/batches/${batch.id}`} className="underline underline-offset-4">查看 AI 进度与结果</a></p>}
   </Panel>}
     </div>
