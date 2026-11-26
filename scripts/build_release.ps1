@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$Version = 'v1.1.7-rc.1',
+    [string]$Version = 'v1.1.8-rc.1',
     [string]$OutputDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'dist')
 )
 $ErrorActionPreference = 'Stop'

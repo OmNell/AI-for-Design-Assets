@@ -12,7 +12,7 @@ def _version() -> str:
         if isinstance(version, str) and re.fullmatch(r"v\d+\.\d+\.\d+(?:-rc\.\d+)?", version):
             return version
         raise ValueError("发布清单中的版本号不合法")
-    return "1.1.7"
+    return "1.1.8"
 
 
 __version__ = _version()
