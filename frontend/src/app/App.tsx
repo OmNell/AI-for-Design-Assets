@@ -1,16 +1,12 @@
-import { useEffect, useState } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, Outlet, NavLink } from 'react-router'
+import { lazy, Suspense, useEffect, useState } from 'react'
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router'
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
-import { getMe, logout } from '../api/auth'
+import { getMe } from '../api/auth'
 import { getHealth } from '../api/health'
-import { roleLabels } from '../api/types'
 import { useAuthStore } from '../stores/auth'
-import { GlassProvider } from '../components/glass/GlassProvider'
-import { GlassNav } from '../components/glass/GlassNav'
-import { GlassButton } from '../components/glass/GlassButton'
-import { ModeSwitch } from '../components/glass/ModeSwitch'
+import { Shell } from './Shell'
 import { LoginPage } from '../pages/LoginPage'
-import { HomePage } from '../pages/HomePage'
+import { HomePage, TodosPage } from '../pages/HomePage'
 import { UploadPage } from '../pages/UploadPage'
 import { RolesPage } from '../pages/RolesPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
@@ -18,12 +14,31 @@ import { ComponentsPage } from '../pages/ComponentsPage'
 import { AiSettingsPage } from '../pages/AiSettingsPage'
 import { TagFieldsPage } from '../pages/TagFieldsPage'
 import { BatchDetailPage } from '../pages/BatchDetailPage'
-import { canAccess, navigation, type NavigationItem } from './navigation'
+import { PreDescriptionPage } from '../pages/PreDescriptionPage'
+import { ReviewPage } from '../pages/ReviewPage'
+import { AuditPage } from '../pages/AuditPage'
+import { QueuePage } from '../pages/QueuePage'
+import { CompanyMapPage } from '../pages/CompanyMapPage'
+import { SearchPage } from '../pages/SearchPage'
+import { AssetsPage } from '../pages/AssetsPage'
+import { ProjectPage } from '../pages/ProjectPage'
+import { ProductPage } from '../pages/ProductPage'
+import { AssetLinkPage, FilePage, FindingsPage } from '../pages/AssetLinkPage'
+import { ProjectOperationsPage, VoidedProjectsPage } from '../pages/ProjectOperationsPage'
+import { OperationPage } from '../pages/OperationPage'
+import { safeLoginReturn, canAccess, navigation, type NavigationItem } from './navigation'
+
+
+const NasSettingsPage = lazy(() => import('../pages/NasSettingsPage').then(module => ({ default: module.NasSettingsPage })))
+const MaintenancePage = lazy(() => import('../pages/MaintenancePage').then(module => ({ default: module.MaintenancePage })))
+const ArchiveRepairsPage = lazy(() => import('../pages/MaintenancePage').then(module => ({ default: module.ArchiveRepairsPage })))
 
 
 function Guard() {
   const user = useAuthStore(state => state.user)
-  return user ? <Outlet /> : <Navigate to="/login" replace />
+  const location = useLocation()
+  const returnTo = safeLoginReturn(location.pathname) ? location.pathname : undefined
+  return user ? <Outlet /> : <Navigate to="/login" state={{ returnTo }} replace />
 }
 function RoleGuard({ item, children }: { item: NavigationItem; children: React.ReactNode }) {
   const user = useAuthStore(state => state.user)!
@@ -32,29 +47,6 @@ function RoleGuard({ item, children }: { item: NavigationItem; children: React.R
 function DevComponents() {
   const health = useQuery({ queryKey: ['health'], queryFn: () => getHealth() })
   return health.isPending ? <p>正在加载…</p> : health.data?.mode === 'dev' ? <ComponentsPage /> : <Navigate to="/" replace />
-}
-function Shell() {
-  const user = useAuthStore(state => state.user)!
-  const query = useQueryClient()
-  const health = useQuery({ queryKey: ['health'], queryFn: () => getHealth() })
-  const [error, setError] = useState('')
-  const [exiting, setExiting] = useState(false)
-  const exit = async () => {
-    setExiting(true)
-    try { await logout(); query.clear(); useAuthStore.getState().clear() }
-    catch (reason: unknown) { setError(reason instanceof Error ? reason.message : '退出失败，请稍后重试') }
-    finally { setExiting(false) }
-  }
-  return <div className="mx-auto min-h-screen max-w-[1440px] px-10 py-7">
-    <header className="mb-9"><div className="mb-5 flex items-center justify-between">
-      <div className="flex items-center gap-3"><span className="brand-mark">档</span><span className="text-sm font-semibold tracking-widest">设计资产工作台</span></div>
-      <div className="flex items-center gap-4"><span className="text-sm">{user.display_name || user.username}<span className="ml-3 text-xs text-slate-500">{user.roles.map(role => roleLabels[role]).join(' / ')}</span></span>
-        <GlassButton onClick={exit} disabled={exiting}>退出</GlassButton><ModeSwitch /></div></div>
-      <GlassNav><div className="flex flex-wrap items-center gap-x-7 gap-y-3 text-sm">{navigation.filter(item => canAccess(user.roles, item)).map(item =>
-        <NavLink key={item.path} to={item.path} end={item.path === '/'} className={({ isActive }) => isActive ? 'font-semibold text-emerald-900' : 'text-slate-600 hover:text-emerald-800'}>{item.label}</NavLink>)}
-        {health.data?.mode === 'dev' && <NavLink to="/components" className="text-slate-600">组件样例</NavLink>}</div></GlassNav>
-    </header>{error && <p role="alert" className="mb-5 text-red-800">{error}</p>}<main><Outlet /></main>
-  </div>
 }
 function AuthBootstrap() {
   const initialized = useAuthStore(state => state.initialized)
@@ -71,15 +63,30 @@ function AuthBootstrap() {
   return <Routes><Route path="/login" element={<LoginPage />} />
     <Route element={<Guard />}><Route element={<Shell />}>
       <Route index element={<HomePage />} />
-      {navigation.filter(item => item.path !== '/').map(item => <Route key={item.path} path={item.path} element={<RoleGuard item={item}>
-        {item.path === '/admin/roles' ? <RolesPage /> : item.path === '/upload' ? <UploadPage /> : item.path === '/settings' ? <AiSettingsPage /> : <PlaceholderPage title={item.label} />}
+      <Route path="/todos" element={<TodosPage />} />
+      {navigation.filter(item => item.path !== '/' && item.path !== '/todos').map(item => <Route key={item.path} path={item.path} element={<RoleGuard item={item}>
+        {item.path === '/search' ? <SearchPage /> : item.path === '/projects' ? <AssetsPage /> : item.path === '/admin/roles' ? <RolesPage /> : item.path === '/upload' ? <UploadPage /> : item.path === '/admin/nas-settings' ? <Suspense fallback={<p role="status">正在加载 NAS 存储设置…</p>}><NasSettingsPage /></Suspense> : item.path === '/settings' ? <AiSettingsPage /> : item.path === '/first-review' ? <QueuePage stage="first" /> : item.path === '/final-review' ? <QueuePage stage="final" /> : <PlaceholderPage title={item.label} />}
       </RoleGuard>} />)}
+      <Route path="/admin/maintenance" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><Suspense fallback={<p role="status">正在读取维护页面…</p>}><MaintenancePage /></Suspense></RoleGuard>} />
+      <Route path="/archive/repairs" element={<RoleGuard item={navigation.find(item => item.path === '/final-review')!}><Suspense fallback={<p role="status">正在读取修复申请…</p>}><ArchiveRepairsPage /></Suspense></RoleGuard>} />
       <Route path="/admin/tag-fields" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><TagFieldsPage /></RoleGuard>} />
+      <Route path="/projects/:id" element={<ProjectPage />} />
+      <Route path="/projects/voided" element={<VoidedProjectsPage />} />
+      <Route path="/projects/:id/operations" element={<ProjectOperationsPage />} />
+      <Route path="/batches/:id/operation" element={<OperationPage />} />
+      <Route path="/products/:id" element={<ProductPage />} />
+      <Route path="/files/:id" element={<FilePage />} />
+      <Route path="/l/:linkId" element={<AssetLinkPage />} />
+      <Route path="/admin/asset-findings" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><FindingsPage /></RoleGuard>} />
       <Route path="/batches/:id" element={<BatchDetailPage />} />
+      <Route path="/batches/:id/pre-descriptions" element={<PreDescriptionPage />} />
+      <Route path="/batches/:id/review" element={<ReviewPage />} />
+      <Route path="/review/:id" element={<AuditPage />} />
+      <Route path="/admin/company-map" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><CompanyMapPage /></RoleGuard>} />
       <Route path="/components" element={<DevComponents />} /><Route path="*" element={<PlaceholderPage title="页面不存在" />} />
     </Route></Route></Routes>
 }
 export function App() {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } }))
-  return <QueryClientProvider client={queryClient}><GlassProvider><BrowserRouter><AuthBootstrap /></BrowserRouter></GlassProvider></QueryClientProvider>
+  return <QueryClientProvider client={queryClient}><BrowserRouter><AuthBootstrap /></BrowserRouter></QueryClientProvider>
 }

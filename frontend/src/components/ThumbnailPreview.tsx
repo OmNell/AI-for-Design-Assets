@@ -39,8 +39,8 @@ export function ThumbnailPreview({ batchId, file }: { batchId: number; file: Upl
   }, [batchId, file.id, file.fingerprint, file.thumb_status, file.thumb_error])
 
   return <div className="flex max-w-64 shrink-0 items-center gap-3">
-    {state.status === 'ready' ? <img src={state.url} alt={`${file.rel_path} 的缩略图`} width={64} height={64} className="h-16 w-16 rounded-xl bg-white/30 object-contain" onError={() => setState({ status: 'failed', message: '缩略图无法显示，请刷新重试' })} /> :
-      <span className={`flex min-h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-white/25 p-2 text-center text-xs ${state.status === 'failed' ? 'text-amber-800' : 'text-slate-500'}`} aria-hidden="true">{state.status === 'failed' ? '缩略图失败' : '生成中'}</span>}
+    {state.status === 'ready' ? <img src={state.url} alt={`${file.rel_path} 的缩略图`} width={64} height={64} className="h-16 w-16 rounded-xl bg-slate-50 object-contain" onError={() => setState({ status: 'failed', message: '缩略图无法显示，请刷新重试' })} /> :
+      <span className={`flex min-h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-slate-50 p-2 text-center text-xs ${state.status === 'failed' ? 'text-amber-800' : 'text-slate-500'}`} aria-hidden="true">{state.status === 'failed' ? '缩略图失败' : '生成中'}</span>}
     {state.status !== 'ready' && <p role="status" className={`max-w-40 text-xs ${state.status === 'failed' ? 'text-amber-800' : 'text-slate-500'}`}>{state.message}</p>}
   </div>
 }

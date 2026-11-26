@@ -14,7 +14,7 @@ from smbprotocol.exceptions import SMBOSError, SMBConnectionClosed
 from app.config import NasConfig, Settings, PathsConfig
 from app.services.auth.backends import AuthUnavailable, DsmAuthBackend
 from app.services.crypto import SecretCipher
-from app.services.nas import NasAlreadyExists, NasNotFound, NasPermissionDenied, NasUnavailable, SmbFs
+from app.services.nas import NasAlreadyExists, NasNotFound, NasPermissionDenied, NasSessionExpired, NasUnavailable, SmbFs
 from app.services.nas.errors import translate
 from app.services.nas.factory import create_auth_backend, create_system_fs
 
@@ -37,38 +37,39 @@ def smb_mock(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
     return calls
 
 
-def test_smb_private_connections_retry_once_and_clear_secret(smb_mock: list[dict[str, object]], monkeypatch: pytest.MonkeyPatch) -> None:
-    a, b = SmbFs("nas", "share", "alice", "dummy-secret"), SmbFs("nas", "share", "bob", "dummy-secret")
+def test_smb_private_connections_disconnect_requires_new_login(smb_mock: list[dict[str, object]], monkeypatch: pytest.MonkeyPatch) -> None:
+    a, b = SmbFs("nas", "share", "alice", "dummy-secret"), SmbFs("nas", "share", "alice", "dummy-secret")
     assert a._cache is not b._cache
     assert a._session.connection is not b._session.connection
-    assert a._session.password is None
+    assert a._session.password is None and "_password" not in vars(a)
     listing = Mock(side_effect=[SMBConnectionClosed("断线"), ["file"]])
     monkeypatch.setattr("app.services.nas.smb.smbclient.listdir", listing)
-    assert a.list("工作台临时区") == ["file"]
-    assert listing.call_count == 2 and len(smb_mock) == 3
-    assert all(call.kwargs["connection_cache"] is a._cache for call in listing.call_args_list)
-    assert all(call.kwargs["username"] == "alice" for call in listing.call_args_list)
-    listing.side_effect = SMBConnectionClosed("仍断线")
-    listing.reset_mock()
-    with pytest.raises(NasUnavailable):
+    with pytest.raises(NasSessionExpired):
         a.list("工作台临时区")
-    assert listing.call_count == 2
-    assert len(smb_mock) == 4
+    with pytest.raises(NasSessionExpired):
+        a.list("工作台临时区")
+    assert listing.call_count == 1 and len(smb_mock) == 2
+    assert b.list("工作台临时区") == ["file"]
+    assert listing.call_args_list[0].kwargs["connection_cache"] is a._cache
+    assert listing.call_args_list[1].kwargs["connection_cache"] is b._cache
     a.close()
     b.close()
-    assert a._password is None and not a._cache and a._session is None
+    assert not a._cache and a._session is None
 
 
-def test_smb_dead_before_mutation_reconnects_but_uncertain_mutation_not_replayed(smb_mock: list[dict[str, object]], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_smb_mutations_never_reconnect_or_replay_after_disconnect(smb_mock: list[dict[str, object]], monkeypatch: pytest.MonkeyPatch) -> None:
     fs = SmbFs("nas", "share", "alice", "dummy-secret")
     fs._session.connection.transport.connected = False
     mkdir = Mock()
     monkeypatch.setattr("app.services.nas.smb.smbclient.mkdir", mkdir)
-    fs.mkdir("工作台临时区/folder")
-    assert len(smb_mock) == 2 and mkdir.call_count == 1
+    with pytest.raises(NasSessionExpired):
+        fs.mkdir("工作台临时区/folder")
+    assert len(smb_mock) == 1 and not mkdir.called
+    fs.close()
+    fs = SmbFs("nas", "share", "alice", "dummy-secret")
     rename = Mock(side_effect=ConnectionResetError("写请求结果不确定 dummy-secret"))
     monkeypatch.setattr("app.services.nas.smb.smbclient.rename", rename)
-    with pytest.raises(NasUnavailable) as error:
+    with pytest.raises(NasSessionExpired) as error:
         fs.rename("工作台临时区/a", "工作台临时区/b")
     assert rename.call_count == 1 and len(smb_mock) == 2
     assert "dummy-secret" not in str(error.value)
@@ -94,10 +95,10 @@ def test_smb_stream_failure_not_replayed_and_blocks_reconnect(smb_mock: list[dic
     opening = Mock(return_value=raw)
     monkeypatch.setattr("app.services.nas.smb.smbclient.open_file", opening)
     with fs.open_write("工作台临时区/file", append=True) as handle:
-        with pytest.raises(NasUnavailable):
+        with pytest.raises(NasSessionExpired):
             handle.write(b"payload")
         fs._session.connection.transport.connected = False
-        with pytest.raises(NasUnavailable, match="活动文件句柄"):
+        with pytest.raises(NasSessionExpired, match="重新登录"):
             fs.list("工作台临时区")
     assert raw.write.call_count == 1 and opening.call_count == 1
     assert len(smb_mock) == 1

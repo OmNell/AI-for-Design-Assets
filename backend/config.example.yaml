@@ -5,10 +5,12 @@ server:
   host: 0.0.0.0
   port: 8080
   session_hours: 8
+  public_base_url: http://nas-workbench.company.local:8080
 nas:
   host: 192.168.0.177
   dsm_port: 5001
   dsm_https: true
+  dsm_verify_ssl: true
   share: 设计资产共享
   root_path: /设计资产
   temp_path: /工作台临时区
@@ -23,19 +25,23 @@ jobs:
 upload:
   chunk_mb: 8
   parallel_files: 3
-  full_fingerprint_max_mb: 200
+  append_max_mb: 50
+  fingerprint_algorithm: sha256
 ai:
   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api_key_enc: ""
   model_vision: ""
   model_text: ""
+  model_text_version: ""
   model_embed: ""
+  model_embed_version: ""
   concurrency: 3
   timeout_s: 60
   retries: 3
   stall_alert_min: 30
 review:
   overdue_days: 3
+  self_review_admin: ""  # 可选：按真实登录名启用单个管理员的本人首次入库自审。
 purge:
   cooling_days: 30
 schedule:

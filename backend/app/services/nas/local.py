@@ -1,6 +1,7 @@
 """开发模式的 NAS 替身；权限仅来源于该用户的配置表。"""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import BinaryIO, Mapping
 
@@ -10,16 +11,20 @@ from .paths import Access, NasPaths, Region
 
 
 class LocalFs(BaseFs):
-    def __init__(self, root: Path | str, permissions: Mapping[Region, Access], paths: NasPaths | None = None) -> None:
+    def __init__(self, root: Path | str, permissions: Mapping[Region, Access], paths: NasPaths | None = None, *,
+                 initialize: bool = True, browser_read: bool = False) -> None:
         super().__init__(paths or NasPaths(), permissions)
         self.root = Path(root).absolute()
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.browser_read = browser_read
+        if initialize:
+            self.root.mkdir(parents=True, exist_ok=True)
         if self.root.is_symlink():
             raise NasPermissionDenied("本地 NAS 根目录不能是符号链接")
         self.root = self.root.resolve()
         # 只初始化区域目录，不写入任何用户文件；确保区域根预先存在。
-        for region in Region:
-            self._path(self.paths.root(region)).mkdir(parents=True, exist_ok=True)
+        if initialize:
+            for region in Region:
+                self._path(self.paths.root(region)).mkdir(parents=True, exist_ok=True)
 
     def _path(self, path: str) -> Path:
         current = self.root
@@ -50,6 +55,14 @@ class LocalFs(BaseFs):
         if dst.exists():
             raise NasAlreadyExists("目标文件或目录已存在")
         src.rename(dst)
+
+    def _check_write_directory(self, path: str) -> None:
+        super()._check_write_directory(path)
+        if not os.access(self._path(path), os.W_OK | os.X_OK):
+            raise NasPermissionDenied("本地正式目录不可写")
+
+    def _replace(self, source: str, target: str) -> None:
+        self._path(source).replace(self._path(target))
 
     def _delete(self, path: str, recursive: bool) -> None:
         target = self._path(path)

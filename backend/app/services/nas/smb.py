@@ -4,14 +4,17 @@ from __future__ import annotations
 import errno
 import re
 import stat
+import uuid
 from typing import BinaryIO, Callable, Mapping, TypeVar, cast
 
 import smbclient
-from pydantic import SecretStr
-from smbprotocol.exceptions import SMBConnectionClosed
+from smbprotocol.connection import Connection
+from smbprotocol.exceptions import BadNetworkName, SMBConnectionClosed
+from smbprotocol.tree import TreeConnect
 from smbprotocol.session import Session
+from smbprotocol.open import DirectoryAccessMask
 
-from .errors import NasPermissionDenied, NasUnavailable, translate
+from .errors import NasNotFound, NasPermissionDenied, NasSessionExpired, translate
 from .fs import BaseFs, NasStat
 from .paths import Access, NasPaths, Region, safe_join
 
@@ -24,10 +27,44 @@ def disconnected(error: Exception) -> bool:
             or getattr(error, "status", getattr(error, "ntstatus", None)) in (0xC000020C, 0xC000020D, 0xC00000C9))
 
 
+class DirectConnection(Connection):
+    """连接只在固定服务器上收发，不解析 SMB 符号链接重定向。"""
+    def __init__(self, host: str, timeout: float) -> None:
+        super().__init__(uuid.uuid4(), host, require_signing=True)
+        self.operation_timeout = timeout
+
+    def receive(self, request, wait=True, timeout=None, resolve_symlinks=True):
+        return super().receive(request, wait, min(timeout or self.operation_timeout, self.operation_timeout), False)
+
+
+def direct_session(host: str, share: str, username: str, password: str, timeout: float) -> TreeConnect:
+    connection = DirectConnection(host, timeout)
+    try:
+        connection.connect(timeout=timeout)
+        session = Session(connection, username=username, password=password, require_encryption=False, auth_protocol="ntlm")
+        session.connect()
+        session.password = None
+        tree = TreeConnect(session, rf"\\{host}\{share}")
+        try:
+            tree.connect()
+        except BadNetworkName:
+            raise NasNotFound("SMB 共享文件夹不存在") from None
+        if tree.is_dfs_share:
+            raise NasPermissionDenied("不支持跨共享 DFS 转介")
+        return tree
+    except Exception as error:
+        if connection.transport is not None:
+            try:
+                connection.disconnect(close=False, timeout=timeout)
+            except Exception:
+                pass
+        raise translate(error) from None
+
+
 class SmbFs(BaseFs):
     def __init__(self, host: str, share: str, username: str, password: str,
                  paths: NasPaths | None = None, timeout: float = 30,
-                 permissions: Mapping[Region, Access] | None = None) -> None:
+                 permissions: Mapping[Region, Access] | None = None, *, strict_share: bool = False) -> None:
         super().__init__(paths or NasPaths(), permissions)
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", host) or "/" in safe_join(share):
             raise ValueError("NAS 地址或共享文件夹名称无效")
@@ -37,49 +74,59 @@ class SmbFs(BaseFs):
         self.share = share
         self.username = username
         self.timeout = timeout
-        self._password: SecretStr | None = SecretStr(password)
+        self.strict_share = strict_share
+        self._disconnected = False
         self._cache: dict[str, object] = {}
         self._session: Session | None = None
+        self.browser_tree: TreeConnect | None = None
         try:
-            self._connect()
+            self._connect(password)
         except Exception as error:
             self.close()
             raise translate(error) from None
 
-    def _connect(self) -> None:
-        if self._password is None:
-            raise NasUnavailable("SMB 会话凭据已清除，请重新登录")
+    def _connect(self, password: str) -> None:
+        if self.strict_share:
+            tree = direct_session(self.host, self.share, self.username, password, self.timeout)
+            self.browser_tree = tree
+            self._session = tree.session
+            self._cache[f"{self.host.lower()}:445"] = tree.session.connection
+            return
         self._session = smbclient.register_session(
-            self.host, username=self.username, password=self._password.get_secret_value(),
+            self.host, username=self.username, password=password,
             connection_cache=self._cache, connection_timeout=self.timeout,
             auth_protocol="ntlm", require_signing=True,
         )
-        # 重连凭据只在实例中存一份，不让库对象继续持有明文密码引用。
+        # 已有连接不需要登录口令；连接失效时由本人重新登录。
         self._session.password = None
 
     def _options(self) -> dict[str, object]:
         return {"username": self.username, "connection_cache": self._cache,
                 "connection_timeout": self.timeout, "auth_protocol": "ntlm", "require_signing": True}
 
-    def _reconnect(self) -> None:
-        if self._streams:
-            raise NasUnavailable("存在活动文件句柄，不能透明重连，请关闭句柄后重试")
-        smbclient.reset_connection_cache(connection_cache=self._cache, fail_on_error=False)
-        self._session = None
-        self._connect()
+    def _check_connection(self) -> None:
+        if self._disconnected or self._session is None or not self._session.connection.transport.connected:
+            raise NasSessionExpired("SMB 连接已断开，请重新登录")
+
+    def touch(self) -> None:
+        with self._lock:
+            self._check_connection()
+            super().touch()
+
+    def _run(self, action: Callable[[], T]) -> T:
+        def checked() -> T:
+            try:
+                return action()
+            except Exception as error:
+                if disconnected(error):
+                    self._disconnected = True
+                    raise NasSessionExpired("SMB 连接已断开，请重新登录") from None
+                raise
+        return super()._run(checked)
 
     def _call(self, action: Callable[[], T], retry: bool = False) -> T:
-        reconnected = False
-        if self._session is None or not self._session.connection.transport.connected:
-            self._reconnect()
-            reconnected = True
-        try:
-            return action()
-        except Exception as error:
-            if retry and not reconnected and disconnected(error):
-                self._reconnect()
-                return action()
-            raise
+        self._check_connection()
+        return action()
 
     def _unc(self, path: str) -> str:
         # 禁止重解析点/符号链接把受限目录重定向到其他区域或共享。
@@ -89,7 +136,6 @@ class SmbFs(BaseFs):
             try:
                 info = smbclient.lstat(prefix, **self._options())
             except OSError as error:
-                from .errors import NasNotFound
                 if isinstance(translate(error), NasNotFound):
                     break
                 raise
@@ -105,7 +151,11 @@ class SmbFs(BaseFs):
         return NasStat(info.st_size, stat.S_ISDIR(info.st_mode), info.st_mtime)
 
     def _open_raw(self, path: str, mode: str) -> BinaryIO:
-        return cast(BinaryIO, smbclient.open_file(self._unc(path), mode=mode, **self._options()))
+        options = self._options()
+        if mode == "rb":
+            # 同一文件可以同时供多位访问者读取。传输期间拒绝更改或删除已打开的文件。
+            options["share_access"] = "r"
+        return cast(BinaryIO, smbclient.open_file(self._unc(path), mode=mode, **options))
 
     def _mkdir(self, path: str, recursive: bool) -> None:
         if recursive:
@@ -115,6 +165,15 @@ class SmbFs(BaseFs):
 
     def _rename(self, source: str, target: str) -> None:
         smbclient.rename(self._unc(source), self._unc(target), **self._options())
+
+    def _check_write_directory(self, path: str) -> None:
+        rights = DirectoryAccessMask.FILE_ADD_FILE | DirectoryAccessMask.FILE_ADD_SUBDIRECTORY
+        with smbclient.open_file(self._unc(path), mode="rb", buffering=0, desired_access=rights,
+                                 file_type="dir", share_access="rwd", **self._options()):
+            pass
+
+    def _replace(self, source: str, target: str) -> None:
+        smbclient.replace(self._unc(source), self._unc(target), **self._options())
 
     def _delete(self, path: str, recursive: bool) -> None:
         target = self._unc(path)
@@ -131,6 +190,6 @@ class SmbFs(BaseFs):
         try:
             smbclient.reset_connection_cache(connection_cache=self._cache, fail_on_error=True)
         finally:
-            self._password = None
             self._session = None
+            self.browser_tree = None
             self._cache.clear()

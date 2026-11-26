@@ -1,6 +1,7 @@
 """管理员保存 AI 连接设置；密钥只以 Fernet 密文进入 settings。"""
 from __future__ import annotations
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -51,6 +52,14 @@ class AiSettingsService:
     def save(self, actor: User, body: AiSettingsWrite, host: str) -> AiSettingsResponse:
         with self.auth.lock, self.auth.database.session() as session:
             require_admin(session, actor)
+            if self.auth.config.mode == "prod":
+                try:
+                    url = httpx.URL(body.base_url)
+                    valid_url = url.scheme == "https" and bool(url.host)
+                except (httpx.InvalidURL, ValueError):
+                    valid_url = False
+                if not valid_url:
+                    raise AppError("invalid_ai_url", "生产模式的百炼接口地址必须使用 HTTPS", 422)
             current = self._effective(session)
             before = self._public(current)
             values = body.model_dump(exclude={"api_key"})

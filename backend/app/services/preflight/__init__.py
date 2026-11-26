@@ -5,6 +5,7 @@ from app.services.nas.paths import safe_join
 from app.services.nas.errors import NasPermissionDenied
 
 REQUIRED = ["01定稿文件", "02设计方案", "03拍摄照片及视频", "04授权文件", "05 详情页"]
+IMAGE_NAME = re.compile(r"[^/]+\.(?:jpe?g|png)$", re.IGNORECASE)
 RESERVED = {"套装档案", "单品档案", "_历史版本", "_项目档案.txt"}
 
 
@@ -21,7 +22,7 @@ def check(folder: str, files: list[ManifestEntry], exists: bool = False, prefix_
     if len(parts) != 3 or any(not value for value in parts):
         add("P01", "block", folder, "项目文件夹名必须为 编号_企业_项目名 三段")
     if exists:
-        add("P02", "block", folder, "该项目已入库，补充功能尚未开放")
+        add("P02", "block", folder, "该项目已入库，请从项目页发起补充")
     seen: set[str] = set()
     kinds: dict[str, bool] = {}
     for path, entry in [(folder, None), *((item.rel_path, item) for item in files)]:
@@ -48,15 +49,21 @@ def check(folder: str, files: list[ManifestEntry], exists: bool = False, prefix_
             kinds[key] = entry.is_dir
             nodes = path.split("/")
             if nodes[0] in ("套装", "单品") and ((entry.is_dir and len(nodes) > 1) or
-                (not entry.is_dir and (len(nodes) != 2 or nodes[-1].split(".")[-1].lower() not in ("jpg", "jpeg", "png")))):
+                (not entry.is_dir and (len(nodes) != 2 or not IMAGE_NAME.fullmatch(nodes[-1])))):
                 add("P06", "block", path, "套装/单品中只能平铺 jpg、jpeg、png 图片")
     for path, is_dir in kinds.items():
         if not is_dir and any(other.startswith(path + "/") for other in kinds):
             add("manifest", "block", path, "文件与目录路径发生冲突")
     active = [entry for entry in files if not ignored(entry)]
-    images = [item for item in active if not item.is_dir and item.rel_path.split("/")[0] in ("套装", "单品") and len(item.rel_path.split("/")) == 2]
-    if not images:
-        add("P07", "warn", "套装/单品", "套装和单品均为空")
+    has_image = any(
+        not item.is_dir and item.size > 0
+        and item.rel_path.split("/")[0] in ("套装", "单品")
+        and item.rel_path.count("/") == 1
+        and IMAGE_NAME.fullmatch(item.rel_path.rsplit("/", 1)[-1])
+        for item in active
+    )
+    if not has_image:
+        add("P07", "block", "套装/单品", "首次入库必须有至少一张单品或套装主图")
     roots = {item.rel_path.split("/")[0] for item in active if item.is_dir or "/" in item.rel_path}
     for name in REQUIRED:
         if name not in roots:

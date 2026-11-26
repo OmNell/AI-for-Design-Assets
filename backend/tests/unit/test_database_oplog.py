@@ -10,7 +10,7 @@ from app.services.oplog import OplogService
 
 
 def test_schema_and_sqlite_pragmas(database: Database) -> None:
-    assert set(inspect(database.engine).get_table_names()) == {"users", "sessions", "settings", "oplog", "jobs", "projects", "batches", "batch_files", "preflight_acks", "alembic_version", "tag_fields", "batch_products", "company_industry_map", "ai_calls", "ai_alerts"}
+    assert set(inspect(database.engine).get_table_names()) == {"users", "sessions", "settings", "oplog", "jobs", "projects", "batches", "batch_files", "preflight_acks", "alembic_version", "tag_fields", "batch_products", "company_industry_map", "ai_calls", "ai_alerts", "h_code_sequences", "review_snapshots", "industries", "review_rounds", "review_pins", "files", "products", "product_tags", "product_relations", "history_versions", "links", "ingest_plans", "product_embeddings", "inspection_findings", "access_logs", "query_cache", "search_logs", "search_clicks", "embedding_indexes", "postop_plans", "product_embedding_history", "expected_deletions", "inspection_runs", "backup_records", "cleanup_plans"}
     with database.engine.connect() as connection:
         assert connection.scalar(text("PRAGMA journal_mode")) == "wal"
         assert connection.scalar(text("PRAGMA busy_timeout")) == 5000
@@ -65,3 +65,33 @@ def test_models_roundtrip_and_foreign_key_enforced(database: Database) -> None:
     with pytest.raises(IntegrityError):
         with database.session() as session:
             session.add(UserSession(token_hash="bad", user_id=9999, client_host="本机", expires_at=utcnow()))
+
+
+def test_project_locks_are_enforced_by_sqlite_for_all_batch_kinds(database: Database) -> None:
+    from app.db.models import Batch, Project
+
+    with database.session() as session:
+        user = User(username="测试账号")
+        project = Project(project_code="P1", company_name="企业", won=True, project_name="项目", folder_name="P1_企业_项目")
+        session.add_all([user, project]); session.flush()
+
+    def add(batch_no: str, kind: str, status: str, project_id: int | None = None) -> int:
+        with database.session() as session:
+            batch = Batch(batch_no=batch_no, project_code="P1", project_id=project_id, kind=kind, status=status,
+                          owner_id=user.id, uploader_id=user.id, temp_path="", won=True, payload={})
+            session.add(batch); session.flush()
+            return batch.id
+
+    ingest_id = add("first", "ingest", "入库异常")
+    with pytest.raises(IntegrityError, match="op_lock_key"):
+        add("duplicate", "ingest", "上传中")
+    operation_id = add("operation", "retag", "入库异常", project.id)
+    with pytest.raises(IntegrityError, match="op_lock_key"):
+        add("second", "supplement", "上传中", project.id)
+    with pytest.raises(IntegrityError, match="CHECK constraint"):
+        add("invalid", "move", "待初审")
+    with database.session() as session:
+        session.get(Batch, ingest_id).status = "已终止"
+        session.get(Batch, operation_id).status = "已入库"
+    assert add("new-ingest", "ingest", "上传中") != ingest_id
+    assert add("new-operation", "move", "待初审", project.id) != operation_id

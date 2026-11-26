@@ -1,6 +1,8 @@
 # NAS 设计资产工作台
 
-公司内网设计资产工作台。当前完成 WP00～WP06：NAS 接入、登录/角色、预检与分片上传、后台队列与缩略图，以及 AI 打标、自由文本字段管理和套装关系推荐。核对编辑、审核、补充流程与向量检索尚未开放。
+公司内网设计资产工作台。当前开发版为 **V1.1.5**，涵盖 WP00–WP14。业务流程从项目文件夹预检和分片上传开始，经主图预描述、AI 打标、人工核对和两级审核，完成正式入库后可浏览、检索与下载。
+
+如需了解当前可用功能、各阶段交付和新版改动，查看 [开发与版本变更日志](docs/CHANGELOG.md)。实现细节和验收步骤见 [开发进度](docs/PROGRESS.md)。
 
 ## 开发环境
 
@@ -51,7 +53,37 @@ npm --prefix frontend run build
 - 密钥与数据库应一并备份；已有密钥无效时会报错，不自动覆盖。删除 `data/` 并重新启动会创建全新数据库与密钥，旧密钥加密的内容无法用新密钥解密。
 - 普通 NAS 密码不写配置；`nas.system_password_enc` 和 `ai.api_key_enc` 只放密文。prod 登录时使用真实 DSM 和本人 SMB；只有显式使用系统会话才解密系统账号密码，不连接百炼。
 
-加密工具的使用（Python 代码，不要把真实凭据写入源码、命令历史或日志）：
+### Mac 本机连接真实 NAS 测试
+
+DSM 证书验证默认开启。正式环境的私有证书可通过 `nas.dsm_ca_file` 配置受信 CA。若 Mac 本机临时测试的 DSM 证书尚未受信，可以在 **Mac 源码工作副本** 中使用下面的例外。编辑独立测试配置 `~/nas-workbench-real-test/config.yaml`，把以下字段合并到现有配置中，保留 `paths`、共享名和其他设置：
+
+```yaml
+mode: prod
+server:
+  host: 127.0.0.1
+  port: 8081
+nas:
+  host: 192.168.0.177
+  dsm_port: 5001
+  dsm_https: true
+  dsm_verify_ssl: false
+```
+
+停止正在使用这份配置的旧进程。在仓库根目录执行：
+
+```sh
+npm --prefix frontend run build
+NASWB_CONFIG="$HOME/nas-workbench-real-test/config.yaml" \
+  NASWB_MAC_LOCAL_DSM_TEST=1 .venv/bin/python -m app
+```
+
+打开 <http://127.0.0.1:8081>。看到「本机测试环境：DSM 证书验证已关闭」后，使用真实 NAS 用户名和密码登录。工作台实际绑定 IPv4 回环地址，DSM 仍走 HTTPS，SMB 仍以登录人本人连接。请直接访问本机地址，避免通过转发或代理向其他设备开放测试实例。
+
+测试结束后把 `nas.dsm_verify_ssl` 改回 `true` 或删除该项，取消命令中的 `NASWB_MAC_LOCAL_DSM_TEST=1` 后重启。Windows 托管部署和发布包会拒绝该例外。
+
+### 加密工具与操作日志
+
+加密工具可在 Python 中使用。真实凭据应留在内存中。
 
 ```python
 from app.config import load_settings
@@ -95,21 +127,15 @@ python -m alembic -c backend/alembic.ini current
 curl http://localhost:8080/api/health
 ```
 
-成功示例：`{"version":"0.1.0","mode":"dev","database_available":true}`。数据库不可用时返回 503；所有 API 错误采用 `{code,message,detail}`，不返回内部异常、配置或请求体。非 `/api` 页面路由回退 `index.html`，未知 API 和缺失 `/assets/` 资源返回结构化 404，前端未构建时首页为 404，health 仍可用。
+成功示例：`{"version":"1.1.5","mode":"dev","database_available":true,"dsm_verify_ssl":true}`。数据库不可用时返回 503；所有 API 错误采用 `{code,message,detail}`，不返回内部异常、配置或请求体。非 `/api` 页面路由回退 `index.html`，未知 API 和缺失 `/assets/` 资源返回结构化 404，前端未构建时首页为 404，health 仍可用。
 
 重建验收：停止后端，将开发环境的 `data/` 移至临时备份位置或删除，再启动；应自动生成新数据库及新密钥，health 恢复正常。此操作仅针对可丢弃的开发数据。
 
-## 前端兼容性
+## 前端工作台
 
-`liquid-glass-react@1.1.1` 的 npm 发布包将 peerDependencies 写为 React >=19，但[上游修复提交](https://github.com/rdev/liquid-glass-react/commit/fff31be69fc674ebb71070a0f3e45659d66a5560)已改为 >=18。项目保留 React/ReactDOM 18.3.1，针对固定版本使用 npm overrides 指向根依赖，不修改库源码，不再使用全局 legacy-peer-deps。干净 `npm ci` 与 `npm ls react react-dom liquid-glass-react` 均可成功。
+界面采用 React 18、Tailwind CSS 3.4 和项目内的共享 UI 组件。页面以 Chrome 与 Edge 桌面环境为主。登录后进入工作台首页，使用左侧导航进入资产、入库、待办与检索。资产浏览支持目录筛选、列表与缩略图切换，以及选中对象的侧栏详情。固定永久链接、权限和已有下载接口沿用现有实现。
 
-玻璃效果统一经 `src/components/glass/GlassSurface.tsx` 封装：Chrome/Edge 使用库的真实 SVG 位移、色散和鼠标高光，装饰层与正文分开，避免文字变形与点击被遮挡。ResizeObserver 让滤镜随容器尺寸更新，正文节点保持不变。
-
-- full：导航、主要按钮、卡片及次要条目均使用实时滤镜。
-- lite：导航、主要按钮、卡片保留玻璃效果；次要条目使用 Tailwind 半透明样式，不挂载 SVG 滤镜。
-- 右上角可切换，偏好存于 localStorage，刷新保持。Safari/Firefox 默认 lite，其 SVG 背景位移支持不完整，使用 CSS 毛玻璃；不把这些浏览器的折射效果宣称为与 Chrome 相同。
-
-本地验证：`npm --prefix frontend run check` 包含真实库的 React 18 DOM 集成测试，验证滤镜绑定、唯一 ID、模式切换、正文保留、尺寸变化及兼容回退。DOM 测试不能代替像素渲染；已另外在本机 Chrome 检查完整/轻量画面及刷新持久化。Safari/Firefox 和 Edge 的实际画面仍需现场验收。
+`npm --prefix frontend run check` 执行 Vitest、TypeScript 检查和 Vite 生产构建。管理和审核操作的验证步骤见 `docs/PROGRESS.md`。
 
 技术文档见 `docs/`，进度及手动验收记录见 `docs/PROGRESS.md`；NAS 探路详见 `scripts/probe/README.md`。
 
@@ -170,8 +196,8 @@ with create_session_pool(config) as pool:
 - 禁止删除/改名三个区域根；LocalFs 拒绝符号链接/联接点，SmbFs 拒绝路径上的重解析点。不接受 DFS、其他服务器/共享文件夹路径；LocalFs 是受控开发模拟器，不作为多用户本机操作系统沙箱。
 - 统一异常为 `NasPermissionDenied`、`NasNotFound`、`NasAlreadyExists`、`NasUnavailable`；错误消息为中文，不包含原始凭据或上游请求对象。
 - `SessionPool.open/get/close/system` 线程安全；取不存在或空闲过期的用户会话抛 `NasSessionExpired`，要求重新登录。池有后台回收线程，默认每 30 秒扫一次，`get` 也会同步检查。`get` 和实际文件操作均刷新活动时间；打开的文件流阻止空闲回收，使用完必须关闭。应用结束调用 `shutdown()`，或使用上下文管理器。
-- 每个 SmbFs 以本人凭据、私有缓存建立独立 SMB 连接；使用 NTLM 并要求签名。为了重连，密码只保留在活动实例的内存 SecretStr 中，不落盘/写日志，关闭或超时清除引用；Python 字符串不能保证物理内存擦除。DSM SID 不能替代 SMB 密码。
-- 每次操作发现连接已断可先重连一次；安全的 `list/stat/exists/open_read` 建立句柄阶段遇到连接故障可重连重试一次。**已发送的变更、流内读写不自动重放**，否则可能重复追加或无法判断 rename 是否完成；活动流存在时不替换底层连接。关闭流后由上层核对大小/状态再按偏移恢复。
+- 每个 SmbFs 以本人凭据、私有缓存建立独立 SMB 连接；使用 NTLM 并要求签名。每次登录独立建连接，会话成立后释放普通用户密码引用。DSM SID 不能替代 SMB 密码。
+- SMB 断线后返回会话失效，保存上次确认的偏移。重新登录后校对尺寸与分片边界再继续。已发出的变更和读写不自动重放。
 - `DsmAuthBackend.verify` 发现接口后 POST 登录，成功立即 POST 注销，SID/密码不保留到实例。身份拒绝返回 False；网络、协议或注销失败抛 `AuthUnavailable`。没有 OTP / Secure SignIn 交互和自动认证重试；HTTPS 默认校验证书，自签名用 `dsm_ca_file` 指定受信 CA。
 - `system()` 采用独立实例：dev 使用固定权限（正式只读、备份读写、临时无权限）；prod 解密 `nas.system_password_enc` 后建立系统账号连接，同时保留上述权限上限，实际 NAS ACL 仍须正确配置。普通用户文件操作从不回退系统账号。
 
@@ -250,31 +276,31 @@ python -m app
 
 - `/api/auth/login`：POST JSON `{username,password}`，验证后建立本人 NAS 会话、创建/读取用户并签发 256 位随机令牌；响应只有用户信息。数据库仅保存令牌 SHA-256，浏览器使用 HttpOnly、SameSite=Lax、Path=/ Cookie，有效期来自 `server.session_hours`；HTTPS 请求启用 Secure，架构中的内网 HTTP 保持可用。
 - `/api/auth/me`：GET，返回 `id/username/display_name/roles/enabled`；所有已登录接口检查有效令牌、启用状态及 NAS 会话。未知/过期令牌返回 401；NAS 会话失效返回 `nas_session_expired`，页面提示“NAS 连接已超时，请重新登录”。过期 NAS 会话对应的旧令牌被作废，重新登录不能让这些旧令牌恢复有效。
-- `/api/auth/logout`：POST，仅作废本浏览器令牌；同账号多台电脑的令牌相互独立，共享按用户维护的 NAS 连接，最后一个有效令牌退出时关闭连接。应用进程重启后，旧 Cookie 因 NAS 会话不存在而要求重新登录。
+- `/api/auth/logout`：POST，仅作废本次登录令牌并关闭对应 NAS 连接。同账号其他设备的登录与连接继续有效。应用进程重启后，旧 Cookie 因 NAS 会话不存在而要求重新登录。
 - `/api/admin/roles`：GET 全部已登记用户，PUT JSON `{user_id,roles,enabled}` 更新一人；仅 admin 可用。角色仅四种、可多选：uploader、first_reviewer、final_reviewer、admin。初审/终审继承上传能力，admin 不自动继承审核权限。停用用户即撤销其全部令牌并关闭 NAS 会话；已登录请求每次重新检查数据库角色，授予角色后重新登录即可刷新导航。
 - 管理员允许编辑自己的角色/启用状态，未增加文档没有规定的“最后一个管理员”业务限制；操作前请保留另一位可用管理员。bootstrap_admin 不会在每次登录时重新加权，重新启用需由其他管理员操作。
 - 工作台角色不能授予 NAS ACL。dev 模式从 dev_users 模拟权限，prod 仍由本人 SMB 连接和群晖 ACL 实际执行文件权限。
 - 上传及首页我的批次已在 WP04 实现；待初审、待终审、项目、搜索、设置仍为建设中占位。管理页可维护角色。组件样例 `/components` 仅 dev 模式显示，prod 直接访问跳回首页。
-- 五种玻璃组件统一位于 `src/components/glass/`：Card、Button、Panel、Modal、Nav；GlassProvider/useGlassMode 提供全局两档。full 全部实时，lite 主要壳保留玻璃、卡片/次要按钮使用半透明和模糊。60 卡片网格仅供开发比较流畅度，没有宣称达到某个 FPS 指标。
-- 退出或任一 API 返回 401 时清除内存用户及角色缓存，守卫跳转登录；令牌、用户名密码不写 localStorage（只保存视觉偏好）。表单提交后清空密码字段；活动 SMB 内存凭据生命周期仍沿用 WP02，不落盘或写日志。
+- V1.1 使用 `src/components/ui/` 的共享控件、表格、空状态及弹窗。组件样例仍是开发模式入口。
+- 退出或任一 API 返回 401 时清除内存用户及角色缓存，守卫跳转登录；令牌、用户名密码不写 localStorage。表单提交后清空密码字段；SMB 建连后释放普通用户密码。生产环境 DSM 和百炼使用 HTTPS。工作台内网 HTTP 登录页提示口令及 Cookie 明文传输风险，写接口拒绝跨站浏览器请求。
 
 手动验证：
 
 1. 浏览器打开 <http://localhost:8080>，使用 demo-uploader 登录一次再退出；用错误密码重试应提示失败。退出后访问 `/projects` 或 `/admin/roles` 应进入登录页。
 2. 用 demo-admin 登录，管理 → 角色表，给 demo-uploader 勾选初审并保存；对方重新登录后应出现“待初审”。普通账号直接请求 GET/PUT `/api/admin/roles` 返回 403。
-3. 在组件样例页打开弹窗（Escape/关闭按钮可关闭）、切换 full/lite、滚动 60 张卡片并刷新，检查偏好保持与文字/按钮清晰可用。
+3. 在开发模式的组件样例页打开弹窗，测试 Escape、关闭按钮和回到触发按钮的键盘焦点。
 4. 测试令牌和 NAS 超时的自动化用例位于 `backend/tests/integration/test_auth_roles.py`；默认测试无真实 NAS 依赖。
 5. 内网 prod 验证：配置真实 NAS 主机、共享及区域根、受信 CA 与 bootstrap_admin，`mode: prod` 后重启；在登录页输入本人真实 NAS 凭据，应完成 DSM 验证和本人 SMB 建连。本包未在真实 NAS 上执行此项，不能把 dev 测试视作通过。
 
 ## WP04 · 文件夹预检与分片上传
 
-沿用上面的安装、测试、构建和启动命令，无新依赖。重启会自动应用 `0002_upload`；升级前备份现有数据库与密钥。默认配置为：
+沿用上面的安装、测试、构建和启动命令，无新依赖。重启会自动应用最新 Alembic 迁移；升级前备份现有数据库与密钥。默认配置为：
 
 ```yaml
 upload:
   chunk_mb: 8
   parallel_files: 3
-  full_fingerprint_max_mb: 200
+  fingerprint_algorithm: sha256
 ```
 
 前端从批次响应读取分片字节数和并行文件数；主图优先，其余按文件大小递增，每个文件内部顺序发送。网络/服务暂时错误自动重试三次；409 按响应 `detail.bytes_received` 对齐。每次只读取当前分片，不把整个 2GB 文件装入内存。
@@ -282,11 +308,11 @@ upload:
 浏览器操作：
 
 1. 用拥有上传能力的 dev 账号登录，进入“上传”，先选是否中标，再拖入一个 `编号_企业_项目名` 文件夹。只能有一个顶层文件夹；Chrome/Edge 的“选择文件夹”优先使用目录选择 API，保留空目录，其他浏览器回退 `webkitdirectory`。回退无法枚举空目录，页面会提示改用拖入。
-2. 左侧树和右侧问题清单按红/黄/灰显示拦截、提醒、忽略。主图只认 jpg/jpeg/png（扩展名不区分大小写）；套装/单品必须平铺，其他目录及文件原样保留。Thumbs.db、.DS_Store、desktop.ini、`~$` 文件不上传；空文件和空目录可上传。每类提醒都需勾选“我已知晓”，后端会再次校验并记录 `preflight_acks`。
-3. 第一段恰为大写 `H` 时，可选择历史年份（默认当前年），创建时发放 `H{年份}-{四位流水}`；页面和临时区使用新名称，本地目录无需改名。已存在的正式项目编号显示“该项目已入库，补充功能尚未开放”，不能创建补充批次。
+2. 左侧树和右侧问题清单按红/黄/灰显示拦截、提醒、忽略。首次入库至少需要一张商品主图，支持 jpg/jpeg/png（扩展名不区分大小写）；套装/单品必须平铺，其他目录及文件原样保留。Thumbs.db、.DS_Store、desktop.ini、`~$` 文件不上传；空文件和空目录可上传。每类提醒都需勾选“我已知晓”，后端会再次校验并记录 `preflight_acks`。
+3. 第一段恰为大写 `H` 时，必须填写项目实际所属年份，创建时原子发放 `H{年份}-{四位流水}`；页面和临时区使用新名称，本地目录无需改名。已存在的正式项目编号显示“该项目已入库，补充功能尚未开放”，不能创建补充批次。
 4. 核对编号、企业、是否中标、文件数、总大小后上传。显示按字节统计的总进度、平均速度、预计剩余时间及逐文件状态。同账号已有活动上传时，后续批次排队；保持排队页打开会自动轮询并按顺序开始。
 5. 暂停、关闭页面或网络中断后，从首页“继续上传”重新拖入原文件夹，先比对路径、大小和浏览器修改时间（毫秒）。已完成且未变化的文件跳过，未完成的按服务端偏移续传。新增、缺失、变动及目录变化会先展示；明确确认差异后，缺失文件删除、变动文件从零重传，其他文件保留。
-6. 全部文件完成进入“已暂存”。“确认，开始 AI 处理”只改为“AI 处理中”，显示“AI 处理功能尚未开放”，不创建任务。上传中、上传中断、已暂存均可取消；使用本人会话删除该批次临时目录并改为“已撤回”。
+6. 全部文件完成进入“已暂存”。“确认，开始 AI 处理”启动打标。发起人可以在终审通过前填原因并确认终止，记录为“已终止”并释放批次锁，保留临时文件和历史。
 
 文件仅写入 `nas.temp_path/{batch_no}/{项目文件夹名}/{相对路径}`；实际根由配置和后端 ID 拼接，不接收浏览器完整 NAS 路径。所有写入、重读、截断修复和删除均通过上传人 NasFs，不使用系统账号或正式区。
 
@@ -295,25 +321,25 @@ upload:
 | 接口 | 用途 |
 |---|---|
 | POST `/api/batches/precheck` | `{folder_name,files}`；清单项为 `{rel_path,size,mtime,is_dir}`，目录可省略 size/mtime；返回解析、编号状态、问题和路径前缀字符数 |
-| POST `/api/batches` | 上述清单加 `kind: ingest`、`won`、`acks` 规则编号数组、可选 `historical_year`；返回批次及独立上传令牌 |
+| POST `/api/batches` | 上述清单加 `kind: ingest`、`won`、`acks` 规则编号数组、`historical_year`（历史 H 批次必填）；返回批次及会话绑定的上传令牌 |
 | PUT `/api/batches/{id}/files/{file_id}/chunks/{index}` | `application/octet-stream` 原始字节，index 从 0 开始；同分片重复提交先核对已存内容，不重复追加 |
 | GET `/api/batches/{id}/upload-state` | 服务端偏移、文件状态、排队及批次状态 |
 | POST `/api/batches/{id}/files/{file_id}/complete` | 校验大小、计算指纹，全部完成后已暂存 |
 | POST `/api/batches/{id}/resume` | 清单加 `acks`、可选 `accept_changes: true`；有差异时先仅返回差异，接受后重新签发令牌 |
-| POST `/api/batches/{id}/pause`、`/cancel`、`/confirm` | 暂停、撤回并删除临时目录、确认进入 AI 状态 |
+| POST `/api/batches/{id}/pause`、`/cancel`、`/confirm` | 暂停、填写 `{reason}` 后终止并保留临时目录、确认进入 AI 状态 |
 | GET `/api/batches`、`/api/batches/{id}` | 本人列表及详情 |
 
-上传令牌通过 `X-Upload-Token` 传递，仅在前端内存保留，数据库只存哈希；用于分片、完成、状态、暂停和取消，不受登录 Cookie 到期影响，仍检查账号启用状态和上传角色。结束、撤回或重新续传时旧令牌失效。NAS 本人会话在活动/排队上传期间由池保留，注销延后关闭、重新登录复用，管理员停用仍立即关闭。刷新页面、服务重启或令牌丢失后必须重新登录并重新拖入，不保存 NAS 密码来恢复连接。
+上传令牌通过 `X-Upload-Token` 传递，数据库只存哈希。分片、完成、状态和暂停均要求同一有效登录会话。已开始的分片可写到安全检查点，退出、到期或掉线后不得开启新分片。重新登录并核对清单后，从上次确认偏移继续。
 
 页面离开时尽力发送暂停；浏览器强退无法保证通知，后台每 5 秒检查，连续 60 秒没有上传/轮询请求则记“上传中断”并释放会话保留。服务停止和启动也会记录中断，包括排队批次；进度、清单、已完成指纹仍在库中。超慢网络或后台标签页冻结也可能触发中断，重新登录并续传即可。单进程部署；不要启动多个 Uvicorn worker 共享上传目录。
 
-小于等于阈值的指纹是完整 SHA-256。大文件快速指纹为 `SHA256(首4MiB || 尾4MiB || 文件大小的 ASCII 十进制)`；`batch_files.fingerprint` 存摘要，类型暂存在批次 payload。服务重启丢失增量哈希时，从 NAS 以 1MiB 块重读完整指纹；快速指纹只读首尾。NAS 已写但数据库未提交的尾部在重试/续传时截断至确认偏移，文件变短则回退至完整分片边界。NAS 和 SQLite 无法原子提交；取消或磁盘故障后如仍失败，应重新登录重试，权限/硬件问题需现场处理。
+所有上传文件均计算完整 SHA-256。服务重启后从 NAS 流式补算丢失的增量状态。旧摘要保留算法标记，继续或确认未结束批次时由本人补算，同时保留原值。NAS 已写但数据库未提交的尾部会在续传时按确认偏移校正。
 
-验收建议：在 dev 模式准备一个含中文、`05 详情页/空目录`、Thumbs.db、主图及 2GB 资料文件的项目，故意缺少 `04授权文件`。核对提醒知晓后可上传、空目录存在、垃圾文件不存在，抽查三个文件的完整 SHA-256；再测试半途关闭浏览器、重新登录/拖入续传，以及取消后临时目录消失。分别测试非三段名称、套装/单品子目录、系统保留名会拦截。`H_企业_项目名` 应获新编号。本机已验证 2GB 浏览器上传和三个完整摘要一致；真实 NAS 的 ACL、SMB 重连及性能仍需公司内网验收，不能用 dev 速度代替。
+验收建议：在 dev 模式准备一个含中文、`05 详情页/空目录`、Thumbs.db、主图及 2GB 资料文件的项目，故意缺少 `04授权文件`。核对提醒知晓后可上传、空目录存在、垃圾文件不存在，抽查三个文件的完整 SHA-256；再测试半途关闭浏览器、重新登录/拖入续传，以及终止后临时目录保留、同编号可以重新发起。分别测试非三段名称、套装/单品子目录、系统保留名会拦截。`H_企业_项目名` 应获新编号。本机已验证 2GB 浏览器上传和三个完整摘要一致；真实 NAS 的 ACL、SMB 掉线后重新登录及性能仍需公司内网验收，不能用 dev 速度代替。
 
 ## WP05 · 后台队列与三档主图缓存
 
-先更新 Python 依赖（新增约定栈内的 Pillow），然后执行全量测试、前端 check 并重启。启动自动升级到 `0003_thumbnails`。已有 config.yaml 可不修改，默认 4 个后台工作线程；要调整可增加：
+先更新 Python 依赖（新增约定栈内的 Pillow），然后执行全量测试、前端 check 并重启。启动自动应用最新 Alembic 迁移。已有 config.yaml 可不修改，默认 4 个后台工作线程；要调整可增加：
 
 ```yaml
 jobs:
@@ -322,7 +348,7 @@ jobs:
 
 `services/jobs` 使用 jobs 表与条件 UPDATE 抢占，处理函数在注册表登记。每类并发上限独立：缩略图 2、AI 类默认 3、入库/入库后操作/巡检/备份各 1。默认失败重试为 AI 类 3 次、其他 1 次，即最多执行 4/2 次；损坏图片、权限拒绝和会话缺失等明确不能重试的失败直接记录原因。定时任务到 scheduled_at 后执行。`enqueue(..., session=...)` 可与业务更新使用同一数据库事务，未提交或回滚的文件完成不会留下可执行任务。本包仅登记 thumb 处理器，未提供 AI 调用或其他业务任务。
 
-主图 complete 与 thumb 入队同事务完成，重复 complete 不重复入队。任务参数只记录批次/文件 ID 和源版本摘要，读取路径从数据库重新拼接；执行时从 SessionPool 获取上传人本人的连接，活动执行保留连接直至完成，不使用系统身份。主图范围是套装/单品下平铺的 jpg/jpeg/png；资料夹内图片不生成缓存。
+主图 complete 与 thumb 入队同事务完成，重复 complete 不重复入队。任务参数只记录批次/文件 ID 和源版本摘要，读取路径从数据库重新拼接；执行时从 SessionPool 获取任务绑定的上传人本人登录连接，活动执行保留连接直至完成，不使用系统身份。主图范围是套装/单品下平铺的 jpg/jpeg/png；资料夹内图片不生成缓存。
 
 Pillow 直接读取本人 NasFs 流，按 EXIF 方向转正，保留比例生成以下 JPEG：
 
@@ -332,12 +358,12 @@ Pillow 直接读取本人 NasFs 流，按 EXIF 方向转正，保留比例生成
 | 1600 | 同目录 `1600.jpg` | 1600px 预览图 |
 | 1024 | 同目录 `1024.jpg` | 1024px 送审图 |
 
-小于目标的小图不放大；透明图合成白底，灰度/CMYK 转 RGB，动画 PNG 取首帧。三档都移除 EXIF、ICC、XMP、原注释等元数据；本包不把任何图像发送外部。原件不在本地另存，临时目录只含派生 JPEG。三档全部发布、任务 done 后才允许访问；损坏图片在 batch_files.thumb_error 与 jobs.error 记录中文原因，不改变文件上传 done 或批次已暂存。超出 Pillow 安全像素上限的图片也会安全失败，不能以此宣称支持任意大像素源图。
+小于目标的小图不放大；透明图合成白底，灰度/CMYK 转 RGB，动画 PNG 取首帧。三档都移除 EXIF、ICC、XMP、原注释等元数据；本包不把任何图像发送外部。原件不在本地另存，临时目录只含派生 JPEG。核对主图完整指纹后发布三档，任务 done 后才允许访问；损坏图片在 batch_files.thumb_error 与 jobs.error 记录中文原因，不改变文件上传 done 或批次已暂存。超出 Pillow 安全像素上限的图片也会安全失败，不能以此宣称支持任意大像素源图。
 
 - `GET /api/batches/{id}/thumbs/{batch_file_id}/{size}`：返回 image/jpeg；仅批次 owner、该批次指定且仍具相应角色的初审/终审、管理员可访问。验证有效工作台 Cookie 与启用状态；本地缓存读取不需要仍有 NAS 连接，不接受上传令牌。使用 private/no-store，防止浏览器复用到其他账号。
-- 未生成时 404，`detail: {retryable: true}`；永久失败 404，`detail: {retryable: false, reason: "图片损坏或无法解码"}`。无对应主图、文件不属该批次或批次已撤回也为不可重试 404。非法 size 返回 422，越权 403，未登录 401。
+- 未生成时 404，`detail: {retryable: true}`；永久失败 404，`detail: {retryable: false, reason: "图片损坏或无法解码"}`。无对应主图、文件不属该批次或批次已终止也为不可重试 404。非法 size 返回 422，越权 403，未登录 401。
 - `GET /api/admin/jobs`：管理员查看 ID、类型、状态、attempts、操作人 ID、错误原因和时间，不暴露任务 payload。`POST /api/admin/jobs/{id}/retry` 仅允许失败任务重新排队，清零本轮 attempts；仍使用原 run_as_user_id，不能借管理员 NAS 连接。更改与执行状态均追加 oplog。
-- 上传进度页在每个已完成的主图行显示 300px 缩略图，生成中每秒重试；损坏显示原因。图片请求 401 只提示重新登录查看，不会清掉独立上传状态。取消、文件变化与卸载会中止图片请求并释放 Blob URL；撤回后后台任务也不能重新发布旧缓存。
+- 上传进度页在每个已完成的主图行显示 300px 缩略图，生成中每秒重试；损坏显示原因。图片请求 401 只提示重新登录查看，不会删除已接收的分片。取消、文件变化与卸载会中止图片请求并释放 Blob URL；终止后后台任务也不能重新发布旧缓存。
 
 **重启恢复需要本人身份：**running 的 thumb/AI 类恢复 queued；其他有副作用的任务标 failed 等待人工处理。缩略图仍必须读 NAS，重启后不能从磁盘找回用户密码，执行取不到连接会失败并明确记录“操作人会话已失效”。上传人重新登录后，这一原因的缩略图任务会自动重排并继续；其他失败需管理员重试。恢复/重试不影响已暂存批次，也不改变原 run_as_user_id。正常停止等待正在执行的任务完成，未开始的任务保留；强退留下的派生临时目录可在停止服务后清理 `data/thumbs/thumb-*`，不要清理原始 NAS 文件。
 
@@ -345,20 +371,20 @@ Pillow 直接读取本人 NasFs 流，按 EXIF 方向转正，保留比例生成
 
 ## WP06 · AI 打标与自由文本字段
 
-没有新依赖。更新代码后执行全部 pytest、前端 check，再重启；启动自动迁移至 `0004_ai`。dev 模式永远使用 FakeAiClient，不调用外部模型；prod 使用已保存的百炼兼容配置。设置页保存的配置优先于 config.yaml，生效于后续请求，在途请求继续使用原配置。
+没有新依赖。更新代码后执行全部 pytest、前端 check，再重启；启动自动应用最新 Alembic 迁移。dev 模式永远使用 FakeAiClient，不调用外部模型；prod 使用已保存的百炼兼容配置。设置页保存的配置优先于 config.yaml，生效于后续请求，在途请求继续使用原配置。
 
 - 管理员进入“设置”，填写接口地址、API Key、识图/文本/向量模型、并发数、超时、重试和停滞分钟数。密钥留空保留旧值；写入 settings 的只有 Fernet 密文，读取只返回 api_key_set，表单提交后清空密钥输入。接口地址不接受内嵌凭据/查询参数；服务不跟随重定向。
-- “测试连接”使用已保存配置，分别发一次最小识图、文本、向量请求，逐项显示成功/错误原文（凭据、图片、提示词脱敏）。向量只用于这一次连接测试，不写入向量库或进行向量业务。生产调用协议参考[百炼视觉兼容接口](https://www.alibabacloud.com/help/en/model-studio/qwen-vl-compatible-with-openai)、[百炼向量兼容接口](https://www.alibabacloud.com/help/en/model-studio/embedding-interfaces-compatible-with-openai)；模型和地区地址由管理员按实际账号填写。
-- 管理→标签字段支持新增、改显示名/填写说明、上移下移、启用/停用；删除仅停用。key 是历史值标识，已保存后不改；新增不同 key 等同新增字段。GET/PUT 使用完整 `{version,fields}` 清单，保存后全局版本+1，版本冲突409需刷新。没有可选值、数量上限或人工必填；停用字段历史值仍保留。
-- 初始化的11字段为 category/material/color/style/festival/audience/usage_scene/size/craft/material_name/structure。字段 hint 逐字取自业务9.5。festival 只填具体节日，不针对节日写“通用”；usage_scene 填用途/场合。当前批次开跑时保存字段说明快照；下次打标或整批重试使用最新启用字段。
+- “测试连接”使用已保存配置，分别发一次识图、文本和向量请求。识图使用临时生成的 128×128 JPEG，文本和识图需收到最终回答，向量需通过有效性校验。失败时显示连接、HTTP、模型、输出截断或响应格式的诊断，只展示已知的上游错误码和解释。测试向量用完即丢。模型和地区地址由管理员按实际账号填写。[百炼视觉兼容接口](https://www.alibabacloud.com/help/en/model-studio/qwen-vl-compatible-with-openai) · [百炼向量兼容接口](https://www.alibabacloud.com/help/en/model-studio/embedding-interfaces-compatible-with-openai)
+- 管理→标签字段固定 11 项，只能更改填写说明和顺序。PUT 提交完整版本与各字段的 `key/hint/sort_order`，实际变更后递增版本。版本冲突返回 409。旧扩展字段和旧标签仍可追溯，不参与新打标。
+- 字段为 category/material/color/style/festival/audience/usage_scene/size/craft/material_name/structure。明确无节日则留空。打标运行使用填写说明快照，新运行才读取最新配置。
 
 上传完成后点“确认，开始 AI 处理”会进入 `/batches/{id}` 只读详情：先从企业标准名/别名对照表给出行业/企业位置建议，查不到或存在歧义就“位置待定”，不调用模型猜位置。对照表本包只建表与查找，没有管理/导入页面，生产映射维护留后续工作包；开发测试通过数据库种子验证命中。推荐路径为正式区内的中标状态/行业/企业相对目录，不执行建目录或入库。
 
 所有单品先处理，全部结束后才派发套装；一次套装调用同时打标签与推荐关系。单品清单只含临时序号、名称、标签；额外元数据/停用字段不进入提示词。生产客户端不发送源文件名；已知编号、企业及别名、上传人账号、NAS配置会从候选文字/说明中去除，外发图像只取本地无EXIF且长边≤1024的JPEG。损坏或尚未恢复的送审图不能借系统身份读取NAS，也不会改用原图发送。
 
-模板位于 backend/app/prompts/item_tagging.txt、set_tagging.txt，每次按启用字段逐项列出填写说明，要求仅输出JSON。解析保留 value/ai_value 原文，缺字段补空、多字段丢弃；terms 按顿号、逗号、分号、空格、斜线拆分，去空白和重复，不统一同义词。标黄只有字段 uncertain、一图 multi_object、套装 empty_relation 三种；不做词表、标签矛盾或取值检查。关系序号不在本批单品清单中的丢弃，合法关系存 batch_product_id/source=ai，relation_confirmed 保持false，需后续人工核对。
+模板位于 backend/app/prompts/item_tagging.txt、set_tagging.txt，每次按固定字段逐项列出填写说明，要求仅输出JSON。解析保留 AI 原文。未知字段值置空并标记，不生成检索词项。多出的字段丢弃；terms 按顿号、逗号、分号、空格、斜线拆分，去空白和重复，不统一同义词。标黄只有字段 uncertain、一图 multi_object、套装 empty_relation 三种；不做词表、标签矛盾或取值检查。关系序号不在本批单品清单中的丢弃，合法关系存 batch_product_id/source=ai，relation_confirmed 保持false，需后续人工核对。
 
-部分失败仍进“待核对”，全部失败或无主图进“AI 处理失败”。详情每秒更新完成数/失败数、位置、只读标签与关系，不含编辑。上传人/管理员可整批重试；新运行代际使旧在途结果失效，未开始的旧任务取消。处理中上传人可撤回，删除本人临时目录并取消尚未执行的AI任务；已经发出的请求不能撤销，但返回结果不再写入该批次。管理员不能借重试替换原上传人的NAS身份。
+部分失败仍进“待核对”，全部失败或无主图进“AI 处理失败”。详情每秒更新完成数/失败数、位置、只读标签与关系，不含编辑。处理中或全部失败时可整批重试，进入核对后仅当前责任人可重试；新运行代际使旧在途结果失效，未开始的旧任务取消。发起人可填写原因并终止，保留临时文件并取消未执行的 AI 任务，已发请求的结果不再写入。主图视觉成功必须匹配当前完整 SHA-256，状态文字或人工标签不能替代。管理员不能借重试替换原上传人的NAS身份。
 
 每次HTTP尝试（包括重试）记录模型、用途、毫秒耗时和token用量到应用日志及 ai_calls，不保存图片、提示词、源文件名或密钥。网络重试由客户端统一控制，默认额外3次，避免与队列层叠乘；JSON解析失败另外按同一预算重新请求。429/5xx/超时可重试，401等明确失败不盲目重试；业务调用不保存可能回显输入的厂商错误正文。每5秒检查无进展时间，超过阈值为本批次本次运行新增一条 ai_alerts，管理员在设置页查看；后续进展不会删除历史异常。
 
@@ -368,7 +394,7 @@ Pillow 直接读取本人 NasFs 流，按 EXIF 方向转正，保留比例生成
 | POST `/api/settings/ai/test` | 管理员，返回 `{results:[{kind,model,success,error}]}` |
 | GET/PUT `/api/admin/tag-fields` | 管理员，完整版本化字段清单 |
 | GET `/api/admin/ai-alerts` | 管理员停滞异常列表 |
-| POST `/api/batches/{id}/retry-ai` | 上传人或管理员，处理中/待核对/AI失败可重跑 |
+| POST `/api/batches/{id}/retry-ai` | 处理中或 AI 失败时由责任人或管理员重跑，待核对时限责任人 |
 | GET `/api/batches/{id}` | 本人/责任人/指定审核人/管理员，只读进度和商品结果 |
 
 Fake触发词可用于主图文件名：`无法判断`/`uncertain`、`一图多品`/`multi`、`空关系`/`empty_relation`（套装）、`调用失败`/`fail`。普通名称返回确定的11字段与自由描述，多值terms可直接观察；名字只在假模型内存里用于选择场景。
@@ -385,3 +411,116 @@ python -m pytest backend/tests/bailian -m bailian -q -s --tb=short
 ```
 
 缺环境变量会明确失败，不会假装通过。测试先用Pillow生成无EXIF的1024 JPEG再发，报告仅临时序号和festival/usage_scene值；不要加 `--showlocals`。人工抽看节日与使用场景是否区分，需调整的说明记入 QUESTIONS.md，再通过字段管理更新。显式测试会调用真实服务并产生实际用量；本次开发没有执行真实调用。
+
+## WP07 · 上传人核对
+
+从首页的「去核对」进入三栏工作区。编辑会自动保存。每个字段单独选择「确认具体值」或「确认无法判断（留空）」。套装单独确认所选成员或无关联单品。一图多品需要显式处理。页面顶部列出剩余事项。提交后重开页面可以查看本轮冻结的版本和备注。
+
+批次接口均位于 `/api/batches/{id}` 下。写入者须为具有上传权限的当前责任人，状态须为「待核对」或「已驳回」。
+
+| 方法与相对路径 | 行为 |
+|---|---|
+| GET /products | 返回商品、字段、关系、文件清单、待处理计数；提交后读取冻结版本 |
+| PATCH /products/{pid} | 保存标签或描述草稿，按字段记录明确确认，处理一图多品 |
+| POST /products/bulk | 对选择的商品批量改值，改动的字段回到待确认 |
+| PUT /products/{pid}/relations | 保存关系，明确传 confirmed_members 或 confirmed_empty |
+| POST /products/{pid}/retry-ai | 单图重新识别，保留人工改值 |
+| POST /products、DELETE /products/{pid} | 追加主图、移至批次回收区；相关套装需复核 |
+| POST /submit | 校验当前文件与草稿，原子保存本轮版本，进入待初审 |
+
+`GET /api/tag-values` 提供当前有权查看批次的词项提示。正式商品库由 WP09 接入。管理员可通过 `PUT /api/admin/batches/{id}/owner` 在可编辑阶段交接责任人。追加主图的 multipart 大小上限由 `upload.append_max_mb` 控制，默认 50 MiB。更新后请按安装章节同步 Python 依赖。
+
+## WP08 两级审核
+
+上传人从核对页提交后，初审和终审在各自的待办队列领取批次，核对同一轮快照。每级通过前须勾完六项。驳回时填写总体意见，图片意见随该轮审核保存。责任人从首页打开已驳回批次，修改并重新提交后产生新轮次。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/review/queue?stage=first` 或 `final` | 对应阶段队列及等待时长 |
+| `GET /api/review/{batch_id}` | 冻结版本、审批历史、领取状态和本次操作使用的 `version` |
+| `POST /api/review/{batch_id}/claim`、`/release` | 领取、释放该阶段的审核 |
+| `PUT /api/review/{batch_id}/pins`、`/path` | 暂存本轮意见、终审核定目录 |
+| `POST /api/review/{batch_id}/pass`、`/reject` | 提交六项清单或总体驳回意见。驳回可同时提交最终钉点 |
+| `GET/PUT /api/admin/company-map`、`GET /api/catalog/tree` | 管理员维护行业、标准名与别名，登录用户读取目录树 |
+| `GET /api/todos` | 当前账号各类待办数和对应批次 |
+
+审核写请求均携带最近一次读到的 `X-Review-Version`。发生版本冲突返回 409，重新读取后再核对。已有决定的审核记录、钉点与提交快照由 SQLite 触发器保护。
+
+终审通过后，入库任务从「入库中」开始。供入库任务读取的数据包括同轮 `snapshot_id`、文件 SHA-256、终审 `reviewer_id` 和 `execution_session_id`、核定的 `batches.final_path` 及 `review_rounds.path_change.after` 中的企业和中标状态。该路径相对于配置的正式区域根目录。设备会话失效时需要终审本人重新认证。
+
+## WP09 正式入库
+
+在 `server.public_base_url` 配置公司 IT 分配的固定内网域名与端口。生产模式使用管理员已配置的百炼向量模型与密钥。供应商若在同一模型名下发布新版本，可用 `ai.model_embed_version` 标记版本。项目在当前正式模型下通过完整向量校验后发布，已有正式模型时改模型须经 WP11 的索引迁移。
+
+终审用本人 NAS 账号核定目录并通过。审核页和批次详情页显示九步进度。入库异常时，原终审重新登录后在审核页点击「继续入库」。系统依照快照、文件 SHA-256、发号记录、正式档案和已有向量继续。若 SMB 拒绝同卷 rename，需由管理员核查 NAS 布局和权限。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/review/{batch_id}/ingest` | 相关提交人、审核人和管理员查看步骤、文件数和向量进度 |
+| `POST /api/review/{batch_id}/resume-ingest` | 原终审使用当前设备的有效 NAS 会话继续入库 |
+| `GET /l/{link_id}` | 以访问者 NAS 权限解析项目、商品或文件的稳定身份，返回 JSON |
+
+升级生产前，应停服务并使用 SQLite 一致性快照备份 `app.db`，另备份现用 `config.yaml` 与 `secret.key`。可先用隔离副本运行应用迁移到 `0016_catalog`，检查原有 ID 和 `PRAGMA foreign_key_check`。如升级后尚未开始新入库，可停服务恢复升级前的备份。已开始新入库时，应一并保留新版 SQLite 和 NAS 档案，避免回滚后丢掉已预分配的永久链接。
+
+## WP10 项目浏览、预览和下载
+
+登录后，从「项目」按编号、名称或企业及别名查找，可用行业、中标状态和排序筛选。项目页展示单品、套装及五个资料夹，商品页展示 11 个已确认标签、主图和关系。永久链接使用 `server.public_base_url`，登录后打开原项目、当前商品或原文件身份。作废文件保留历史状态，已物理删除的文件显示状态说明。
+
+- `GET /api/projects`、`GET /api/projects/{id}`、`GET /api/projects/{id}/files?category=…`、`GET /api/products/{id}` 提供正式目录视图。
+- `GET /api/files/{id}/preview` 支持 JPEG、PNG，经当前设备的 NAS 会话鉴权。原图可单独打开，其他格式可下载。缩略图接口为 `GET /api/thumbs/{product_id}/{size}`。
+- 下载使用 `GET /api/files/{id}/download`，支持单段、开放尾端和后缀 Range；范围无效返回 416 并带文件大小。发送前从同一 NAS 读句柄流式核验完整 SHA-256。文件大时需等待核验，服务端保持固定大小缓冲。
+- 批量入口 `POST /api/files/download-many` 逐项返回通过校验的下载地址或失败原因。页面按顺序触发浏览器下载，显示服务端发送结果。首次批量操作时，浏览器可能提示允许此站点自动下载多个文件。
+- `GET /api/l/{link_id}` 返回既有链接解析结构。旧 `/l/{link_id}` JSON 调用保留兼容，浏览器导航进入工作台页面。
+- 检测到内容变化时，页面警告后可授权查看当前 NAS 内容。唯一身份确认后的物理路径校正、内容变化或无法唯一定位的文件会进入管理员待办。
+
+迁移头为 `0017_asset_access`。升级生产前沿用 WP09 的停机与一致性快照备份流程，核验原项目、商品、文件与链接 ID 和 SQLite 外键后再恢复服务。
+
+## WP11 商品与项目检索
+
+搜索页支持商品编号、立项编号和自然语言，可按行业、企业或中标状态筛选。精确编号只查 SQLite。自然语言检索将确认字段的关键词召回与正式向量召回合并，可取消某个查询条件后重搜。解释、向量或排序不可用时，页面显示原因，并返回已核实的可访问结果。
+
+- `POST /api/search` 查询，`POST /api/search/click` 记录点击。结果使用 WP10 页面和固定内网永久链接。
+- 管理员在 AI 设置页查看正式、候选和可回滚索引。先构建并检查覆盖率，再切换。切换与回滚都会核对当前有效商品的模型身份、维度、文本哈希和覆盖率。
+- 既有 SQLite 向量 BLOB 是数据源。常规安装包含 NumPy。若平台支持，可运行 `python -m pip install -e "./backend[vector]"` 启用 sqlite-vec，服务会优先使用已加载扩展。
+- 首次正式入库使用已配置的初始向量模型。正式代次一旦建立，由索引指针决定当前查询和新项目的入库模型。升级时应使用供应商能够同时调用的确切模型 ID。自填版本用于识别代次，供应商实际接收的仍是模型 ID。
+- 查询理解缓存包含查询文本、字段说明与版本、文本模型及 `ai.model_text_version`。企业标识、账号、NAS 路径和已知凭据在外发文本中剔除。
+
+开发考卷可通过 `python -m pytest backend/tests/integration/test_hybrid_search.py::test_search_exam_demo -s` 重现。业务方填写真实题库后，用同一个验收账号运行双模式考卷。
+
+```bash
+python scripts/run_exam.py --url http://固定内网入口:8080 --user 验收账号 --exam 真实题库.yaml --mode both
+```
+
+脚本从终端读取密码。默认 `--mode both`，也可使用 `--mode quick` 或 `--mode semantic` 单独测试。JSON 的 `modes` 按模式分别记录候选召回、Top 3、Top 10、无结果正确率、平均及 P95 耗时、AI 降级、接口错误、模型调用及 token 用量。两种模式跑同一套题，准确率统计包含请求失败的题。耗时依据成功请求测量，包含考卷额外的候选权限检查。候选召回在页面数量截断前统计，每类最多 60 个有权查看的候选。传入每百万输入及输出 token 单价后会估算费用。接口错误或快速匹配出现模型调用时，命令返回非零。
+
+Alembic 头为 `0018_search`。生产升级前沿用一致性数据库快照流程，保留原向量及正式模型指针。
+
+## 巡检与备份恢复（WP13）
+
+管理员可在「管理 → 运营管理」查看巡检、手动备份和核对清理清单。定时任务采用中国标准时间，默认为 02:00 巡检、03:00 备份。备份包包含恢复密钥，请限制备份目录读取和备份下载权限。
+
+确认目标实例已经停止后，可将一个备份包验证并解到新目录：
+
+```bash
+python scripts/restore_backup.py wb-backup-20261119-0300.zip --service-stopped
+```
+
+默认目标为系统临时目录。也可传 `--target` 指定尚不存在的目录，其父目录需要已存在。工具核验归档结构、配置、密钥、SQLite 完整性及原有资产身份。在隔离实例启动前，将 `NASWB_PATHS__DATA_DIR` 指向目标的 `data/`，核对配置路径、外部证书、环境变量及 NAS 环境。
+
+## Windows 候选版本与上线验收
+
+从仓库构建候选 ZIP，请使用 Python 3.12、与锁文件兼容的 Node 22.12+ 及 npm 10+，运行 `scripts/build_release.ps1` 或 `python scripts/build_release.py`。候选包包含 Vite 产物，目标 Windows 主机无需 Node。
+
+部署、升级、回滚、自检和两类恢复操作详见 [Windows 部署运维手册](deploy/README.md)。自动化范围、性能和现场待验项见 [V1 候选验收报告](docs/V1-验收报告.md) 与 [50 项确认规则覆盖矩阵](docs/V1-规则覆盖矩阵.md)。
+
+## V1.1.2 · NAS 实时文件浏览
+
+管理员先在「NAS 存储设置」配置工作目录并完成应用重启。用户用本人账号登录后进入「全部资产 → NAS 文件浏览」。展开目录树或打开中间文件夹，按名称、类型、大小或修改时间查找。选择 JPEG 或 PNG 可查看缩小后的预览，其他格式可下载。右栏可复制显示路径。
+
+- 默认打开 NAS 文件浏览，浏览器保存手动选择。「已入库资产」保留原项目和搜索数据。SQLite 的项目列表为空时仍能浏览 NAS。
+- 浏览使用当前设备的本人 SMB 会话。工作目录之外、工作台临时区、备份区以及重解析点不可访问。目录可见性由当前 SMB 账号的枚举权限决定，详情、预览和下载再次检查目标读取权限。若要求隐藏 NAS 本身仍枚举的无权限名称，由 NAS 管理员设置共享的访问权限枚举。
+- 分页每次最多显示 60 项，查询范围为当前一级。目录变化会反映在下一次查询中，可刷新并返回第一页。预览限制为 48 MiB 和 2400 万像素，超限文件仍可授权下载。
+- 下载支持单个 HTTP 字节范围。有 `If-Range` 的请求回退完整下载，因为 NAS 原始文件没有已校验的内容 ETag。下载记录进入现有操作日志。
+- 在 dev 模式模拟时，配置一个工作根及对应三区，在本机模拟共享预建目录，并给需要浏览的假账号增加 `nas_browser_read: true`。其正式区访问仍依照该账号的 `permissions.formal`。
+
+真实 NAS 只读验收时，在「全部资产」分别打开 NAS 与已入库两种来源。先核对项目列表可为空，再试中文目录、子目录、JPEG/PNG 预览、非图片下载和没有权限的目录。使用另一个已授权测试账号对照读权限，并核对临时区和备份区不可见。查看现有操作日志核对下载记录。

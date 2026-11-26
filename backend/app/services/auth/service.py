@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import secrets
 import threading
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from app.config import Settings
 from app.db.database import Database
@@ -18,6 +20,7 @@ from app.services.auth.backends import AuthBackend, AuthUnavailable
 from app.services.nas import NasPermissionDenied, NasSessionExpired, NasUnavailable, SessionPool
 from app.services.oplog import OplogService
 
+UPLOAD_DEVICE_COOKIE = "nas_upload_device"
 COOKIE_NAME = "nas_workbench_session"
 
 
@@ -29,6 +32,12 @@ def is_expired(value: datetime) -> bool:
     return value.replace(tzinfo=timezone.utc) <= utcnow()
 
 
+@dataclass(frozen=True)
+class LoginContext:
+    user: User
+    session_id: int
+
+
 class AuthService:
     def __init__(self, database: Database, pool: SessionPool, backend: AuthBackend, config: Settings) -> None:
         self.database = database
@@ -36,7 +45,13 @@ class AuthService:
         self.backend = backend
         self.config = config
         self.lock = threading.RLock()
-        self.on_login: Callable[[int], None] | None = None
+        self._device_key = secrets.token_bytes(32)
+        self.on_login: Callable[[int, int], None] | None = None
+        self.on_close: Callable[[int, str], None] | None = None
+
+    def upload_device(self, digest: str) -> str:
+        signature = hmac.digest(self._device_key, digest.encode(), "sha256").hex()
+        return digest + "." + signature
 
     def _failed_login(self, username: str, host: str) -> None:
         with self.database.session() as session:
@@ -60,8 +75,7 @@ class AuthService:
             if disabled:
                 self._failed_login(username, host)
                 raise AppError("user_disabled", "账号已停用，请联系管理员", 403)
-            opened = False
-            user_id: int | None = None
+            opened_id: int | None = None
             try:
                 with self.database.session() as session:
                     user = session.scalar(select(User).where(User.username == username))
@@ -72,19 +86,19 @@ class AuthService:
                         user = User(username=username, roles=roles, enabled=True)
                         session.add(user)
                         session.flush()
-                    user_id = user.id
-                    self.pool.open(user.id, username, password)
-                    opened = True
                     token = secrets.token_urlsafe(32)
                     expires = utcnow() + timedelta(hours=self.config.server.session_hours)
-                    session.add(UserSession(token_hash=token_hash(token), user_id=user.id,
-                                            client_host=host, expires_at=expires))
+                    login = UserSession(token_hash=token_hash(token), user_id=user.id, client_host=host, expires_at=expires)
+                    session.add(login)
+                    session.flush()
+                    self.pool.open(login.id, username, password)
+                    opened_id = login.id
                     user.last_login_at = utcnow()
                     OplogService(session).write(user.id, ",".join(user.roles), "登录", "user", str(user.id),
                                                None, None, "成功", host)
                 if self.on_login is not None:
                     try:
-                        self.on_login(user.id)
+                        self.on_login(user.id, login.id)
                     except Exception:
                         logging.getLogger("nas_workbench").error("登录后的缩略图恢复未完成，可在任务列表重试")
                 return user, token, expires
@@ -94,58 +108,77 @@ class AuthService:
                 raise AppError(code, "NAS 无权限" if isinstance(error, NasPermissionDenied) else "NAS 连接暂时不可用",
                                403 if isinstance(error, NasPermissionDenied) else 503) from None
             except Exception:
-                if opened and user_id is not None:
-                    self.pool.close(user_id)
+                if opened_id is not None:
+                    self.pool.close(opened_id)
                 raise
             finally:
                 password = ""
 
-    def _close_if_unused(self, user_id: int) -> None:
-        with self.database.session() as session:
-            active = session.scalar(select(UserSession.id).where(
-                UserSession.user_id == user_id, UserSession.expires_at > utcnow()).limit(1))
-        if active is None:
-            self.pool.close(user_id)
+    def close_session(self, session_id: int, host: str, *, force: bool = False) -> None:
+        try:
+            self.pool.close(session_id, force=force)
+        except NasUnavailable:
+            logging.getLogger("nas_workbench").warning("NAS 连接关闭失败，已从会话池移除")
+        if self.on_close is not None:
+            self.on_close(session_id, host)
+
+    def disconnect(self, session_id: int, host: str) -> None:
+        with self.lock:
+            with self.database.session() as session:
+                login = session.get(UserSession, session_id)
+                if login is not None and login.revoked_at is None:
+                    login.revoked_at = utcnow()
+                    OplogService(session).write(login.user_id, "system", "NAS 会话中断", "user",
+                                               str(login.user_id), None, None, "成功", host)
+            self.close_session(session_id, host, force=True)
 
     def current(self, token: str | None, host: str, *, require_nas: bool = True) -> User:
+        return self.context(token, host, require_nas=require_nas).user
+
+    def context(self, token: str | None, host: str, *, require_nas: bool = True) -> LoginContext:
         if token is None or len(token) != 43:
             raise AppError("login_required", "请先登录", 401)
         with self.lock:
             failure: AppError | None = None
             with self.database.session() as session:
                 login = session.scalar(select(UserSession).where(UserSession.token_hash == token_hash(token)))
-                if login is None:
+                if login is None or login.revoked_at is not None:
                     raise AppError("login_required", "请先登录", 401)
                 user = session.get(User, login.user_id)
                 if user is None or not user.enabled:
-                    session.execute(delete(UserSession).where(UserSession.user_id == login.user_id))
                     failure = AppError("login_required", "账号已停用，请重新登录", 401)
                 elif is_expired(login.expires_at):
-                    session.delete(login)
+                    if self.pool.is_pinned(login.id):
+                        raise AppError("session_expired", "登录已过期，请重新登录", 401)
                     failure = AppError("session_expired", "登录已过期，请重新登录", 401)
                 elif require_nas:
                     try:
-                        self.pool.get(user.id)
+                        self.pool.get(login.id)
                     except NasSessionExpired:
-                        session.execute(delete(UserSession).where(UserSession.user_id == user.id))
                         failure = AppError("nas_session_expired", "NAS 连接已超时，请重新登录", 401)
                 if failure is not None:
-                    OplogService(session).write(user.id if user else None, ",".join(user.roles) if user else "system",
+                    login.revoked_at = utcnow()
+                    OplogService(session).write(login.user_id, ",".join(user.roles) if user else "system",
                                                "会话失效", "user", str(login.user_id), None, None, "成功", host)
             if failure is not None:
-                self._close_if_unused(login.user_id)
+                self.close_session(login.id, host)
                 raise failure
-            return user
+            assert user is not None
+            return LoginContext(user, login.id)
 
-    def logout(self, token: str, host: str) -> None:
+    def logout(self, token: str, host: str, device: str = "") -> None:
+        digest = token_hash(token)
+        if not token and len(device) == 129 and device.isascii():
+            candidate = device[:64]
+            if secrets.compare_digest(device, self.upload_device(candidate)):
+                digest = candidate
         with self.lock:
             with self.database.session() as session:
-                login = session.scalar(select(UserSession).where(UserSession.token_hash == token_hash(token)))
-                if login is None:
+                login = session.scalar(select(UserSession).where(UserSession.token_hash == digest))
+                if login is None or login.revoked_at is not None:
                     raise AppError("login_required", "请先登录", 401)
                 user = session.get(User, login.user_id)
-                user_id = login.user_id
-                session.delete(login)
-                OplogService(session).write(user_id, ",".join(user.roles), "退出登录", "user", str(user_id),
+                login.revoked_at = utcnow()
+                OplogService(session).write(login.user_id, ",".join(user.roles), "退出登录", "user", str(login.user_id),
                                            None, None, "成功", host)
-            self._close_if_unused(user_id)
+            self.close_session(login.id, host)

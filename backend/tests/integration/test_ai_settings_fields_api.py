@@ -39,20 +39,24 @@ def test_settings_get_put_encrypted_key_and_validation(admin_client: TestClient)
     assert client.put('/api/settings/ai', json={**body, "api_key": "", "base_url": "https://user:key@example.test"}).status_code == 422
 
 
-def test_fields_get_put_soft_delete_version_and_validation(admin_client: TestClient) -> None:
+def test_fields_get_put_rejects_identity_changes_and_stale_versions(admin_client: TestClient) -> None:
     client = admin_client
     response = client.get('/api/admin/tag-fields')
     assert response.status_code == 200
     before = response.json()
-    assert len(before['fields']) == 11 and before['version'] == 1
-    body = {"version": 1, "fields": [*before['fields'][1:], {"key": "custom", "label": "新增字段", "hint": "新增说明", "sort_order": 0, "enabled": True}]}
+    assert len(before['fields']) == 11
+    items = [{key: field[key] for key in ("key", "hint", "sort_order")} for field in before["fields"]]
+    body = {"version": before["version"], "fields": items}
+    for bad in (items[1:], [*items, {"key": "custom", "hint": "说明", "sort_order": 20}],
+                [{**items[0], "label": "新名"}, *items[1:]], [{**items[0], "enabled": False}, *items[1:]],
+                [items[0], items[0], *items[2:]]):
+        assert client.put('/api/admin/tag-fields', json={**body, "fields": bad}).status_code == 422
+    assert client.get('/api/admin/tag-fields').json() == before
+    items[0]["hint"] = "新的填写说明"
     response = client.put('/api/admin/tag-fields', json=body)
-    assert response.status_code == 200 and response.json()['version'] == 2
-    assert next(field for field in response.json()['fields'] if field['key'] == 'category')['enabled'] is False
+    assert response.status_code == 200 and response.json()['version'] == before["version"] + 1
+    assert response.json()['fields'][0]['hint'] == "新的填写说明"
     assert client.put('/api/admin/tag-fields', json=body).status_code == 409
-    duplicate = response.json()
-    duplicate['fields'].append(duplicate['fields'][0])
-    assert client.put('/api/admin/tag-fields', json=duplicate).status_code == 422
 
 
 def test_settings_and_fields_require_admin_and_login(admin_client: TestClient) -> None:

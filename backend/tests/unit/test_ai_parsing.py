@@ -7,7 +7,7 @@ from app.services.ai.parsing import AiResponseError, parse_result, split_terms
 from app.services.ai.prompts import build_prompt
 
 FIELDS = [{"key": "material", "label": "材质", "hint": "主要材料"},
-          {"key": "festival", "label": "节日场景", "hint": "适用的具体节日；不针对节日就写「通用」"}]
+          {"key": "festival", "label": "节日场景", "hint": "适用的具体节日；不针对节日时留空"}]
 
 
 def test_free_text_keeps_original_and_missing_extra_fields_are_tolerated() -> None:
@@ -31,7 +31,8 @@ def test_only_three_requested_yellow_flags_and_relation_ids_are_validated() -> N
         'multi_object': True, 'flags': ['任意额外标黄'], 'relation_items': [1, '2', 2, True, 1.0, 99, {}, -1, '2.0']})
     item = parse_result(raw, FIELDS)
     assert item['tags']['material']['flag'] == 'uncertain'
-    assert item['tags']['festival']['flag'] is None
+    assert item['tags']['material']['terms'] == [] and item['tags']['material']['value'] == ''
+    assert item['tags']['festival']['flag'] is None and item['tags']['festival']['value'] == ''
     assert item['flags'] == ['multi_object'] and item['relation_items'] == []
     bundle = parse_result(raw, FIELDS, 'set', {1: 101, 2: 102})
     assert bundle['flags'] == []
@@ -40,7 +41,7 @@ def test_only_three_requested_yellow_flags_and_relation_ids_are_validated() -> N
     assert empty['flags'] == ['empty_relation']
 
 
-@pytest.mark.parametrize('raw', ['not-json', '[1,2]', '{"tags":[]}', '{"tags":null}'])
+@pytest.mark.parametrize('raw', ['not-json', '[1,2]', '{"tags":[]}', '{"tags":null}', '{}', '{"tags":{"material":12}}'])
 def test_invalid_json_shape_requests_a_safe_retry(raw: str) -> None:
     with pytest.raises(AiResponseError):
         parse_result(raw, FIELDS)

@@ -1,34 +1,50 @@
 """上传状态机：所有文件操作用上传人的 NasFs，文件内容只经过有界分片。"""
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import re
 import secrets
 import threading
 import time
-from datetime import datetime, timezone, timedelta
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
+from weakref import WeakValueDictionary
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select, true
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
-from app.db.models import Batch, BatchFile, BatchProduct, PreflightAck, Project, User, utcnow
+from app.db.models import Batch, BatchFile, BatchProduct, HCodeSequence, PreflightAck, Project, User, UserSession, utcnow
 from app.errors import AppError
-from app.schemas.upload import AiProgress, BatchProductResponse, BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, ResumeRequest, UploadFileResponse
-from app.services.auth.service import AuthService, token_hash
-from app.services.nas import NasFs, NasUnavailable, Region
+from app.schemas.upload import AiProgress, Issue, BatchProductResponse, BatchResponse, CreateBatchRequest, PrecheckRequest, PrecheckResponse, PreDescriptionInput, PreDescriptionProduct, PreDescriptionView, ResumeRequest, UploadFileResponse
+from app.services.admin.company_map import match_company, recommended_path
+from app.services.auth.service import AuthService, LoginContext, is_expired, token_hash
+from app.services.nas import NasFs, NasNotFound, NasSessionExpired, NasUnavailable, Region
 from app.services.nas.factory import create_paths
 from app.services.oplog import OplogService
 from app.services.preflight import check, ignored
+from app.services.postops.supplement import active_batch_id, catalog_files, classify_file, project_for_supplement
 from .fingerprint import HashState, fingerprint
-from app.services.thumbs import ThumbService
-from app.services.ai.orchestrator import AiService
+from app.services.thumbs import ThumbService, is_main_image
+from app.services.ai.orchestrator import AiService, active_products
+from app.services.ai import pre_descriptions as descriptions
+from app.services.ai.vision import has_visual_evidence
 
 UPLOADING = "上传中"
 INTERRUPTED = "上传中断"
 STAGED = "已暂存"
-WITHDRAWN = "已撤回"
+TERMINATED = "已终止"
+TERMINATABLE = {UPLOADING, INTERRUPTED, STAGED, "AI 处理中", "AI 处理失败", "待核对", "已驳回", "待初审", "待终审"}
+H_CODE = re.compile(r"H([0-9]{4})-([0-9]{4})")
 AI = "AI 处理中"
+UPLOAD_ROLES = {"uploader", "first_reviewer", "final_reviewer"}
+
+
+@dataclass(frozen=True)
+class ContinuingUpload(LoginContext):
+    batch_id: int
+    upload_hash: str
 
 
 class UploadService:
@@ -38,10 +54,12 @@ class UploadService:
         self.ai = ai
         self.database = auth.database
         self.lock = auth.lock
-        self.paths = create_paths(auth.config)
+        self._batch_locks: WeakValueDictionary[int, threading.Lock] = WeakValueDictionary()
+        self._writing: set[int] = set()
         self.chunk_bytes = auth.config.upload.chunk_mb * 1024 * 1024
+        self.paths = create_paths(auth.config)
         self._hashes: dict[tuple[int, int], tuple[int, HashState]] = {}
-        self._pinned: set[int] = set()
+        self._pinned: dict[int, int] = {}
         self._activity: dict[int, float] = {}
         self._stop = threading.Event()
         # 重启只能保留清单/偏移，不能假装仍有浏览器和 NAS 会话。
@@ -71,38 +89,98 @@ class UploadService:
             raise AppError("forbidden", "当前账号没有上传权限", 403)
         return batch
 
-    def authorize(self, batch_id: int, token: str | None, cookie: str | None, host: str) -> User:
-        if token:
-            with self.lock, self.database.session() as session:
+    def authorize_file(self, batch_id: int, token: str | None, cookie: str | None,
+                       device: str, host: str) -> LoginContext:
+        with self.lock, self.database.session() as session:
+            sid = self._pinned.get(batch_id)
+            row = session.get(UserSession, sid) if sid is not None else None
+            if row and row.revoked_at is None and (cookie or is_expired(row.expires_at)):
                 batch = session.get(Batch, batch_id)
                 expected = batch.payload.get("upload_token_hash") if batch else None
-                if not isinstance(expected, str) or not secrets.compare_digest(expected, token_hash(token)):
-                    # 最后完成响应丢失或取消与完成竞态时，只能回退到仍有效的本人登录会话。
-                    if batch is not None and expected is None and cookie:
-                        return self.auth.current(cookie, host)
-                    raise AppError("upload_token_invalid", "上传令牌无效，请重新登录后继续上传", 401)
-                user = session.get(User, batch.uploader_id)
-                if user is None:
-                    raise AppError("login_required", "请重新登录", 401)
-                self._batch(session, batch_id, user)
-                return user
-        return self.auth.current(cookie, host)
+                if (batch and batch.upload_session_id == sid and batch.status == UPLOADING
+                        and time.monotonic() - self._activity.get(batch_id, float("-inf")) <= 60
+                        and not batch.payload.get("queued") and expected and token
+                        and secrets.compare_digest(token_hash(token), expected)
+                        and device.isascii() and secrets.compare_digest(device, self.auth.upload_device(row.token_hash))
+                        and (not cookie or token_hash(cookie) == row.token_hash)
+                        and session.scalar(select(BatchFile.id).where(BatchFile.batch_id == batch_id,
+                            BatchFile.bytes_received > 0).limit(1)) is not None):
+                    user = session.get(User, row.user_id)
+                    self._batch(session, batch_id, user)
+                    return ContinuingUpload(user, row.id, batch_id, expected)
+        return self.authorize(batch_id, token, cookie, host)
 
-    def precheck(self, body: PrecheckRequest) -> PrecheckResponse:
+    def authorize(self, batch_id: int, token: str | None, cookie: str | None, host: str) -> LoginContext:
+        login = self.auth.context(cookie, host)
+        with self.lock, self.database.session() as session:
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login, batch)
+            expected = batch.payload.get("upload_token_hash")
+            if token is not None and expected is not None and not secrets.compare_digest(expected, token_hash(token)):
+                raise AppError("upload_token_invalid", "上传凭据已变更，请重新继续上传", 409)
+        return login
+
+    @staticmethod
+    def _check_login(session: Session, login: LoginContext, batch: Batch | None = None, *,
+                     committing_chunk: bool = False) -> None:
+        row = session.get(UserSession, login.session_id)
+        can_finish = (isinstance(login, ContinuingUpload) and batch is not None
+                      and batch.id == login.batch_id and batch.status == UPLOADING
+                      and batch.payload.get("upload_token_hash") == login.upload_hash)
+        if row is None or row.user_id != login.user.id or row.revoked_at is not None or (is_expired(row.expires_at) and not (can_finish or committing_chunk)):
+            raise AppError("session_expired", "登录已过期，请重新登录", 401)
+        if batch is not None and batch.upload_session_id != login.session_id:
+            raise AppError("upload_session_mismatch", "上传绑定到其他登录会话，请重新选择文件夹继续上传", 409)
+
+    def precheck(self, body: PrecheckRequest, resume_id: int | None = None,
+                 project: Project | None = None) -> PrecheckResponse:
         parts = body.folder_name.split("_")
         parts = parts if len(parts) == 3 else ["", "", ""]
-        with self.database.session() as session:
-            exists = session.scalar(select(Project.id).where(Project.project_code == parts[0])) is not None
+        if project is None and resume_id is not None:
+            with self.database.session() as session:
+                previous = session.get(Batch, resume_id)
+                if previous is not None and previous.kind == "supplement":
+                    project = project_for_supplement(session, previous.project_id)
+        if project is None:
+            with self.database.session() as session:
+                project_id = session.scalar(select(Project.id).where(Project.project_code == parts[0]))
+                company = match_company(session, parts[1])
+                won_path, lost_path = recommended_path(company, True), recommended_path(company, False)
+                exists = project_id is not None
+                busy = self._active_ingest(session, parts[0], resume_id)
+        else:
+            won_path = lost_path = project.current_path
+            exists, busy = False, False
+            project_id = project.id
         root_name = self.paths.root(Region.TEMP)
         # 浏览器只接收前缀字符数，不接收真实 NAS 路径。
         prefix = len(f"\\\\{self.auth.config.nas.host}\\{self.auth.config.nas.share}\\{root_name}\\B00000000-000000\\")
         check_folder = ("H0000-0000" + body.folder_name[1:]) if parts[0] == "H" else body.folder_name
-        return PrecheckResponse(project_code=parts[0], company_name=parts[1], project_name=parts[2],
+        issues = check(check_folder, body.files, exists, prefix)
+        if project is not None:
+            issues = [issue for issue in issues if issue.rule_code not in {"P07", "P08", "P09"}]
+            known = {(issue.rule_code, issue.path) for issue in issues}
+            issues.extend(issue for issue in check(project.folder_name, body.files, prefix_length=prefix)
+                          if issue.level == "block" and issue.rule_code not in {"P07", "P08", "P09"}
+                          and (issue.rule_code, issue.path) not in known)
+            if parts[0] != project.project_code:
+                issues.append(Issue(rule_code="project_mismatch", level="block", path=body.folder_name,
+                                    message="文件夹中的立项编号与选择的正式项目不一致"))
+            if not any(not item.is_dir and not ignored(item) for item in body.files):
+                issues.append(Issue(rule_code="empty_supplement", level="block", path=body.folder_name,
+                                    message="请选择至少一个要补充的文件"))
+            parts = [project.project_code, project.company_name, project.project_name]
+        if busy and not exists:
+            issues.append(Issue(rule_code="P02", level="block", path=body.folder_name, message="此立项编号已有进行中的首次入库批次"))
+        return PrecheckResponse(won_path=won_path, lost_path=lost_path, project_code=parts[0], company_name=parts[1], project_name=parts[2],
                                 code_status="exists" if exists else "need_h_code" if parts[0] == "H" else "new",
-                                issues=check(check_folder, body.files, exists, prefix), path_prefix_length=prefix)
+                                issues=issues, path_prefix_length=prefix, project_id=project_id)
 
-    def _validate(self, body: PrecheckRequest, acks: list[str]) -> PrecheckResponse:
-        result = self.precheck(body)
+    def _validate(self, body: PrecheckRequest, acks: list[str], resume_id: int | None = None,
+                  project: Project | None = None) -> PrecheckResponse:
+        result = self.precheck(body, resume_id, project)
+        if result.code_status == "new" and any(issue.rule_code == "P02" for issue in result.issues):
+            raise AppError("project_busy", "此立项编号已有进行中的首次入库批次", 409)
         blocks = [issue.model_dump() for issue in result.issues if issue.level == "block"]
         if blocks:
             raise AppError("preflight_blocked", "预检未通过，请修改后重新拖入", 422, blocks)
@@ -111,21 +189,36 @@ class UploadService:
             raise AppError("acks_required", "请逐类勾选我已知晓", 422, sorted(missing))
         return result
 
+    def _chunk_size(self, batch: Batch) -> int:
+        return int(batch.payload.get("chunk_bytes", self.chunk_bytes))
+
+    def body_limit(self, batch_id: int, login: LoginContext) -> int:
+        with self.database.session() as session:
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login, batch)
+            return self._chunk_size(batch)
+
     def _snapshot(self, session: Session, batch: Batch, token: str | None = None,
                   differences: dict[str, list[str]] | None = None) -> BatchResponse:
         session.flush()
-        products = list(session.scalars(select(BatchProduct).where(BatchProduct.batch_id == batch.id).order_by(BatchProduct.id)))
+        files = list(session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id).order_by(BatchFile.id)))
+        file_by_id = {file.id: file for file in files}
+        products = active_products(session, batch.id)
+        proven = {product.id for product in products if product.batch_file_id in file_by_id
+                  and has_visual_evidence(product, file_by_id[product.batch_file_id])}
         return BatchResponse(id=batch.id, batch_no=batch.batch_no, project_code=batch.project_code,
             folder_name=str(batch.payload["folder_name"]), original_folder_name=str(batch.payload["original_folder_name"]),
             status=batch.status, queued=bool(batch.payload.get("queued")), won=batch.won, updated_at=batch.updated_at,
-            files=[UploadFileResponse.model_validate(file) for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id).order_by(BatchFile.id))],
-            directories=list(batch.payload.get("directories", [])), chunk_bytes=self.chunk_bytes,
-            parallel_files=self.auth.config.upload.parallel_files, upload_token=token, differences=differences,
+            terminated_at=batch.terminated_at, termination_reason=batch.termination_reason,
+            files=[UploadFileResponse.model_validate(file) for file in files], kind=batch.kind, project_id=batch.project_id,
+            directories=list(batch.payload.get("directories", [])), chunk_bytes=self._chunk_size(batch),
+            parallel_files=batch.payload.get("parallel_files", self.auth.config.upload.parallel_files), upload_token=token, differences=differences,
             owner_id=batch.owner_id, uploader_id=batch.uploader_id, recommended_path=batch.recommended_path,
             tag_labels={field["key"]: field["label"] for field in batch.payload.get("ai_fields", [])},
-            products=[BatchProductResponse.model_validate(product) for product in products],
-            ai_progress=AiProgress(items_total=sum(p.kind == "item" for p in products), items_done=sum(p.kind == "item" and p.ai_status == "done" for p in products),
-                sets_total=sum(p.kind == "set" for p in products), sets_done=sum(p.kind == "set" and p.ai_status == "done" for p in products),
+            products=[BatchProductResponse.model_validate(product).model_copy(update={"visual_ai_succeeded":
+                product.id in proven}) for product in products],
+            ai_progress=AiProgress(items_total=sum(p.kind == "item" for p in products), items_done=sum(p.kind == "item" and p.id in proven for p in products),
+                sets_total=sum(p.kind == "set" for p in products), sets_done=sum(p.kind == "set" and p.id in proven for p in products),
                 failed=sum(p.ai_status == "failed" for p in products)))
 
     def view(self, batch_id: int, actor: User) -> BatchResponse:
@@ -140,22 +233,112 @@ class UploadService:
                 raise AppError("forbidden", "无权查看该批次", 403)
             return self._snapshot(session, batch)
 
-    def retry_ai(self, batch_id: int, actor: User, host: str) -> BatchResponse:
+    @staticmethod
+    def _description_batch(session: Session, batch_id: int, login: LoginContext) -> tuple[Batch, User]:
+        UploadService._check_login(session, login)
+        batch = session.get(Batch, batch_id)
+        if batch is None:
+            raise AppError("batch_not_found", "批次不存在", 404)
+        user = session.get(User, login.user.id)
+        if user is None or not user.enabled or user.id != batch.owner_id or not set(user.roles) & UPLOAD_ROLES:
+            raise AppError("forbidden", "只有当前批次责任人可以填写主图描述", 403)
+        if batch.kind not in {"ingest", "supplement"}:
+            raise AppError("invalid_operation", "该批次不包含可描述的主图", 409)
+        return batch, user
+
+    @staticmethod
+    def _description_view(session: Session, batch: Batch) -> PreDescriptionView:
+        singles = batch.payload.get("ai_single", {})
+        return PreDescriptionView(batch_id=batch.id, status=batch.status, folder_name=batch.payload["folder_name"],
+            kind=batch.kind, editable=descriptions.editable(batch), products=[
+                PreDescriptionProduct(id=product.id, batch_file_id=file.id, kind=product.kind,
+                    display_name=product.display_name, file_name=file.rel_path.rsplit("/", 1)[-1],
+                    thumb_status=file.thumb_status, thumb_error=file.thumb_error, fingerprint=file.fingerprint,
+                    description=product.pre_description, version=product.pre_description_version,
+                    state=descriptions.state(product, file), ai_status=product.ai_status, ai_error=product.ai_error,
+                    visual_ai_succeeded=has_visual_evidence(product, file),
+                    ai_in_progress=batch.status == AI or str(product.id) in singles)
+                for product, file in descriptions.products_for_batch(session, batch)])
+
+    def pre_descriptions(self, batch_id: int, login: LoginContext) -> PreDescriptionView:
         with self.lock, self.database.session() as session:
+            batch, _ = self._description_batch(session, batch_id, login)
+            return self._description_view(session, batch)
+
+    def save_pre_description(self, batch_id: int, product_id: int, body: PreDescriptionInput,
+                             login: LoginContext, host: str) -> PreDescriptionView:
+        text = descriptions.validated_text(body.description)
+        with self._transfer(login, host) as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            batch, user = self._description_batch(session, batch_id, login)
+            if batch.status == AI or str(product_id) in batch.payload.get("ai_single", {}):
+                raise AppError("ai_in_progress", "这张主图正在识别，识别结束后才能修改预描述", 409)
+            if not descriptions.editable(batch):
+                raise AppError("invalid_batch_state", "只有未提交的待处理批次可以编辑主图描述", 409)
+            product = session.get(BatchProduct, product_id)
+            file = session.get(BatchFile, product.batch_file_id) if product and product.batch_id == batch.id else None
+            if not file or file.batch_id != batch.id or not descriptions.is_completed_main(file):
+                raise AppError("product_not_found", "主图不存在、已移除或尚未完成上传", 404)
+            if product.pre_description_version != body.version or file.fingerprint != body.fingerprint:
+                raise AppError("pre_description_changed", "描述或主图已变化，请刷新后重新确认", 409)
+            if not descriptions.valid_fingerprint(file):
+                self._upgrade_fingerprint(session, batch, file, self.auth.pool.get(login.session_id), host,
+                                          actor_id=user.id, session_id=login.session_id)
+            if descriptions.state(product, file) == "ready" and text == product.pre_description:
+                return self._description_view(session, batch)
+            before = {"description": product.pre_description, "fingerprint": product.pre_description_fingerprint,
+                      "version": product.pre_description_version, "by": product.pre_description_by,
+                      "at": product.pre_description_at.isoformat() if product.pre_description_at else None,
+                      "confirmation": product.tags_confirmation, "relation_confirm_kind": product.relation_confirm_kind}
+            if product.ai_success_at is not None:
+                before["vision"] = {"version": product.ai_description_version, "model": product.ai_model,
+                    "fingerprint": product.ai_fingerprint, "at": product.ai_success_at.isoformat(),
+                    "result": product.ai_raw_result}
+            product.pre_description = text
+            product.pre_description_by = user.id
+            product.pre_description_at = utcnow()
+            product.pre_description_fingerprint = file.fingerprint
+            product.pre_description_version += 1
+            product.ai_status, product.ai_error = descriptions.AWAITING_DESCRIPTION, None
+            product.tags_confirmation = {key: {"status": "pending", "previous_value": value.get("previous_value")}
+                                         for key, value in product.tags_confirmation.items()}
+            if product.kind == "set":
+                product.relation_confirmed, product.relation_confirm_kind = False, "pending"
+            batch.updated_at = product.pre_description_at
+            OplogService(session).write(user.id, ",".join(user.roles), "保存商品主图预描述", "batch_product",
+                str(product.id), before, {"description": text, "file_id": file.id, "fingerprint": file.fingerprint,
+                    "version": product.pre_description_version, "by": user.id, "at": product.pre_description_at.isoformat()},
+                "成功", host)
+            return self._description_view(session, batch)
+
+    def retry_ai(self, batch_id: int, login: LoginContext, host: str) -> BatchResponse:
+        with self._transfer(login, host) as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
             batch = session.get(Batch, batch_id)
             if batch is None:
                 raise AppError("batch_not_found", "批次不存在", 404)
-            user = session.get(User, actor.id)
-            if user is None or not user.enabled or not ("admin" in user.roles or user.id == batch.uploader_id and set(user.roles) & {"uploader", "first_reviewer", "final_reviewer"}):
+            user = session.get(User, login.user.id)
+            if user is None or not user.enabled or not ("admin" in user.roles or user.id == batch.owner_id and set(user.roles) & {"uploader", "first_reviewer", "final_reviewer"}):
                 raise AppError("forbidden", "只有上传人或管理员可以重试 AI", 403)
-            if batch.status not in (AI, "待核对", "AI 处理失败") or self.ai is None:
+            if batch.kind not in {"ingest", "supplement"} or batch.status not in (AI, "待核对", "AI 处理失败") or self.ai is None:
                 raise AppError("invalid_batch_state", "该批次当前不能重试 AI", 409)
-            self.ai.start_batch(session, batch, user, host)
+            self._check_login(session, login)
+            if batch.status == "待核对" and (user.id != batch.owner_id or not set(user.roles) & {"uploader", "first_reviewer", "final_reviewer"}):
+                raise AppError("forbidden", "只有当前责任人可以重新识别核对中的批次", 403)
+            self._verify_for_ai(session, batch, login, host)
+            if batch.kind == "supplement" and not any(
+                is_main_image(file) and not file.removed and file.conflict != "duplicate"
+                for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id))
+            ):
+                raise AppError("main_image_required", "补充批次没有待识别主图", 409)
+            self.ai.start_batch(session, batch, user, host, session_id=login.session_id)
             OplogService(session).write(user.id, ",".join(user.roles), "重试整批 AI", "batch", str(batch.id), None, {"status": AI}, "成功", host)
             return self._snapshot(session, batch)
 
     def _fs(self, batch: Batch) -> NasFs:
-        return self.auth.pool.get(batch.uploader_id)
+        if batch.upload_session_id is None:
+            raise NasSessionExpired("请重新登录后继续上传")
+        return self.auth.pool.get(batch.upload_session_id)
 
     def _root(self, batch: Batch) -> str:
         return self.paths.join(Region.TEMP, batch.batch_no, str(batch.payload["folder_name"]))
@@ -169,8 +352,10 @@ class UploadService:
 
     def _activate(self, session: Session, batch: Batch, host: str) -> None:
         if batch.id not in self._pinned:
-            self.auth.pool.pin(batch.uploader_id)
-            self._pinned.add(batch.id)
+            if batch.upload_session_id is None:
+                raise NasSessionExpired("请重新登录后继续上传")
+            self.auth.pool.pin(batch.upload_session_id)
+            self._pinned[batch.id] = batch.upload_session_id
         self._activity[batch.id] = time.monotonic()
         if self._busy(session, batch):
             if not batch.payload.get("queued"):
@@ -193,43 +378,82 @@ class UploadService:
 
     def _release(self, batch: Batch) -> None:
         self._activity.pop(batch.id, None)
-        if batch.id in self._pinned:
-            self._pinned.remove(batch.id)
-            self.auth.pool.unpin(batch.uploader_id)
+        pinned = self._pinned.pop(batch.id, None)
+        if pinned is not None:
+            self.auth.pool.unpin(pinned)
 
     def _finish_if_ready(self, session: Session, batch: Batch, host: str) -> None:
         session.flush()
         unfinished = session.scalar(select(BatchFile.id).where(BatchFile.batch_id == batch.id, BatchFile.upload_status != "done").limit(1))
         if unfinished is None:
             batch.status = STAGED
+            descriptions.products_for_batch(session, batch, initialize=True)
             batch.payload = {**batch.payload, "upload_token_hash": None, "queued": False}
             self._log(session, batch, "上传已暂存", "uploader", host)
             self._release(batch)
 
-    def create(self, body: CreateBatchRequest, user: User, host: str) -> BatchResponse:
+    @staticmethod
+    def _active_ingest(session: Session, code: str, exclude: int | None = None) -> bool:
+        query = select(Batch.id).where(Batch.op_lock_key == f"ingest:{code}", Batch.lock_active == true())
+        if exclude is not None:
+            query = query.where(Batch.id != exclude)
+        return session.scalar(query.limit(1)) is not None
+
+    @staticmethod
+    def _next_h_code(session: Session, year: int) -> str:
+        stmt = insert(HCodeSequence).values(year=year, last_sequence=1)
+        number = session.scalar(stmt.on_conflict_do_update(index_elements=[HCodeSequence.year],
+                                set_={"last_sequence": HCodeSequence.last_sequence + 1}).returning(HCodeSequence.last_sequence))
+        if number is None or number > 9999:
+            raise AppError("h_code_exhausted", "该年份历史编号已用完", 409)
+        return f"H{year:04d}-{number:04d}"
+
+    def create(self, body: CreateBatchRequest, login: LoginContext, host: str,
+               project_id: int | None = None) -> BatchResponse:
         with self.lock:
-            result = self._validate(body, body.acks)
             with self.database.session() as session:
+                session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                user = session.get(User, login.user.id)
+                self._check_login(session, login)
+                if user is None or not user.enabled or not set(user.roles) & {"uploader", "first_reviewer", "final_reviewer"}:
+                    raise AppError("forbidden", "当前账号没有上传权限", 403)
+                project = project_for_supplement(session, project_id) if project_id is not None else None
+                if project is not None and active_batch_id(session, project.id) is not None:
+                    raise AppError("project_busy", "此项目已有未完成的操作批次", 409)
+                if project is not None and not self.auth.pool.get(login.session_id).stat(
+                        self.paths.join(Region.FORMAL, project.current_path)).is_dir:
+                    raise NasNotFound("正式项目目录不存在")
+                result = self._validate(body, body.acks, project=project)
                 code = result.project_code
-                if code == "H":
-                    year = body.historical_year or datetime.now(timezone(timedelta(hours=8))).year
-                    pattern = re.compile(rf"H{year:04d}-(\d{{4}})$")
-                    codes = list(session.scalars(select(Project.project_code))) + list(session.scalars(select(Batch.project_code)))
-                    sequence = max([int(match[1]) for value in codes if (match := pattern.fullmatch(value))] or [0]) + 1
-                    if sequence > 9999:
-                        raise AppError("h_code_exhausted", "该年份历史编号已用完", 409)
-                    code = f"H{year:04d}-{sequence:04d}"
-                folder = f"{code}_{result.company_name}_{result.project_name}"
-                if any(issue.level == "block" for issue in check(folder, body.files)):
+                if project is None and code == "H":
+                    if body.historical_year is None:
+                        raise AppError("historical_year_required", "请选择历史项目实际所属年份", 422)
+                    code = self._next_h_code(session, body.historical_year)
+                elif project is None and (match := H_CODE.fullmatch(code)):
+                    # 用户可能重新提交已经改名的 H 目录，计数器不回退。
+                    statement = insert(HCodeSequence).values(year=int(match[1]), last_sequence=int(match[2]))
+                    session.execute(statement.on_conflict_do_update(index_elements=[HCodeSequence.year],
+                        set_={"last_sequence": func.max(HCodeSequence.last_sequence, statement.excluded.last_sequence)}))
+                if project is None and self._active_ingest(session, code):
+                    raise AppError("project_busy", "此立项编号已有进行中的首次入库批次", 409)
+                if project is None and session.scalar(select(Project.id).where(Project.project_code == code)) is not None:
+                    raise AppError("project_exists", "该项目已入库，请从项目页发起补充", 409)
+                folder = project.folder_name if project is not None else f"{code}_{result.company_name}_{result.project_name}"
+                if project is None and any(issue.level == "block" for issue in check(folder, body.files)):
                     raise AppError("preflight_blocked", "新编号后的路径不符合预检要求", 422)
                 token = secrets.token_urlsafe(32)
-                batch = Batch(batch_no=secrets.token_hex(16), project_code=code, kind="ingest", status=UPLOADING,
-                    owner_id=user.id, uploader_id=user.id, temp_path="", won=body.won,
+                batch = Batch(batch_no=secrets.token_hex(16), project_code=code, kind="supplement" if project is not None else "ingest", status=UPLOADING,
+                    project_id=project_id, owner_id=user.id, uploader_id=user.id,
+                    upload_session_id=login.session_id, temp_path="", won=project.won if project is not None else body.won,
                     payload={"folder_name": folder, "original_folder_name": body.folder_name, "queued": False,
-                             "directories": [item.rel_path for item in body.files if item.is_dir], "upload_token_hash": token_hash(token)})
+                             "directories": [item.rel_path for item in body.files if item.is_dir], "upload_token_hash": token_hash(token),
+                             "historical_year": body.historical_year if result.project_code == "H" else None},
+                    recommended_path=project.current_path if project is not None else None)
                 session.add(batch); session.flush()
                 batch.batch_no = f"B{utcnow():%Y%m%d}-{batch.id:06d}"
                 batch.temp_path = batch.batch_no + "/" + folder
+                batch.payload = {**batch.payload, "chunk_bytes": self.chunk_bytes,
+                                 "parallel_files": self.auth.config.upload.parallel_files}
                 for item in body.files:
                     if not item.is_dir and not ignored(item):
                         session.add(BatchFile(batch_id=batch.id, rel_path=item.rel_path, size=item.size, mtime=item.mtime))
@@ -244,9 +468,10 @@ class UploadService:
                     raise
             return response
 
-    def state(self, batch_id: int, user: User, host: str) -> BatchResponse:
-        with self.lock, self.database.session() as session:
-            batch = self._batch(session, batch_id, user)
+    def state(self, batch_id: int, login: LoginContext, host: str) -> BatchResponse:
+        with self._transfer(login, host) as session:
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login, batch)
             if batch.payload.get("queued"):
                 self._activate(session, batch, host)
             if batch.status == UPLOADING:
@@ -255,25 +480,28 @@ class UploadService:
 
     def list(self, user: User) -> list[BatchResponse]:
         with self.lock, self.database.session() as session:
-            return [self._snapshot(session, batch) for batch in session.scalars(select(Batch).where(Batch.uploader_id == user.id).order_by(Batch.id.desc()))]
+            return [self._snapshot(session, batch) for batch in session.scalars(select(Batch).where(or_(Batch.uploader_id == user.id, Batch.owner_id == user.id)).order_by(Batch.id.desc()))]
 
-    def _receiving(self, session: Session, batch_id: int, user: User, file_id: int) -> tuple[Batch, BatchFile, NasFs]:
-        batch = self._batch(session, batch_id, user)
+    def _receiving(self, session: Session, batch_id: int, login: LoginContext, file_id: int) -> tuple[Batch, BatchFile, NasFs]:
+        batch = self._batch(session, batch_id, login.user)
+        self._check_login(session, login, batch)
         if batch.status != UPLOADING or batch.payload.get("queued"):
             raise AppError("batch_not_uploading", "批次当前不在上传中", 409)
         file = session.get(BatchFile, file_id)
         if file is None or file.batch_id != batch_id:
             raise AppError("file_not_found", "文件不存在于该批次", 404)
         if batch.id not in self._pinned:
-            self.auth.pool.pin(batch.uploader_id)
-            self._pinned.add(batch.id)
+            if batch.upload_session_id is None:
+                raise NasSessionExpired("请重新登录后继续上传")
+            self.auth.pool.pin(batch.upload_session_id)
+            self._pinned[batch.id] = batch.upload_session_id
         self._activity[batch.id] = time.monotonic()
         return batch, file, self._fs(batch)
 
-    async def read_body(self, stream: AsyncIterator[bytes]) -> bytes:
+    async def read_body(self, stream: AsyncIterator[bytes], limit: int) -> bytes:
         data = bytearray()
         async for block in stream:
-            if len(data) + len(block) > self.chunk_bytes:
+            if len(data) + len(block) > limit:
                 raise AppError("chunk_too_large", "分片超过配置大小", 413)
             data.extend(block)
         return bytes(data)
@@ -284,9 +512,11 @@ class UploadService:
         expected = file.bytes_received
         if actual != expected:
             if actual < expected:
-                file.bytes_received = min(actual // self.chunk_bytes * self.chunk_bytes, file.size)
+                file.bytes_received = min(actual // self._chunk_size(batch) * self._chunk_size(batch), file.size)
                 file.upload_status = "partial" if file.bytes_received else "pending"
                 file.fingerprint = None
+                file.fingerprint_kind = None
+                file.thumb_fingerprint = None
                 file.thumb_status = None
                 file.thumb_error = None
                 if self.thumbs is not None:
@@ -297,58 +527,101 @@ class UploadService:
             self._hashes.pop((batch.id, file.id), None)
             self._log(session, batch, "校正分片偏移", "uploader", host)
 
-    def chunk(self, batch_id: int, file_id: int, index: int, data: bytes, user: User, host: str) -> dict[str, int]:
+    @contextmanager
+    def _transfer(self, login: LoginContext, host: str) -> Iterator[Session]:
         with self.lock:
-            conflict: int | None = None
-            with self.database.session() as session:
-                batch, file, fs = self._receiving(session, batch_id, user, file_id)
-                self._repair(session, batch, file, fs, host)
-                offset = index * self.chunk_bytes
-                length = min(self.chunk_bytes, file.size - offset)
+            try:
+                with self.database.session() as session:
+                    yield session
+            except NasSessionExpired:
+                # 文件写失败则事务回滚，保留已确认的偏移，由重登录后的续传校正残留分片。
+                self.auth.disconnect(login.session_id, host)
+                raise
+
+    @contextmanager
+    def _batch_transfer(self, batch_id: int) -> Iterator[None]:
+        # 只在短临界区取得批次锁。等待同一批次的写入时不占用全局锁。
+        with self.lock:
+            lock = self._batch_locks.get(batch_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._batch_locks[batch_id] = lock
+        with lock:
+            yield
+
+    def chunk(self, batch_id: int, file_id: int, index: int, data: bytes, login: LoginContext, host: str) -> dict[str, int]:
+        with self._batch_transfer(batch_id):
+            with self._transfer(login, host) as session:
+                batch, file, fs = self._receiving(session, batch_id, login, file_id)
+                chunk_size = self._chunk_size(batch)
+                offset = index * chunk_size
+                length = min(chunk_size, file.size - offset)
                 if index < 0 or length <= 0 or len(data) != length:
                     raise AppError("invalid_chunk", "分片长度或序号不正确", 422)
+                self._repair(session, batch, file, fs, host)
                 path = self._file_path(batch, file)
-                if offset < file.bytes_received and offset + len(data) <= file.bytes_received:
+                received = file.bytes_received
+                if offset < received and offset + len(data) <= received:
                     with fs.open_read(path, offset=offset) as stream:
-                        identical = stream.read(len(data)) == data
-                    if identical:
-                        return {"bytes_received": file.bytes_received}
-                    conflict = file.bytes_received
-                elif offset != file.bytes_received:
-                    conflict = file.bytes_received
-                else:
+                        if stream.read(len(data)) == data:
+                            return {"bytes_received": received}
+            if offset != received:
+                raise AppError("upload_offset_conflict", "分片偏移不一致", 409, {"bytes_received": received})
+
+            # 写入期间让其他批次使用各自的 NAS 会话。暂停、终止、恢复及文件完成仍由批次锁串行。
+            # 追加前再次校验会话，避免在准备阶段后已退出却继续写入。
+            with self._transfer(login, host) as session:
+                batch = self._batch(session, batch_id, login.user)
+                self._check_login(session, login, batch)
+                if batch.status != UPLOADING:
+                    raise AppError("batch_not_uploading", "批次当前不在上传中", 409)
+                self.auth.pool.pin(login.session_id)
+                self._writing.add(batch_id)
+            try:
+                try:
                     parent = path.rsplit("/", 1)[0]
                     if not fs.exists(parent):
                         fs.mkdir(parent, recursive=True)
                     with fs.open_write(path, append=True) as stream:
                         if stream.write(data) != len(data):
                             raise NasUnavailable("NAS 分片写入不完整，请按偏移重试")
+                except NasSessionExpired:
+                    self.auth.disconnect(login.session_id, host)
+                    raise
+
+                # NAS 成功后才确认偏移。追加期间若被撤销，保留旧偏移供重新登录后的校正。
+                with self._transfer(login, host) as session:
+                    batch = self._batch(session, batch_id, login.user)
+                    self._check_login(session, login, batch, committing_chunk=True)
+                    file = session.get(BatchFile, file_id)
                     cached = self._hashes.get((batch_id, file_id))
                     digest = cached[1] if cached and cached[0] == offset else hashlib.sha256() if offset == 0 else None
                     if digest is not None:
                         digest.update(data)
                         self._hashes[(batch_id, file_id)] = (offset + len(data), digest)
-                    file.bytes_received += len(data)
+                    file.bytes_received = offset + len(data)
                     file.upload_status = "partial"
                     self._log(session, batch, "接收上传分片", "uploader", host)
-                received = file.bytes_received
-            if conflict is not None:
-                raise AppError("upload_offset_conflict", "分片偏移不一致", 409, {"bytes_received": conflict})
-            return {"bytes_received": received}
+                    return {"bytes_received": file.bytes_received}
+            finally:
+                with self.lock:
+                    self._writing.discard(batch_id)
+                    self.auth.pool.unpin(login.session_id)
 
-    def complete(self, batch_id: int, file_id: int, user: User, host: str) -> BatchResponse:
-        with self.lock, self.database.session() as session:
-            batch = self._batch(session, batch_id, user)
+    def complete(self, batch_id: int, file_id: int, login: LoginContext, host: str) -> BatchResponse:
+        with self._batch_transfer(batch_id), self._transfer(login, host) as session:
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login, batch)
             file = session.get(BatchFile, file_id)
             if file is None or file.batch_id != batch_id:
                 raise AppError("file_not_found", "文件不存在于该批次", 404)
             if batch.status == STAGED and file.upload_status == "done":
-                if self.thumbs is not None:
+                if self.thumbs is not None and file.conflict != "duplicate":
                     self.thumbs.enqueue(session, batch, file)
                 return self._snapshot(session, batch)
-            batch, file, fs = self._receiving(session, batch_id, user, file_id)
+            batch, file, fs = self._receiving(session, batch_id, login, file_id)
             if file.upload_status == "done":
-                if self.thumbs is not None:
+                if self.thumbs is not None and file.conflict != "duplicate":
                     self.thumbs.enqueue(session, batch, file)
                 return self._snapshot(session, batch)
             path = self._file_path(batch, file)
@@ -361,21 +634,22 @@ class UploadService:
             if file.bytes_received != file.size or not fs.exists(path) or fs.stat(path).size != file.size:
                 raise AppError("file_size_mismatch", "文件尚未完整到达，请继续上传", 409, {"bytes_received": file.bytes_received})
             cache = self._hashes.get((batch_id, file_id))
-            digest, kind = fingerprint(fs, path, file.size, self.auth.config.upload.full_fingerprint_max_mb * 1024 * 1024,
-                                       cache[1] if cache and cache[0] == file.size else None)
-            file.fingerprint = digest
+            digest = fingerprint(fs, path, file.size, cache[1] if cache and cache[0] == file.size else None)
+            self._record_fingerprint(batch, file, digest)
             file.upload_status = "done"
-            batch.payload = {**batch.payload, "fingerprint_kinds": {**batch.payload.get("fingerprint_kinds", {}), str(file_id): kind}}
+            if batch.kind == "supplement":
+                classify_file(file, catalog_files(session, batch.project_id).get(file.rel_path.casefold()))
             self._hashes.pop((batch_id, file_id), None)
             self._log(session, batch, "文件上传完成", "uploader", host)
-            if self.thumbs is not None:
+            if self.thumbs is not None and file.conflict != "duplicate":
                 self.thumbs.enqueue(session, batch, file)
             self._finish_if_ready(session, batch, host)
             return self._snapshot(session, batch)
 
-    def pause(self, batch_id: int, user: User, host: str) -> BatchResponse:
-        with self.lock, self.database.session() as session:
-            batch = self._batch(session, batch_id, user)
+    def pause(self, batch_id: int, login: LoginContext, host: str) -> BatchResponse:
+        with self._batch_transfer(batch_id), self.lock, self.database.session() as session:
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login, batch)
             if batch.status == UPLOADING:
                 batch.status = INTERRUPTED
                 batch.payload = {**batch.payload, "queued": False}
@@ -383,49 +657,115 @@ class UploadService:
                 self._release(batch)
             return self._snapshot(session, batch)
 
-    def cancel(self, batch_id: int, user: User, host: str) -> BatchResponse:
-        with self.lock, self.database.session() as session:
-            batch = self._batch(session, batch_id, user)
-            if batch.status == WITHDRAWN:
+    def terminate(self, batch_id: int, login: LoginContext, reason: str, host: str, *,
+                  confirmed: bool = False) -> BatchResponse:
+        with self._batch_transfer(batch_id), self.lock, self.database.session() as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login)
+            if batch.status == TERMINATED:
                 return self._snapshot(session, batch)
-            if batch.status not in (UPLOADING, INTERRUPTED, STAGED, AI):
-                raise AppError("invalid_batch_state", "该状态不能取消上传", 409)
-            fs = self._fs(batch)
-            root = self.paths.join(Region.TEMP, batch.batch_no)
-            if fs.exists(root):
-                fs.delete(root, recursive=True)
-            batch.status = WITHDRAWN
+            if batch.kind != "ingest" and not confirmed:
+                raise AppError("termination_confirmation_required", "请二次确认终止整个操作批次", 422)
+            if batch.status not in TERMINATABLE:
+                raise AppError("invalid_batch_state", "该状态不能终止批次", 409)
+            before = {"status": batch.status}
+            batch.status, batch.terminated_at, batch.termination_reason = TERMINATED, utcnow(), reason
             if self.ai is not None:
-                self.ai.cancel_jobs(session, batch, "批次已撤回", user.id, host)
+                self.ai.cancel_jobs(session, batch, "批次已终止", login.user.id, host)
+            batch.payload = {**batch.payload, "upload_token_hash": None, "queued": False}
+            OplogService(session).write(login.user.id, ",".join(login.user.roles), "终止批次", "batch", str(batch.id),
+                                       before, {"status": TERMINATED, "reason": reason}, "成功", host)
             if self.thumbs is not None:
                 self.thumbs.invalidate(batch.id)
-            batch.payload = {**batch.payload, "upload_token_hash": None, "queued": False}
-            self._log(session, batch, "取消上传", "uploader", host)
             self._release(batch)
             for key in tuple(self._hashes):
                 if key[0] == batch.id:
                     self._hashes.pop(key)
             return self._snapshot(session, batch)
 
-    def confirm(self, batch_id: int, user: User, host: str) -> BatchResponse:
-        with self.lock, self.database.session() as session:
-            batch = self._batch(session, batch_id, user)
+    @staticmethod
+    def _record_fingerprint(batch: Batch, file: BatchFile, digest: str) -> None:
+        if file.fingerprint is not None and file.fingerprint_kind != "full":
+            previous = dict(batch.payload.get("legacy_fingerprints", {}))
+            previous[str(file.id)] = {"value": file.fingerprint, "kind": file.fingerprint_kind or "legacy_unknown"}
+            batch.payload = {**batch.payload, "legacy_fingerprints": previous}
+        file.fingerprint, file.fingerprint_kind = digest, "full"
+        batch.payload = {**batch.payload, "fingerprint_kinds": {**batch.payload.get("fingerprint_kinds", {}), str(file.id): "full"}}
+
+    def _upgrade_fingerprint(self, session: Session, batch: Batch, file: BatchFile, fs: NasFs, host: str, *,
+                             actor_id: int | None = None, session_id: int | None = None) -> None:
+        if descriptions.valid_fingerprint(file):
+            return
+        path = self._file_path(batch, file)
+        if not fs.exists(path) or fs.stat(path).size != file.size:
+            raise AppError("fingerprint_unverified", "临时文件已变化，无法核实完整指纹", 409)
+        old_digest = file.fingerprint
+        self._record_fingerprint(batch, file, fingerprint(fs, path, file.size))
+        if self.thumbs is not None and old_digest != file.fingerprint:
+            file.thumb_status, file.thumb_error, file.thumb_fingerprint = None, None, None
+            self.thumbs.enqueue(session, batch, file, actor_id=actor_id, session_id=session_id)
+        self._log(session, batch, "补算文件完整 SHA-256", "uploader", host)
+
+    def _verify_for_ai(self, session: Session, batch: Batch, login: LoginContext, host: str) -> None:
+        files = list(session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id)))
+        if batch.kind == "ingest" and not any(descriptions.is_completed_main(file) for file in files):
+            raise AppError("main_image_required", "首次入库必须保留至少一张主图", 409)
+        for file in files:
+            if file.removed:
+                continue
+            if file.upload_status != "done" or file.bytes_received != file.size:
+                raise AppError("file_not_completed", "须完成所有文件上传后再确认", 409)
+            if is_main_image(file) and file.size == 0:
+                raise AppError("invalid_main_image", "主图文件为空", 409, {"file_id": file.id})
+            if not descriptions.valid_fingerprint(file):
+                if batch.uploader_id != login.user.id:
+                    raise AppError("fingerprint_unverified", "历史批次须由上传人补算完整指纹后才能重试 AI", 409)
+                batch.upload_session_id = login.session_id
+                self._upgrade_fingerprint(session, batch, file, self.auth.pool.get(login.session_id), host)
+            if is_main_image(file) and file.thumb_status == "done" and file.thumb_fingerprint != file.fingerprint:
+                if batch.uploader_id != login.user.id:
+                    raise AppError("thumb_unverified", "旧送审图须由上传人重新核实后才能重试 AI", 409)
+                batch.upload_session_id = login.session_id
+
+    def confirm(self, batch_id: int, login: LoginContext, host: str) -> BatchResponse:
+        with self._transfer(login, host) as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login)
             if batch.status != STAGED:
                 raise AppError("invalid_batch_state", "只有已暂存批次可以确认", 409)
+            self._verify_for_ai(session, batch, login, host)
+            if batch.kind == "supplement":
+                current = catalog_files(session, batch.project_id)
+                files = list(session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id)))
+                for file in files:
+                    classify_file(file, current.get(file.rel_path.casefold()))
+                unresolved = [file.id for file in files if file.conflict == "conflict" and file.conflict_choice is None]
+                if unresolved:
+                    raise AppError("conflict_choice_required", "请明确选择替换或另存冲突文件", 409, {"file_ids": unresolved})
+                if not any(is_main_image(file) and not file.removed and file.conflict != "duplicate" for file in files):
+                    batch.status = "待核对"
+                    self._log(session, batch, "确认补充资料直接核对", "uploader", host)
+                    return self._snapshot(session, batch)
             batch.status = AI
             if self.ai is not None:
-                self.ai.start_batch(session, batch, user, host)
+                self.ai.start_batch(session, batch, login.user, host, session_id=login.session_id)
             self._log(session, batch, "确认开始 AI 处理", "uploader", host)
             return self._snapshot(session, batch)
 
-    def resume(self, batch_id: int, body: ResumeRequest, user: User, host: str) -> BatchResponse:
-        with self.lock, self.database.session() as session:
-            batch = self._batch(session, batch_id, user)
+    def resume(self, batch_id: int, body: ResumeRequest, login: LoginContext, host: str) -> BatchResponse:
+        with self._batch_transfer(batch_id), self._transfer(login, host) as session:
+            batch = self._batch(session, batch_id, login.user)
+            self._check_login(session, login)
             if batch.status not in (UPLOADING, INTERRUPTED):
                 raise AppError("invalid_batch_state", "该批次不能继续上传", 409)
+            if batch.status == UPLOADING and batch.upload_session_id != login.session_id:
+                raise AppError("upload_session_mismatch", "批次正在其他设备上传，请先在原设备暂停", 409)
             if body.folder_name not in (batch.payload["folder_name"], batch.payload["original_folder_name"]):
                 raise AppError("folder_mismatch", "请重新拖入同一个项目文件夹", 422)
-            self._validate(body, body.acks)
+            project = project_for_supplement(session, batch.project_id) if batch.kind == "supplement" else None
+            self._validate(body, body.acks, batch.id, project)
             old = {file.rel_path: file for file in session.scalars(select(BatchFile).where(BatchFile.batch_id == batch.id))}
             new = {file.rel_path: file for file in body.files if not file.is_dir and not ignored(file)}
             differences = {"added": sorted(new.keys() - old.keys()), "missing": sorted(old.keys() - new.keys()),
@@ -433,7 +773,7 @@ class UploadService:
                            "directories": [] if sorted(batch.payload.get("directories", [])) == sorted(item.rel_path for item in body.files if item.is_dir) else ["空目录或目录清单变化"]}
             if any(differences.values()) and not body.accept_changes:
                 return self._snapshot(session, batch, differences=differences)
-            fs = self._fs(batch)
+            fs = self.auth.pool.get(login.session_id)
             if any(differences.values()):
                 for path in differences["missing"] + differences["changed"]:
                     target = self._file_path(batch, old[path])
@@ -450,8 +790,11 @@ class UploadService:
                         old[path].bytes_received = 0
                         old[path].upload_status = "pending"
                         old[path].fingerprint = None
+                        old[path].fingerprint_kind = None
+                        old[path].thumb_fingerprint = None
                         old[path].thumb_status = None
                         old[path].thumb_error = None
+                        old[path].conflict = old[path].conflict_choice = None
                 for path in differences["added"]:
                     file = BatchFile(batch_id=batch.id, rel_path=path, size=new[path].size, mtime=new[path].mtime)
                     session.add(file)
@@ -463,25 +806,41 @@ class UploadService:
                         if fs.exists(target):
                             fs.delete(target, recursive=True)
                 batch.payload = {**batch.payload, "directories": directories}
+            self._release(batch)
+            batch.upload_session_id = login.session_id
             session.flush()
             for file in old.values():
                 if file.upload_status != "done":
                     self._repair(session, batch, file, fs, host)
                 elif not fs.exists(self._file_path(batch, file)) or fs.stat(self._file_path(batch, file)).size != file.size:
                     file.upload_status = "pending"; file.bytes_received = 0; file.fingerprint = None
-                    file.thumb_status = None; file.thumb_error = None
+                    file.fingerprint_kind = None
+                    file.thumb_status = None; file.thumb_error = None; file.thumb_fingerprint = None
+                    file.conflict = file.conflict_choice = None
                     if self.thumbs is not None:
                         self.thumbs.invalidate(batch.id, file.id)
+                else:
+                    self._upgrade_fingerprint(session, batch, file, fs, host)
             present_acks = set(session.scalars(select(PreflightAck.rule_code).where(PreflightAck.batch_id == batch.id)))
             for code in set(body.acks) - present_acks:
-                if code in {"P07", "P08", "P09"}:
+                if code in {"P08", "P09"}:
                     session.add(PreflightAck(batch_id=batch.id, rule_code=code))
-            self._release(batch)
             token = secrets.token_urlsafe(32)
             batch.payload = {**batch.payload, "upload_token_hash": token_hash(token)}
             self._activate(session, batch, host)
             self._log(session, batch, "继续上传", "uploader", host)
             return self._snapshot(session, batch, token if batch.status != STAGED else None, differences)
+
+    def session_closed(self, session_id: int, host: str) -> None:
+        with self.lock, self.database.session() as session:
+            for batch in session.scalars(select(Batch).where(Batch.upload_session_id == session_id, Batch.status == UPLOADING)):
+                self._interrupt(session, batch, host)
+
+    def _interrupt(self, session: Session, batch: Batch, host: str) -> None:
+        batch.status = INTERRUPTED
+        batch.payload = {**batch.payload, "queued": False, "upload_token_hash": None}
+        self._log(session, batch, "上传中断", "system", host)
+        self._release(batch)
 
     def _sweep(self) -> None:
         while not self._stop.wait(5):
@@ -490,13 +849,14 @@ class UploadService:
     def expire_idle(self) -> None:
         with self.lock, self.database.session() as session:
             for batch_id, last in tuple(self._activity.items()):
-                if time.monotonic() - last > 60:
-                    batch = session.get(Batch, batch_id)
-                    if batch and batch.status == UPLOADING:
-                        batch.status = INTERRUPTED
-                        batch.payload = {**batch.payload, "queued": False}
-                        self._log(session, batch, "上传中断", "system", "上传请求静默超时")
-                        self._release(batch)
+                if batch_id in self._writing:
+                    continue
+                batch = session.get(Batch, batch_id)
+                if batch is None or batch.status != UPLOADING:
+                    continue
+                login = session.get(UserSession, batch.upload_session_id) if batch.upload_session_id is not None else None
+                if login is None or login.revoked_at is not None or time.monotonic() - last > 60:
+                    self._interrupt(session, batch, "上传请求或登录超时")
 
     def shutdown(self) -> None:
         self._stop.set()

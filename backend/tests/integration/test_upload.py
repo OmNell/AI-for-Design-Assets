@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from datetime import timedelta
 from pathlib import Path
 from typing import Iterator
@@ -10,9 +12,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, update
 
 from app.config import DevUser, Settings, PathsConfig
-from app.db.models import Batch, BatchFile, PreflightAck, Project, UserSession, utcnow
+from app.db.models import Batch, BatchFile, CompanyIndustryMap, PreflightAck, Project, UserSession, utcnow
 from app.main import create_app
-from app.services.auth.service import COOKIE_NAME
+from app.services.auth.service import COOKIE_NAME, UPLOAD_DEVICE_COOKIE
+
+from test_ai_pipeline import describe_all
 
 
 @pytest.fixture
@@ -74,15 +78,13 @@ def test_upload_duplicate_out_of_order_complete_confirm(upload_client: TestClien
     assert finish(client, batch).json()["status"] == "已暂存"
     assert file_path(client, batch).read_bytes() == b"abcdefghij"
     assert done.json()["files"][0]["fingerprint"] == hashlib.sha256(b"abcdefghij").hexdigest()
+    describe_all(client, f'/api/batches/{batch["id"]}')
     assert client.post(f'/api/batches/{batch["id"]}/confirm').json()["status"] == "AI 处理中"
     assert client.post(f'/api/batches/{batch["id"]}/confirm').status_code == 409
-    canceled = client.post(f'/api/batches/{batch["id"]}/cancel')
-    # WP06 允许处理中撤回；后台坏图也可能已先结束为 AI 处理失败。
-    if canceled.status_code == 200:
-        assert canceled.json()["status"] == "已撤回"
-    else:
-        assert canceled.status_code == 409
-        assert client.get(f'/api/batches/{batch["id"]}').json()["status"] in ("AI 处理失败", "待核对")
+    canceled = client.post(f'/api/batches/{batch["id"]}/cancel', json={"reason": "重复素材"})
+    assert canceled.status_code == 200 and canceled.json()["status"] == "已终止"
+    assert canceled.json()["termination_reason"] == "重复素材"
+    assert file_path(client, batch).read_bytes() == b"abcdefghij"
     with client.app.state.database.session() as session:
         assert "P08" in list(session.scalars(select(PreflightAck.rule_code)))
         assert session.scalar(select(Project)) is None
@@ -101,7 +103,9 @@ def test_precheck_acks_existing_code_and_tampered_path(upload_client: TestClient
     with client.app.state.database.session() as session:
         session.add(Project(project_code="P001", company_name="企业", project_name="项目", won=True, folder_name="P001_企业_项目"))
     result = client.post('/api/batches/precheck', json=body()).json()
-    assert result["code_status"] == "exists" and "补充功能尚未开放" in result["issues"][0]["message"]
+    assert result["code_status"] == "exists" and result["project_id"] > 0
+    assert result["issues"][0]["rule_code"] == "P02"
+    assert result["issues"][0]["message"] == "该项目已入库，请从项目页发起补充"
     assert client.post('/api/batches', json=body()).status_code == 422
 
 
@@ -113,28 +117,70 @@ def test_queue_h_code_cancel(upload_client: TestClient) -> None:
     assert second["queued"] and not first["queued"]
     assert first["folder_name"] == "H2025-0001_企业_历史"
     assert chunk(client, second, 0, b"abcd").status_code == 409
-    assert client.post(f'/api/batches/{first["id"]}/cancel', headers=headers(first)).json()["status"] == "已撤回"
-    assert not file_path(client, first).parent.parent.exists()
+    assert client.post(f'/api/batches/{first["id"]}/cancel', json={"reason": "重复素材"}).json()["status"] == "已终止"
+    assert file_path(client, first).parent.parent.is_dir()
     state = client.get(f'/api/batches/{second["id"]}/upload-state', headers=headers(second)).json()
     assert not state["queued"]
-    assert client.post(f'/api/batches/{second["id"]}/cancel', headers=headers(second)).status_code == 200
+    assert client.post(f'/api/batches/{second["id"]}/cancel', json={"reason": "重复素材"}).status_code == 200
 
 
 @pytest.mark.parametrize("termination", ["expire", "logout"])
-def test_upload_token_survives_login_expiry_and_logout(upload_client: TestClient, termination: str) -> None:
+def test_active_upload_survives_expiry_but_logout_requires_resume(upload_client: TestClient, termination: str) -> None:
     client = upload_client
     batch = create(client)
+    assert chunk(client, batch, 0, b"abcd").status_code == 200
     if termination == "expire":
         with client.app.state.database.session() as session:
             session.execute(update(UserSession).values(expires_at=utcnow() - timedelta(hours=1)))
+        assert client.get('/api/auth/me').status_code == 401
+        assert COOKIE_NAME not in client.cookies
+        client.app.state.upload.expire_idle()
+        assert client.get('/api/batches').status_code == 401
+        assert client.get(f'/api/batches/{batch["id"]}/upload-state', headers=headers(batch)).status_code == 401
+        assert chunk(client, batch, 1, b"efgh").status_code == 200
+        assert chunk(client, batch, 2, b"ij").status_code == 200
+        assert finish(client, batch).json()["status"] == "已暂存"
+        assert chunk(client, batch, 0, b"abcd").status_code == 401
+        return
     else:
         assert client.post('/api/auth/logout').status_code == 200
-    assert client.get('/api/auth/me').status_code == 401
-    assert chunk(client, batch, 0, b"abcd").status_code == 200
-    # Cookie 已清除，上传状态与暂停仍由独立令牌授权。
-    assert client.get(f'/api/batches/{batch["id"]}/upload-state', headers=headers(batch)).status_code == 200
-    assert client.post(f'/api/batches/{batch["id"]}/pause', headers=headers(batch)).json()["status"] == "上传中断"
+    assert chunk(client, batch, 1, b"efgh").status_code == 401
+    assert client.get(f'/api/batches/{batch["id"]}/upload-state', headers=headers(batch)).status_code == 401
     assert client.get('/api/batches').status_code == 401
+    assert client.post('/api/auth/login', json={"username": "one", "password": "fake"}).status_code == 200
+    assert client.get(f'/api/batches/{batch["id"]}').json()["status"] == "上传中断"
+    resumed = client.post(f'/api/batches/{batch["id"]}/resume', json=body()).json()
+    assert resumed["files"][0]["bytes_received"] == 4
+    assert chunk(client, resumed, 1, b"efgh").status_code == 200
+
+
+@pytest.mark.parametrize("case", ["unstarted", "wrong_token", "other_device", "logout", "disabled", "idle"])
+def test_expired_upload_continuation_is_scoped(upload_client: TestClient, case: str) -> None:
+    client = upload_client
+    batch = create(client)
+    if case != "unstarted":
+        assert chunk(client, batch, 0, b"abcd").status_code == 200
+    with client.app.state.database.session() as session:
+        session.execute(update(UserSession).values(expires_at=utcnow() - timedelta(hours=1)))
+        if case == "disabled":
+            from app.db.models import User
+            session.execute(update(User).values(enabled=False))
+    client.cookies.delete(COOKIE_NAME)
+    if case == "other_device":
+        client.cookies.delete(UPLOAD_DEVICE_COOKIE)
+    elif case == "wrong_token":
+        batch["upload_token"] = "wrong"
+    elif case == "logout":
+        assert client.post("/api/auth/logout").status_code == 200
+    elif case == "idle":
+        upload = client.app.state.upload
+        upload._activity[batch["id"]] -= 65
+        upload.expire_idle()
+    assert chunk(client, batch, 1, b"efgh").status_code in (401, 403)
+    if case == "unstarted":
+        assert not file_path(client, batch).exists()
+    else:
+        assert file_path(client, batch).stat().st_size == 4
 
 
 def test_resume_same_manifest_changed_manifest_and_reset(upload_client: TestClient) -> None:
@@ -150,7 +196,7 @@ def test_resume_same_manifest_changed_manifest_and_reset(upload_client: TestClie
     assert accepted["files"][0]["bytes_received"] == 0 and accepted["upload_token"]
     assert chunk(client, accepted, 0, b"ABCD").status_code == 200
     assert client.post(f'/api/batches/{batch["id"]}/resume', json={**body(), "folder_name": "X_别家_项目"}).status_code == 422
-    assert chunk(client, batch, 0, b"abcd").status_code == 401
+    assert chunk(client, batch, 0, b"abcd").status_code == 409
 
 
 def test_file_tail_after_crash_is_rolled_back(upload_client: TestClient) -> None:
@@ -186,21 +232,28 @@ def test_other_user_tokens_ownership_role_and_wrong_file(upload_client: TestClie
     assert client.get('/api/batches/999').status_code == 404
     assert client.post('/api/batches/999/confirm').status_code == 404
     assert client.post(f'/api/batches/{batch["id"]}/files/999/complete', headers=headers(batch)).status_code == 404
-    assert client.get(f'/api/batches/{batch["id"]}/upload-state', headers={"X-Upload-Token": "invalid"}).status_code == 401
+    assert client.get(f'/api/batches/{batch["id"]}/upload-state', headers={"X-Upload-Token": "invalid"}).status_code == 409
     client.post('/api/auth/login', json={"username": "two", "password": "fake"})
     for url in (f'/api/batches/{batch["id"]}', f'/api/batches/{batch["id"]}/upload-state'):
         assert client.get(url).status_code == 403
-    assert client.post(f'/api/batches/{batch["id"]}/cancel').status_code == 403
+    assert client.post(f'/api/batches/{batch["id"]}/cancel', json={"reason": "重复素材"}).status_code == 403
     assert client.post(f'/api/batches/{batch["id"]}/resume', json=body()).status_code == 403
     assert client.get('/api/batches').json() == []
 
 
 def test_empty_files_directories_and_bounded_body(upload_client: TestClient) -> None:
     client = upload_client
-    batch = create(client, body(name="空文件", size=0))
-    assert finish(client, batch).json()["status"] == "已暂存"
+    payload = body(name="空文件", size=0)
+    payload["files"].append({"rel_path": "单品/主图.jpg", "size": 4})
+    batch = create(client, payload)
+    empty = finish(client, batch).json()
+    assert empty["files"][0]["fingerprint"] == hashlib.sha256(b"").hexdigest()
+    assert empty["files"][0]["fingerprint_kind"] == "full"
+    image = {**batch, "files": [batch["files"][1]]}
+    assert chunk(client, image, 0, b"abcd").status_code == 200
+    assert finish(client, image).json()["status"] == "已暂存"
     assert file_path(client, batch, "空文件").stat().st_size == 0
-    assert client.post(f'/api/batches/{batch["id"]}/cancel', headers=headers(batch)).json()["status"] == "已撤回"
+    assert client.post(f'/api/batches/{batch["id"]}/cancel', json={"reason": "重复素材"}).json()["status"] == "已终止"
     next_batch = create(client)
     assert chunk(client, next_batch, 0, b"12345").status_code == 413
     assert chunk(client, next_batch, -1, b"1234").status_code == 422
@@ -212,7 +265,7 @@ def test_empty_files_directories_and_bounded_body(upload_client: TestClient) -> 
 
 def test_queue_fifo_and_restart_does_not_leave_unreachable_queue(upload_client: TestClient, tmp_path: Path) -> None:
     client = upload_client
-    first, second, third = create(client), create(client), create(client)
+    first, second, third = (create(client, body(f"P{n}_企业_项目")) for n in range(1, 4))
     assert second["queued"] and third["queued"]
     client.post(f'/api/batches/{first["id"]}/pause', headers=headers(first))
     assert client.get(f'/api/batches/{third["id"]}/upload-state', headers=headers(third)).json()["queued"]
@@ -255,3 +308,187 @@ def test_upload_permission_revocation_rejects_independent_token(upload_client: T
     assert chunk(client, batch, 0, b"abcd").status_code == 403
     assert client.post('/api/batches/precheck', json=body()).status_code == 403
     assert client.post('/api/batches', json=body()).status_code == 403
+
+
+def test_second_device_cannot_drive_active_session_of_same_user(upload_client: TestClient) -> None:
+    client = upload_client
+    batch = create(client)
+    auth = client.app.state.auth
+    original = client.cookies.get("nas_workbench_session")
+    assert client.post('/api/auth/login', json={"username": "one", "password": "fake"}).status_code == 200
+    assert chunk(client, batch, 0, b"abcd").json()["code"] == "upload_session_mismatch"
+    assert client.post(f'/api/batches/{batch["id"]}/resume', json=body()).status_code == 409
+    assert client.post('/api/auth/logout').status_code == 200
+    assert auth.context(original, "原设备").user.username == "one"
+    client.cookies.set("nas_workbench_session", original, domain="testserver.local", path="/")
+    assert chunk(client, batch, 0, b"abcd").status_code == 200
+
+
+def test_first_ingest_requires_main_image_and_historical_year(upload_client: TestClient) -> None:
+    client = upload_client
+    docs_only = body(name="02设计方案/资料.txt")
+    issues = client.post("/api/batches/precheck", json=docs_only).json()["issues"]
+    assert any(i["rule_code"] == "P07" and i["level"] == "block" for i in issues)
+    assert client.post("/api/batches", json=docs_only).status_code == 422
+    assert client.post("/api/batches", json=body(size=0)).status_code == 422
+    assert client.post("/api/batches", json=body("H_企业_项目")).json()["code"] == "historical_year_required"
+
+
+def test_active_ingest_conflict_and_termination_release(upload_client: TestClient) -> None:
+    client = upload_client
+    batch = create(client)
+    assert client.post("/api/batches", json=body()).json()["code"] == "project_busy"
+    assert client.post(f'/api/batches/{batch["id"]}/cancel', json={"reason": "  "}).status_code == 422
+    assert chunk(client, batch, 0, b"abcd").status_code == 200
+    assert client.post(f'/api/batches/{batch["id"]}/cancel', json={"reason": " 改用另一套 "}).json()["termination_reason"] == "改用另一套"
+    repeated = client.post(f'/api/batches/{batch["id"]}/cancel', json={"reason": "另一原因"}).json()
+    assert repeated["termination_reason"] == "改用另一套"
+    assert file_path(client, batch).read_bytes() == b"abcd"
+    assert client.post(f'/api/batches/{batch["id"]}/resume', json=body()).status_code == 409
+    replacement = create(client)
+    assert replacement["id"] != batch["id"] and replacement["project_code"] == batch["project_code"]
+    with client.app.state.database.session() as session:
+        assert session.get(Batch, batch["id"]).lock_active is False
+        assert session.get(Batch, replacement["id"]).lock_active is True
+
+
+def test_confirm_upgrades_legacy_digest_and_preserves_old_record(upload_client: TestClient) -> None:
+    client = upload_client
+    batch = create(client, body(size=4))
+    assert chunk(client, batch, 0, b"abcd").status_code == 200
+    assert finish(client, batch).status_code == 200
+    file_id = batch["files"][0]["id"]
+    with client.app.state.database.session() as session:
+        row = session.get(BatchFile, file_id)
+        row.fingerprint, row.fingerprint_kind = "f" * 64, "quick"
+    describe_all(client, f'/api/batches/{batch["id"]}')
+    confirmed = client.post(f'/api/batches/{batch["id"]}/confirm')
+    assert confirmed.status_code == 200
+    assert confirmed.json()["files"][0]["fingerprint"] == hashlib.sha256(b"abcd").hexdigest()
+    with client.app.state.database.session() as session:
+        assert session.get(Batch, batch["id"]).payload["legacy_fingerprints"][str(file_id)] == {"value": "f" * 64, "kind": "quick"}
+        assert session.get(BatchFile, file_id).fingerprint_kind == "full"
+
+
+def test_nas_disconnect_pauses_and_requires_relogin_with_offset(upload_client: TestClient, monkeypatch) -> None:
+    from app.services.nas import NasSessionExpired
+
+    client = upload_client
+    batch = create(client)
+    assert chunk(client, batch, 0, b"abcd").status_code == 200
+    token = client.cookies.get("nas_workbench_session")
+    auth = client.app.state.auth
+    fs = auth.pool.get(auth.context(token, "本机").session_id)
+
+    def disconnect(*args, **kwargs):
+        raise NasSessionExpired("模拟 NAS 掉线")
+
+    monkeypatch.setattr(fs, "open_write", disconnect)
+    assert chunk(client, batch, 1, b"efgh").json()["code"] == "nas_session_expired"
+    assert file_path(client, batch).read_bytes() == b"abcd"
+    assert chunk(client, batch, 1, b"efgh").status_code == 401
+    assert client.post('/api/auth/login', json={"username": "one", "password": "fake"}).status_code == 200
+    resumed = client.post(f'/api/batches/{batch["id"]}/resume', json=body()).json()
+    assert resumed["files"][0]["bytes_received"] == 4
+    assert chunk(client, resumed, 1, b"efgh").status_code == 200
+
+
+def test_precheck_shows_won_and_lost_paths_for_name_and_alias(upload_client: TestClient) -> None:
+    with upload_client.app.state.database.session() as session:
+        session.add(CompanyIndustryMap(company_name="甲酒业", aliases=["甲酒"], company_seq=7,
+                                       industry_name="食品", industry_seq=2))
+    for name in ("甲酒业", "甲酒", "乙酒"):
+        result = upload_client.post("/api/batches/precheck", json=body(f"P123_{name}_包装")).json()
+        assert result["won_path"] == ("01已中标项目/02食品/07甲酒业" if name != "乙酒" else None)
+        assert result["lost_path"] == ("02未中标项目/02食品/07甲酒业" if name != "乙酒" else None)
+
+
+def slow_nas_write(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[Event, Event]:
+    auth = client.app.state.auth
+    fs = auth.pool.get(auth.context(client.cookies.get(COOKIE_NAME), "原设备").session_id)
+    started, release = Event(), Event()
+    original_open = fs.open_write
+
+    def slow_open(*args, **kwargs):
+        started.set()
+        assert release.wait(10)
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(fs, "open_write", slow_open)
+    return started, release
+
+
+def test_other_batch_writes_while_slow_upload_is_active(upload_client: TestClient, monkeypatch) -> None:
+    client = upload_client
+    batch = create(client, body(size=4))
+    started, release = slow_nas_write(client, monkeypatch)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        first = workers.submit(chunk, client, batch, 0, b"abcd")
+        try:
+            assert started.wait(5)
+
+            def send_other_device():
+                # 不进入 lifespan，复用已启动的同一应用。
+                other = TestClient(client.app)
+                assert other.post("/api/auth/login", json={"username": "two", "password": "fake"}).status_code == 200
+                another = create(other, body("P002_另一企业_项目", size=4))
+                assert chunk(other, another, 0, b"efgh").json()["bytes_received"] == 4
+                assert file_path(other, another).read_bytes() == b"efgh"
+
+            workers.submit(send_other_device).result(timeout=5)
+            assert not first.done()
+        finally:
+            release.set()
+        assert first.result(timeout=5).json()["bytes_received"] == 4
+    assert file_path(client, batch).read_bytes() == b"abcd"
+
+
+def test_terminate_waits_for_running_chunk_and_preserves_written_data(upload_client: TestClient, monkeypatch) -> None:
+    client = upload_client
+    batch = create(client, body(size=8))
+    started, release = slow_nas_write(client, monkeypatch)
+    asked_to_terminate = Event()
+    upload = client.app.state.upload
+    original_terminate = upload.terminate
+
+    def observed_terminate(*args, **kwargs):
+        asked_to_terminate.set()
+        return original_terminate(*args, **kwargs)
+
+    monkeypatch.setattr(upload, "terminate", observed_terminate)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        receiving = workers.submit(chunk, client, batch, 0, b"abcd")
+        try:
+            assert started.wait(5)
+            ending = workers.submit(client.post, f'/api/batches/{batch["id"]}/cancel', json={"reason": "终止测试"})
+            assert asked_to_terminate.wait(5)
+            assert not ending.done()
+        finally:
+            release.set()
+        assert receiving.result(timeout=5).status_code == 200
+        assert ending.result(timeout=5).json()["status"] == "已终止"
+    assert chunk(client, batch, 1, b"efgh").status_code == 409
+    assert file_path(client, batch).read_bytes() == b"abcd"
+
+
+def test_logout_during_chunk_does_not_confirm_uncommitted_offset(upload_client: TestClient, monkeypatch) -> None:
+    client = upload_client
+    batch = create(client, body(size=8))
+    assert chunk(client, batch, 0, b"abcd").status_code == 200
+    started, release = slow_nas_write(client, monkeypatch)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        receiving = workers.submit(chunk, client, batch, 1, b"junk")
+        try:
+            assert started.wait(5)
+            logout = workers.submit(client.post, "/api/auth/logout")
+            assert logout.result(timeout=5).status_code == 200
+        finally:
+            release.set()
+        assert receiving.result(timeout=5).status_code == 401
+    assert client.post("/api/auth/login", json={"username": "one", "password": "fake"}).status_code == 200
+    resumed = client.post(f'/api/batches/{batch["id"]}/resume', json=body(size=8)).json()
+    assert resumed["files"][0]["bytes_received"] == 4
+    assert file_path(client, batch).read_bytes() == b"abcd"
+    assert chunk(client, resumed, 1, b"efgh").status_code == 200
+    done = finish(client, resumed).json()
+    assert done["files"][0]["fingerprint"] == hashlib.sha256(b"abcdefgh").hexdigest()

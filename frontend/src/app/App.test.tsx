@@ -11,6 +11,7 @@ let host: HTMLDivElement
 let roles: Role[]
 let logged: boolean
 let mode: 'dev' | 'prod'
+let dsmVerifySsl: boolean
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status })
 const settle = async () => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) }) }
 async function until(condition: () => boolean) {
@@ -19,16 +20,15 @@ async function until(condition: () => boolean) {
 }
 beforeEach(() => {
   localStorage.clear()
-  roles = ['uploader']; logged = false; mode = 'dev'
+  roles = ['uploader']; logged = false; mode = 'dev'; dsmVerifySsl = true
   useAuthStore.setState({ user: null, initialized: false, notice: '' })
   window.history.replaceState({}, '', '/admin/roles')
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
-  vi.stubGlobal('CSS', { supports: () => false })
-  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.open = true } })
   Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function (this: HTMLDialogElement) { this.open = false } })
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-    if (url === '/api/health') return response({ version: '0.1.0', mode, database_available: true })
+    if (url.startsWith('/api/projects?')) return response({ items: [], total: 0, page: 1, page_size: 20 })
+    if (url === '/api/health') return response({ version: '0.1.0', mode, database_available: true, dsm_verify_ssl: dsmVerifySsl })
     if (url === '/api/auth/logout') { logged = false; return response({ message: '已退出登录' }) }
     if (url === '/api/auth/me') return logged ? response({ id: 1, username: 'demo', display_name: null, roles, enabled: true }) : response({ code: 'login_required', message: '请先登录' }, 401)
     return response([])
@@ -42,27 +42,50 @@ it('未登录访问深层路径跳登录页', async () => {
   expect(window.location.pathname).toBe('/login')
   expect(host.textContent).toContain('登录工作台')
   expect(host.querySelector('input[type="password"]')).not.toBeNull()
+  expect(host.textContent).not.toContain('DSM 证书验证已关闭')
+})
+it.each<[Role[], string]>([
+  [['uploader', 'first_reviewer'], '/'],
+  [['first_reviewer'], '/search'],
+  [['admin'], '/search'],
+])('登录后按上传角色选择默认入口（%j）', async (assigned, destination) => {
+  roles = assigned; logged = true
+  window.history.replaceState({}, '', '/login')
+  act(() => root.render(<App />))
+  await until(() => window.location.pathname === destination)
+})
+
+it.each([false, true])('证书验证关闭时明确显示测试提示（已登录 %s）', async (isSignedIn) => {
+  logged = isSignedIn; mode = 'prod'; dsmVerifySsl = false
+  window.history.replaceState({}, '', '/')
+  act(() => root.render(<App />))
+  const notice = '本机测试环境：DSM 证书验证已关闭'
+  await until(() => host.textContent!.includes(notice))
+  expect([...host.querySelectorAll('[role="status"]')].some(node => node.textContent?.trim() === notice)).toBe(true)
+  expect(window.location.pathname).toBe(isSignedIn ? '/' : '/login')
 })
 it('上传人导航不显示管理、审核，退出后深层页面回到登录', async () => {
   logged = true; window.history.replaceState({}, '', '/')
   act(() => root.render(<App />)); await settle()
   const labels = [...host.querySelectorAll('nav a')].map(node => node.textContent)
-  expect(labels).toContain('上传'); expect(labels).not.toContain('管理'); expect(labels).not.toContain('待初审')
+  expect(labels).toContain('资产入库'); expect(labels).not.toContain('管理'); expect(labels).not.toContain('待初审')
   const exit = [...host.querySelectorAll('button')].find(node => node.textContent === '退出')!
   await act(async () => exit.click()); await settle()
   expect(window.location.pathname).toBe('/login')
   expect(useAuthStore.getState().user).toBeNull()
 })
-it('组件样例包含 60 张卡片、展示弹窗且轻量偏好可切换', async () => {
+it('开发模式的组件样例支持通过弹窗和关闭按钮检查键盘焦点', async () => {
   logged = true; window.history.replaceState({}, '', '/components')
-  act(() => root.render(<App />)); await until(() => host.querySelectorAll('.grid > .glass-surface').length === 60)
-  expect(host.querySelectorAll('.grid > .glass-surface')).toHaveLength(60)
-  const open = [...host.querySelectorAll('button')].find(node => node.textContent === '打开弹窗')!
-  act(() => open.click())
+  act(() => root.render(<App />)); await until(() => host.textContent!.includes('组件样例'))
+  const open = [...host.querySelectorAll('button')].find(node => node.textContent === '打开弹窗')
+  expect(open).toBeDefined()
+  open?.focus()
+  act(() => open?.click())
   expect(document.querySelector('dialog')?.open).toBe(true)
-  const toggle = host.querySelector<HTMLButtonElement>('[aria-label="切换视觉模式"]')!
-  act(() => toggle.click())
-  expect(localStorage.getItem('nas-workbench-visual-mode')).toBe('lite')
+  const close = document.querySelector('dialog button')
+  act(() => (close as HTMLButtonElement).click())
+  expect(document.querySelector('dialog')).toBeNull()
+  expect(document.activeElement).toBe(open)
 })
 it('生产模式不显示组件入口且直接访问也重定向首页', async () => {
   logged = true; mode = 'prod'; window.history.replaceState({}, '', '/components')
@@ -93,4 +116,20 @@ it('会话失效后换账号，不展示前一个账号缓存的批次详情', a
   await until(() => batchReads === 2)
   expect(host.textContent).not.toContain('前一账号的私有批次')
   expect(host.textContent).toContain('正在加载批次')
+})
+
+it('我的待办显示 AI 超时和已入库批次的直达链接', async () => {
+  logged = true
+  window.history.replaceState({}, '', '/todos')
+  const originalFetch = fetch
+  vi.stubGlobal('fetch', vi.fn((url: string, options: RequestInit) => url === '/api/todos' ? Promise.resolve(response([
+    { key: 'ai_stalled', label: 'AI 处理超时', count: 1, link: '/batches/41', batches: [{ id: 41, label: '待处理批次' }] },
+    { key: 'ingested', label: '入库完成', count: 1, link: '/batches/42', batches: [{ id: 42, label: '已入库批次' }] },
+  ])) : originalFetch(url, options)))
+  act(() => root.render(<App />))
+  await until(() => !!host.querySelector('[data-testid="todos"]'))
+  const todos = [...host.querySelectorAll('[data-testid="todos"] a')]
+  expect(todos.map(node => [node.textContent, node.getAttribute('href')])).toEqual([
+    ['AI 处理超时1', '/batches/41'], ['入库完成1', '/batches/42'],
+  ])
 })

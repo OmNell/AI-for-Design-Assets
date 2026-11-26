@@ -68,3 +68,19 @@ def test_broken_existing_key_is_not_overwritten(tmp_path: Path) -> None:
     with pytest.raises(CryptoError):
         SecretCipher(tmp_path)
     assert key.read_bytes() == b"broken"
+
+
+def test_read_only_does_not_create_key_or_rewrite_acl(tmp_path, monkeypatch):
+    from app.services import crypto
+
+    target = tmp_path / "new"
+    with pytest.raises(CryptoError):
+        SecretCipher(target, read_only=True)
+    assert not target.exists()
+    token = SecretCipher(target).encrypt("测试密文")
+
+    def unexpected_acl_change(path):
+        pytest.fail("只读操作修改了密钥 ACL")
+
+    monkeypatch.setattr(crypto, "restrict_key_permissions", unexpected_acl_change)
+    assert SecretCipher(target, read_only=True).decrypt(token) == "测试密文"

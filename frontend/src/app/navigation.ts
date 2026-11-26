@@ -2,13 +2,19 @@ import type { Role } from '../api/types'
 
 export interface NavigationItem { path: string; label: string; roles?: Role[] }
 export const navigation: NavigationItem[] = [
-  { path: '/', label: '首页' },
-  { path: '/upload', label: '上传', roles: ['uploader', 'first_reviewer', 'final_reviewer'] },
+  { path: '/', label: '工作台首页' },
+  { path: '/upload', label: '资产入库', roles: ['uploader', 'first_reviewer', 'final_reviewer'] },
   { path: '/first-review', label: '待初审', roles: ['first_reviewer'] },
   { path: '/final-review', label: '待终审', roles: ['final_reviewer'] },
-  { path: '/projects', label: '项目' }, { path: '/search', label: '搜索' },
+  { path: '/todos', label: '我的待办' },
+  { path: '/projects', label: '全部资产' }, { path: '/search', label: '智能检索' },
   { path: '/admin/roles', label: '管理', roles: ['admin'] }, { path: '/settings', label: '设置', roles: ['admin'] },
+  { path: '/admin/nas-settings', label: 'NAS 存储设置', roles: ['admin'] },
 ]
 export function canAccess(roles: Role[], item: NavigationItem): boolean {
   return !item.roles || roles.some(role => item.roles!.includes(role))
+}
+
+export function safeLoginReturn(path: string): boolean {
+  return /^\/(?:projects|l\/[a-zA-Z0-9_-]+|review\/\d+|batches\/\d+\/(?:operation|review)|projects\/\d+\/operations)$/.test(path)
 }

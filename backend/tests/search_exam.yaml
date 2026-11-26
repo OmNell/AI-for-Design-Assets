@@ -1,0 +1,14 @@
+# 这里是可复现的开发考卷。正确答案来自 test_search_exam_demo 的三件模拟商品。
+# 真实验收请另建 YAML，沿用 cases 结构，填写人工确认的商品／项目编号（预计 100～200 条）。
+dataset: dev-fixture
+cases:
+  - {query: P001-002, type: 商品编号, products: [P001-002]}
+  - {query: P001, type: 项目编号, projects: [P001]}
+  - {query: 瓷器, type: 材质同义词, products: [P001-002]}
+  - {query: 红色, type: 主色, products: [P001-002]}
+  - {query: 简约, type: 风格, products: [P001-002]}
+  - {query: 过年, type: 节日场景, products: [P001-002]}
+  - {query: 商务客户, type: 受众群体, products: [P001-003]}
+  - {query: 日常居家, type: 使用场景, products: [P001-002]}
+  - {query: 过年送的红色陶瓷, type: 模糊自然语言, products: [P001-002]}
+  - {query: 海底超导发动机, type: 无匹配, empty: true}

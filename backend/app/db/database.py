@@ -39,6 +39,7 @@ class Database:
         config = Config(str(BACKEND_DIR / "alembic.ini"))
         config.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
         with self.engine.begin() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
             config.attributes["connection"] = connection
             command.upgrade(config, "head")
 

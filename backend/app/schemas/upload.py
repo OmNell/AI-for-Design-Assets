@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ManifestEntry(BaseModel):
@@ -26,10 +26,13 @@ class Issue(BaseModel):
 
 
 class PrecheckResponse(BaseModel):
+    won_path: str | None = None
+    lost_path: str | None = None
     project_code: str
     company_name: str
     project_name: str
     code_status: Literal["new", "exists", "need_h_code"]
+    project_id: int | None = None
     issues: list[Issue]
     path_prefix_length: int = 0
 
@@ -46,6 +49,17 @@ class ResumeRequest(PrecheckRequest):
     acks: list[str] = Field(default_factory=list)
 
 
+class TerminateBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=500)
+    confirmed: bool = False
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def trim_reason(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
 class UploadFileResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -55,19 +69,26 @@ class UploadFileResponse(BaseModel):
     upload_status: str
     bytes_received: int
     fingerprint: str | None
+    fingerprint_kind: str | None = None
     thumb_status: str | None = None
     thumb_error: str | None = None
+    conflict: str | None = None
+    conflict_choice: str | None = None
 
 
 class BatchResponse(BaseModel):
     id: int
     batch_no: str
     project_code: str
+    kind: str = "ingest"
+    project_id: int | None = None
     folder_name: str
     original_folder_name: str
     status: str
     queued: bool
     won: bool
+    terminated_at: datetime | None = None
+    termination_reason: str | None = None
     updated_at: datetime
     files: list[UploadFileResponse]
     directories: list[str]
@@ -99,6 +120,7 @@ class BatchProductResponse(BaseModel):
     display_name: str
     ai_status: str
     ai_error: str | None
+    visual_ai_succeeded: bool = False
     tags: dict[str, object]
     free_text: str
     flags: list[str]
@@ -107,3 +129,37 @@ class BatchProductResponse(BaseModel):
 
 
 BatchResponse.model_rebuild()
+
+
+class PreDescriptionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    description: str = Field(max_length=180)
+    version: int = Field(ge=0)
+    fingerprint: str | None
+
+
+class PreDescriptionProduct(BaseModel):
+    id: int
+    batch_file_id: int
+    kind: Literal["item", "set"]
+    display_name: str
+    file_name: str
+    thumb_status: str | None
+    thumb_error: str | None
+    fingerprint: str | None
+    description: str | None
+    version: int
+    state: Literal["missing", "ready", "reconfirm"]
+    ai_status: str
+    ai_error: str | None
+    visual_ai_succeeded: bool
+    ai_in_progress: bool
+
+
+class PreDescriptionView(BaseModel):
+    batch_id: int
+    status: str
+    folder_name: str
+    kind: str
+    editable: bool
+    products: list[PreDescriptionProduct]

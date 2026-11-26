@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Index
+from sqlalchemy import LargeBinary, Computed, text, JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -36,6 +36,7 @@ class UserSession(Record, Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     client_host: Mapped[str] = mapped_column(String)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Setting(Record, Base):
@@ -67,13 +68,22 @@ class Job(Record, Base):
     status: Mapped[str] = mapped_column(String, default="queued")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     run_as_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    run_as_session_id: Mapped[int | None] = mapped_column(ForeignKey("sessions.id"))
     error: Mapped[str | None] = mapped_column(Text)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class Project(Record, Base):
+class Lifecycle:
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    void_reason: Mapped[str | None] = mapped_column(Text)
+    void_batch_id: Mapped[int | None] = mapped_column(Integer)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delete_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class Project(Record, Lifecycle, Base):
     __tablename__ = "projects"
     project_code: Mapped[str] = mapped_column(String, unique=True)
     code_source: Mapped[str] = mapped_column(String, default="company")
@@ -86,10 +96,28 @@ class Project(Record, Base):
     current_path: Mapped[str] = mapped_column(String, default="")
     status: Mapped[str] = mapped_column(String, default="active")
     ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archive_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archive_review: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    asset_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    canonical_path: Mapped[str | None] = mapped_column(String)
+    restore_path: Mapped[str | None] = mapped_column(String)
+
+
+class HCodeSequence(Base):
+    __tablename__ = "h_code_sequences"
+    year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_sequence: Mapped[int] = mapped_column(Integer)
 
 
 class Batch(Record, Base):
     __tablename__ = "batches"
+    __table_args__ = (Index("uq_batches_active_lock", "op_lock_key", unique=True, sqlite_where=text("lock_active = 1")),)
+    op_lock_key: Mapped[str | None] = mapped_column(Text, Computed(
+        "CASE WHEN kind = 'ingest' THEN 'ingest:' || project_code ELSE 'project:' || project_id END", persisted=False))
+    lock_active: Mapped[bool] = mapped_column(Boolean, Computed(
+        "CASE WHEN status IN ('已入库', '已撤回', '已终止') THEN 0 ELSE 1 END", persisted=False))
+    terminated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    termination_reason: Mapped[str | None] = mapped_column(Text)
     batch_no: Mapped[str] = mapped_column(String, unique=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
     project_code: Mapped[str] = mapped_column(String)
@@ -97,6 +125,7 @@ class Batch(Record, Base):
     status: Mapped[str] = mapped_column(String)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     uploader_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    upload_session_id: Mapped[int | None] = mapped_column(ForeignKey("sessions.id"))
     first_reviewer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     final_reviewer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     round: Mapped[int] = mapped_column(Integer, default=1)
@@ -104,6 +133,7 @@ class Batch(Record, Base):
     won: Mapped[bool] = mapped_column(Boolean)
     recommended_path: Mapped[str | None] = mapped_column(String)
     final_path: Mapped[str | None] = mapped_column(String)
+    review_snapshot_hash: Mapped[str | None] = mapped_column(String(64))
     note_to_reviewer: Mapped[str | None] = mapped_column(Text)
     payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     ingest_step: Mapped[int] = mapped_column(Integer, default=0)
@@ -120,6 +150,8 @@ class BatchFile(Record, Base):
     upload_status: Mapped[str] = mapped_column(String, default="pending")
     bytes_received: Mapped[int] = mapped_column(Integer, default=0)
     fingerprint: Mapped[str | None] = mapped_column(String)
+    fingerprint_kind: Mapped[str | None] = mapped_column(String)
+    thumb_fingerprint: Mapped[str | None] = mapped_column(String)
     thumb_status: Mapped[str | None] = mapped_column(String)
     thumb_error: Mapped[str | None] = mapped_column(Text)
     conflict: Mapped[str | None] = mapped_column(String)
@@ -146,23 +178,51 @@ class TagField(Record, Base):
 
 class BatchProduct(Record, Base):
     __tablename__ = "batch_products"
-    __table_args__ = (UniqueConstraint("batch_id", "batch_file_id"),)
+    __table_args__ = (UniqueConstraint("batch_id", "batch_file_id"), Index("uq_batch_products_code", "product_code", unique=True))
     batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), index=True)
     batch_file_id: Mapped[int] = mapped_column(ForeignKey("batch_files.id"))
     kind: Mapped[str] = mapped_column(String)
     display_name: Mapped[str] = mapped_column(String)
+    product_code: Mapped[str | None] = mapped_column(String)
     existing_product_id: Mapped[int | None] = mapped_column(Integer)
     ai_status: Mapped[str] = mapped_column(String, default="pending")
     ai_error: Mapped[str | None] = mapped_column(Text)
+    ai_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ai_model: Mapped[str | None] = mapped_column(String)
+    ai_fingerprint: Mapped[str | None] = mapped_column(String)
+    pre_description: Mapped[str | None] = mapped_column(Text)
+    pre_description_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    pre_description_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pre_description_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    pre_description_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    ai_description_version: Mapped[int | None] = mapped_column(Integer)
+    ai_raw_result: Mapped[str | None] = mapped_column(Text)
     tags: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     free_text: Mapped[str] = mapped_column(Text, default="")
     relation_items: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     relation_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    free_text_source: Mapped[str] = mapped_column(String, default="ai")
+    ai_free_text: Mapped[str] = mapped_column(Text, default="")
+    tags_confirmation: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    relation_confirm_kind: Mapped[str] = mapped_column(String, default="pending")
     flags: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+
+class ReviewSnapshot(Base):
+    __tablename__ = "review_snapshots"
+    __table_args__ = (UniqueConstraint("batch_id", "round"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"))
+    round: Mapped[int] = mapped_column(Integer)
+    submitted_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    digest: Mapped[str] = mapped_column(String(64))
+    content: Mapped[dict[str, object]] = mapped_column(JSON)
 
 
 class CompanyIndustryMap(Record, Base):
     __tablename__ = "company_industry_map"
+    __table_args__ = (Index("uq_company_directory_seq", "industry_seq", "company_seq", unique=True),)
     company_name: Mapped[str] = mapped_column(String, unique=True)
     aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
     company_seq: Mapped[int] = mapped_column(Integer)
@@ -191,3 +251,277 @@ class AiAlert(Record, Base):
     run_id: Mapped[str] = mapped_column(String)
     reason: Mapped[str] = mapped_column(Text)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Industry(Record, Base):
+    __tablename__ = "industries"
+    name: Mapped[str] = mapped_column(String, unique=True)
+    seq: Mapped[int] = mapped_column(Integer, unique=True)
+    last_company_seq: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ReviewRound(Record, Base):
+    """每个批次每轮每级一条：未决定时是领取人的草稿（承载暂存的钉图意见）。"""
+    __tablename__ = "review_rounds"
+    __table_args__ = (UniqueConstraint("batch_id", "round", "stage"),)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), index=True)
+    round: Mapped[int] = mapped_column(Integer)
+    stage: Mapped[str] = mapped_column(String)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("review_snapshots.id"))
+    execution_session_id: Mapped[int | None] = mapped_column(ForeignKey("sessions.id"))
+    path_change: Mapped[dict | None] = mapped_column(JSON)
+    reviewer_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    decision: Mapped[str | None] = mapped_column(String)
+    comment: Mapped[str | None] = mapped_column(Text)
+    checklist: Mapped[object | None] = mapped_column(JSON)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ReviewPin(Record, Base):
+    __tablename__ = "review_pins"
+    review_round_id: Mapped[int] = mapped_column(ForeignKey("review_rounds.id"), index=True)
+    batch_product_id: Mapped[int] = mapped_column(ForeignKey("batch_products.id"))
+    x: Mapped[float] = mapped_column(Float)
+    y: Mapped[float] = mapped_column(Float)
+    text: Mapped[str] = mapped_column(Text)
+class CatalogFile(Record, Lifecycle, Base):
+    __tablename__ = "files"
+    inspection_probe: Mapped[dict | None] = mapped_column(JSON)
+    physical_rel_path: Mapped[str | None] = mapped_column(String)
+    void_prior_status: Mapped[str | None] = mapped_column(String)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    rel_path: Mapped[str] = mapped_column(String)
+    size: Mapped[int] = mapped_column(Integer)
+    mtime: Mapped[int] = mapped_column(Integer)
+    fingerprint: Mapped[str] = mapped_column(String)
+    fingerprint_kind: Mapped[str] = mapped_column(String, default="full")
+    category: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="active")
+    first_batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"))
+
+
+class Product(Record, Lifecycle, Base):
+    __tablename__ = "products"
+    product_code: Mapped[str] = mapped_column(String, unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    kind: Mapped[str] = mapped_column(String)
+    display_name: Mapped[str] = mapped_column(String)
+    file_id: Mapped[int] = mapped_column(ForeignKey("files.id"))
+    archive_rel_path: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="active")
+    free_text: Mapped[str] = mapped_column(Text, default="")
+    vision_model: Mapped[str] = mapped_column(String, default="")
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ProductRelation(Record, Base):
+    __tablename__ = "product_relations"
+    __table_args__ = (UniqueConstraint("set_product_id", "item_product_id"),)
+    set_product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    item_product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    source: Mapped[str] = mapped_column(String)
+    confirmed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String, default="active")
+    confirmed_by_original_id: Mapped[int | None] = mapped_column(Integer)
+    inactive_reason: Mapped[str | None] = mapped_column(String)
+    relation_version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class ProductTag(Record, Base):
+    __tablename__ = "product_tags"
+    __table_args__ = (UniqueConstraint("product_id", "field_key"),)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    field_key: Mapped[str] = mapped_column(String, index=True)
+    value: Mapped[str] = mapped_column(Text)
+    terms: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source: Mapped[str] = mapped_column(String)
+    ai_value: Mapped[str] = mapped_column(Text, default="")
+    flag: Mapped[str | None] = mapped_column(String)
+    confirmation_status: Mapped[str] = mapped_column(String)
+
+
+class HistoryVersion(Record, Base):
+    __tablename__ = "history_versions"
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    file_id: Mapped[int] = mapped_column(ForeignKey("files.id"))
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"))
+    old_fingerprint: Mapped[str] = mapped_column(String)
+    old_rel_path: Mapped[str] = mapped_column(String)
+    new_rel_path: Mapped[str] = mapped_column(String)
+    reason: Mapped[str] = mapped_column(String)
+    batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"))
+    expected_missing: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class Link(Record, Base):
+    __tablename__ = "links"
+    __table_args__ = (UniqueConstraint("kind", "target_id"),)
+    link_id: Mapped[str] = mapped_column(String, unique=True)
+    kind: Mapped[str] = mapped_column(String)
+    target_id: Mapped[int] = mapped_column(Integer)
+
+class IngestPlan(Base):
+    __tablename__ = "ingest_plans"
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), primary_key=True)
+    manifest: Mapped[dict[str, object]] = mapped_column(JSON)
+
+
+class ProductEmbedding(Base):
+    __tablename__ = "product_embeddings"
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), primary_key=True)
+    model_id: Mapped[str] = mapped_column(String, primary_key=True)
+    model_version: Mapped[str] = mapped_column(String, primary_key=True)
+    index_generation: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dimension: Mapped[int | None] = mapped_column(Integer)
+    embedding: Mapped[bytes | None] = mapped_column(LargeBinary)
+    text_hash: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class InspectionRun(Record, Base):
+    __tablename__ = "inspection_runs"
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), unique=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class InspectionFinding(Record, Base):
+    __tablename__ = "inspection_findings"
+    __table_args__ = (UniqueConstraint("kind", "file_id", "path", "run_id"),)
+    run_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    kind: Mapped[str] = mapped_column(String)
+    path: Mapped[str] = mapped_column(String)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    file_id: Mapped[int | None] = mapped_column(ForeignKey("files.id"))
+    auto_fixed: Mapped[bool] = mapped_column(Boolean, default=False)
+    detail: Mapped[str] = mapped_column(Text)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    acknowledged_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BackupRecord(Record, Base):
+    __tablename__ = "backup_records"
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), unique=True)
+    name: Mapped[str] = mapped_column(String, unique=True)
+    size: Mapped[int | None] = mapped_column(Integer)
+    fingerprint: Mapped[str | None] = mapped_column(String(64))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    local_retained: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class CleanupPlan(Record, Base):
+    __tablename__ = "cleanup_plans"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"))
+    batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"))
+    target: Mapped[str] = mapped_column(String)
+    entries: Mapped[list[dict]] = mapped_column(JSON)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AccessLog(Base):
+    __tablename__ = "access_logs"
+    __table_args__ = (UniqueConstraint("session_id", "kind", "target_id", "logical_id"),
+                      Index("ix_access_session_file", "session_id", "kind", "target_id", "ts"))
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"))
+    kind: Mapped[str] = mapped_column(String)
+    target_id: Mapped[int] = mapped_column(Integer)
+    target_path: Mapped[str | None] = mapped_column(String)
+    byte_ranges: Mapped[list[list[int]] | None] = mapped_column(JSON)
+    logical_id: Mapped[str] = mapped_column(String)
+    outcome: Mapped[str] = mapped_column(String)
+    delivery: Mapped[str | None] = mapped_column(String)
+    delivery_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    client_host: Mapped[str] = mapped_column(String)
+
+
+class QueryCache(Base):
+    __tablename__ = "query_cache"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conditions: Mapped[dict[str, object]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SearchLog(Base):
+    __tablename__ = "search_logs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    query: Mapped[str] = mapped_column(Text)
+    parsed: Mapped[dict[str, object]] = mapped_column(JSON)
+    result_count: Mapped[int] = mapped_column(Integer)
+    mode: Mapped[str] = mapped_column(String, default="semantic", server_default="semantic")
+    duration_ms: Mapped[int] = mapped_column(Integer)
+    index_generation: Mapped[int | None] = mapped_column(Integer)
+    ai_usage: Mapped[list[dict[str, object]]] = mapped_column(JSON)
+    warnings: Mapped[list[str]] = mapped_column(JSON)
+    targets: Mapped[dict[str, list[int]]] = mapped_column(JSON)
+
+
+class SearchClick(Base):
+    __tablename__ = "search_clicks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    search_id: Mapped[int] = mapped_column(ForeignKey("search_logs.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    target_kind: Mapped[str] = mapped_column(String)
+    target_id: Mapped[int] = mapped_column(Integer)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EmbeddingIndex(Base):
+    __tablename__ = "embedding_indexes"
+    generation: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    version: Mapped[str] = mapped_column(String)
+    revision: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PostopPlan(Base):
+    __tablename__ = "postop_plans"
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), primary_key=True)
+    previous_path: Mapped[str] = mapped_column(String)
+    target_path: Mapped[str] = mapped_column(String)
+    baseline: Mapped[dict] = mapped_column(JSON)
+    manifest: Mapped[dict] = mapped_column(JSON)
+    sources: Mapped[dict] = mapped_column(JSON)
+    purge: Mapped[list[dict]] = mapped_column(JSON)
+    progress: Mapped[dict] = mapped_column(JSON)
+
+
+class ProductEmbeddingHistory(Base):
+    __tablename__ = "product_embedding_history"
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), primary_key=True)
+    model_id: Mapped[str] = mapped_column(String, primary_key=True)
+    model_version: Mapped[str] = mapped_column(String, primary_key=True)
+    index_generation: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dimension: Mapped[int] = mapped_column(Integer)
+    embedding: Mapped[bytes] = mapped_column(LargeBinary)
+    text_hash: Mapped[str] = mapped_column(String(64))
+
+
+class ExpectedDeletion(Base):
+    __tablename__ = "expected_deletions"
+    __table_args__ = (UniqueConstraint("batch_id", "file_id", "path"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), index=True)
+    file_id: Mapped[int] = mapped_column(ForeignKey("files.id"))
+    path: Mapped[str] = mapped_column(String)
+    size: Mapped[int] = mapped_column(Integer)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    intent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    quarantined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
