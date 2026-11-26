@@ -11,8 +11,8 @@ let host: HTMLElement
 let root: Root
 let query: QueryClient
 const revision = '9'.repeat(64)
-const candidate = { host: '192.168.1.2', dsm_port: 5001, share: '设计资产共享', work_root: '部门',
-  system_user: 'wb-system', has_system_password: true, certificate: 'system_ca', regions: { formal: '/部门/设计资产' } }
+const candidate = { host: '192.168.1.2', share: '设计资产共享', work_root: '部门',
+  system_user: 'wb-system', has_system_password: true, regions: { formal: '/部门/设计资产' } }
 const active = { ...candidate, work_root: null, regions: { formal: '/设计资产' } }
 const view = { active, pending: null, revision, state: 'active', mode: 'dev', message: '当前运行配置', connection_checks: [] }
 const accepted = { eligible: true, checks: [{ name: '系统账号 · 备份区', state: 'passed', message: '目录授权符合预期' }],
@@ -86,7 +86,7 @@ it('目录读取、校验、二次确认和待重启状态', async () => {
   expect(field('共享内相对路径').value).toBe('部门')
   act(() => button('检查配置').click())
   await until(() => !button('保存配置').disabled)
-  input(field('DSM HTTPS 端口'), '5002')
+  input(field('NAS IP 或内网域名'), '192.168.1.3')
   expect(button('保存配置').disabled).toBe(true)
   act(() => button('检查配置').click())
   await until(() => !button('保存配置').disabled)

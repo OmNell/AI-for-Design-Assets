@@ -12,7 +12,6 @@ from app.db.database import Database
 from app.db.models import Batch, BatchFile, BatchProduct, CompanyIndustryMap, Job, User, utcnow
 from app.services.ai.orchestrator import AiService
 from app.services.ai.settings import AiSettingsService
-from app.services.auth.backends import FakeAuthBackend
 from app.services.auth.service import AuthService
 from app.services.crypto import SecretCipher
 from app.services.jobs import JobContext, JobQueue
@@ -24,7 +23,7 @@ from app.services.thumbs import ThumbService
 def service(database: Database, settings: Settings, tmp_path: Path) -> Iterator[tuple[AiService, Batch, User]]:
     settings.paths.dev_nas_dir = tmp_path / 'nas'
     with create_session_pool(settings) as pool:
-        auth = AuthService(database, pool, FakeAuthBackend([]), settings)
+        auth = AuthService(database, pool, settings)
         cipher = SecretCipher(settings.paths.data_dir)
         queue = JobQueue(database, pool, workers=1, auth_lock=auth.lock)
         thumbs = ThumbService(auth, queue)

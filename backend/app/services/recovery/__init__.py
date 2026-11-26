@@ -21,7 +21,7 @@ from app.services.crypto import SecretCipher
 from app.services.ingest import vectors
 from app.services.jobs import JobQueue
 from app.services.nas import NasFs, NasNotFound, Region, safe_join
-from app.services.nas.factory import create_auth_backend, create_paths, create_session_pool
+from app.services.nas.factory import create_paths, create_session_pool
 from app.services.oplog import OplogService
 from app.services.thumbs import ThumbService
 from app.services.thumbs.images import ImageDecodeError, render_variants
@@ -253,7 +253,7 @@ def rebuild_auxiliary(config: Settings, directory: Path, fs: NasFs, root: str,
     pool = create_session_pool(work)
     cipher = (SecretCipher(directory) if work.mode == "dev"
               else SecretCipher(config.paths.data_dir, read_only=True))
-    auth = AuthService(database, pool, create_auth_backend(work), work)
+    auth = AuthService(database, pool, work)
     queue = JobQueue(database, pool)
     ai = AiService(auth, queue, AiSettingsService(auth, cipher), cipher, ThumbService(auth, queue))
     result: dict = {"active": [], "blocked": [], "thumbnails_failed": []}

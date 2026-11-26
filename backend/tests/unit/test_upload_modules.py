@@ -12,7 +12,7 @@ from app.db.models import Batch, Oplog
 from app.schemas.upload import CreateBatchRequest, ResumeRequest
 from app.services.auth.service import AuthService
 from app.services.nas import NasSessionExpired
-from app.services.nas.factory import create_auth_backend, create_session_pool
+from app.services.nas.factory import create_session_pool
 from app.services.upload.service import UploadService
 from sqlalchemy import select
 
@@ -65,7 +65,7 @@ def test_idle_upload_releases_own_session_and_resumes_durably(database: Database
     settings.paths.dev_nas_dir = tmp_path / 'nas'
     settings.dev_users = [DevUser(username='one', password='fake', permissions={'temp': 'write'})]
     with create_session_pool(settings) as pool:
-        auth = AuthService(database, pool, create_auth_backend(settings), settings)
+        auth = AuthService(database, pool, settings)
         upload = UploadService(auth)
         auth.on_close = upload.session_closed
         try:

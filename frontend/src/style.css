@@ -41,7 +41,6 @@
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
 }
-.app-shell[data-notice="true"] { grid-template-rows: auto auto minmax(0, 1fr); }
 .app-header {
   display: flex;
   min-width: 0;

@@ -9,16 +9,16 @@ from ipaddress import IPv4Network
 import json
 from pathlib import Path
 import os
-import shutil
 import sqlite3
 import sys
 import tempfile
+import warnings
 from zipfile import ZIP_DEFLATED, ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "scripts"))
-from app.config import Settings, load_settings
+from app.config import Settings, load_settings, without_legacy_dsm
 from app.db.database import Database
 from app.services.backup.format import FILES, inventory
 from app.services.crypto import SecretCipher
@@ -41,11 +41,9 @@ def validate_networks(items: list[str]) -> None:
 
 def validate_config(source: Path, managed: Path) -> Settings:
     config = load_settings(source)
-    if not config.nas.dsm_verify_ssl:
-        raise ValueError("托管部署必须验证 DSM HTTPS 证书")
     if (config.mode != "prod" or config.server.port != 8080 or not config.server.public_base_url.startswith("http://")
             or not config.server.public_base_url.rstrip("/").endswith(":8080") or not config.bootstrap_admin
-            or not config.nas.dsm_https or not config.ai.base_url.startswith("https://")
+            or not config.ai.base_url.startswith("https://")
             or config.paths.data_dir != (managed / "data").resolve()):
         raise ValueError("托管部署必须使用生产配置、指定的固定域名和 data 目录")
     create_paths(config)
@@ -70,8 +68,8 @@ def relocate_config(root: Path) -> None:
     settings = load_settings(source)
     raw = yaml.safe_load(source.read_bytes())
     raw["paths"] = {"data_dir": str(settings.paths.data_dir), "dev_nas_dir": str(settings.paths.dev_nas_dir)}
-    if settings.nas.dsm_ca_file:
-        raw.setdefault("nas", {})["dsm_ca_file"] = str(settings.nas.dsm_ca_file)
+    if "nas" in raw:
+        raw["nas"] = without_legacy_dsm(raw["nas"])
     atomic_write(destination, yaml.safe_dump(raw, allow_unicode=True, sort_keys=False).encode())
     validate_config(destination, root)
 
@@ -92,12 +90,12 @@ def initialize(config_file: Path, root: Path) -> None:
         template["nas"].update(work_root=work_root, root_path="/" + roots.root(Region.FORMAL),
                                temp_path="/" + roots.root(Region.TEMP), backup_path="/" + roots.root(Region.BACKUP))
     template["paths"]["data_dir"] = "../data"
-    ca = input("DSM 私有 CA PEM 路径（使用公共证书时直接回车）：").strip()
-    if ca:
-        cert = Path(ca).resolve(strict=True)
-        shutil.copyfile(cert, config_file.parent / "dsm-ca.pem")
-        template["nas"]["dsm_ca_file"] = "./dsm-ca.pem"
-    password = getpass.getpass("wb-system 密码（隐藏输入）：")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        try:
+            password = getpass.getpass("wb-system 密码（隐藏输入）：")
+        except (EOFError, getpass.GetPassWarning):
+            raise ValueError("请输入密码，安装需要支持隐藏输入的终端") from None
     if not password or not template["bootstrap_admin"] or not template["nas"]["host"]:
         raise ValueError("管理员、群晖地址和系统密码必填")
     if template["bootstrap_admin"].casefold() == template["nas"]["system_user"].casefold():

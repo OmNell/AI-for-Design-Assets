@@ -20,4 +20,4 @@ vector = ["sqlite-vec==0.1.6"]
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["prompts/*.txt", "_release.txt"]
+app = ["prompts/*.txt"]

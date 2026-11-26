@@ -4,7 +4,6 @@ from pathlib import Path
 import re
 
 RELEASE_MANIFEST = Path(__file__).resolve().parents[2] / "RELEASE.json"
-RELEASE_MARKER = Path(__file__).with_name("_release.txt")
 
 
 def _version() -> str:

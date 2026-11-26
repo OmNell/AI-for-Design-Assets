@@ -159,7 +159,7 @@ def test_multiple_browser_tokens_have_independent_nas_sessions(client: TestClien
 def test_nas_open_failure_no_user_or_token_persisted(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     def refused(*args: object) -> None:
         raise NasPermissionDenied("fake-password")
-    monkeypatch.setattr(client.app.state.auth.pool, "open", refused)
+    monkeypatch.setattr(client.app.state.auth.pool, "connect", refused)
     response = client.post("/api/auth/login", json={"username": "member-demo", "password": "fake-password"})
     assert response.status_code == 403 and "fake-password" not in response.text
     with client.app.state.database.session() as session:

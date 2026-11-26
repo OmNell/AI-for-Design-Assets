@@ -3,29 +3,27 @@ from __future__ import annotations
 
 import os
 import ipaddress
-import platform
 import re
-import socket
 from urllib.parse import urlsplit
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, YamlConfigSettingsSource
 
-from app import RELEASE_MANIFEST, RELEASE_MARKER
-
-MAC_LOCAL_DSM_TEST_ENV = "NASWB_MAC_LOCAL_DSM_TEST"
-DSM_LOCAL_TEST_NOTICE = "本机测试环境：DSM 证书验证已关闭"
+LEGACY_DSM_KEYS = frozenset({"dsm_port", "dsm_https", "dsm_verify_ssl", "dsm_ca_file"})
 
 
-def require_mac_dsm_test(dsm_https: bool) -> None:
-    if not dsm_https:
-        raise ValueError("关闭 DSM 证书验证时仍必须使用 HTTPS")
-    if platform.system() != "Darwin" or RELEASE_MANIFEST.is_file() or RELEASE_MARKER.is_file():
-        raise ValueError("只有 Mac 本机的源码测试可以关闭 DSM 证书验证")
-    if os.environ.get(MAC_LOCAL_DSM_TEST_ENV) != "1":
-        raise ValueError(f"关闭 DSM 证书验证必须显式设置 {MAC_LOCAL_DSM_TEST_ENV}=1")
+def without_legacy_dsm(nas: dict[str, Any]) -> dict[str, Any]:
+    """允许 V1.1.5 的 DSM 字段随配置读取，SMB 不使用这些旧设置。"""
+    return {key: value for key, value in nas.items() if key not in LEGACY_DSM_KEYS}
+
+
+def has_nas_env_override() -> bool:
+    obsolete = {f"NASWB_NAS__{key.upper()}" for key in LEGACY_DSM_KEYS}
+    return any(key.upper() not in obsolete and
+               (key.upper() == "NASWB_NAS" or key.upper().startswith("NASWB_NAS__"))
+               for key in os.environ)
 
 
 class Section(BaseModel):
@@ -58,9 +56,6 @@ class ServerConfig(Section):
 
 class NasConfig(Section):
     host: str = "192.168.0.177"
-    dsm_port: int = Field(default=5001, ge=1, le=65535)
-    dsm_https: bool = True
-    dsm_verify_ssl: bool = True
     share: str = "设计资产共享"
     work_root: str | None = None
     verified_address: ipaddress.IPv4Address | None = None
@@ -69,9 +64,13 @@ class NasConfig(Section):
     backup_path: str = "/_工作台备份"
     idle_minutes: float = Field(default=30, gt=0, allow_inf_nan=False)
     timeout_s: float = Field(default=30, gt=0, allow_inf_nan=False)
-    dsm_ca_file: Path | None = None
     system_user: str = "wb-system"
     system_password_enc: SecretStr = SecretStr("")
+
+    @model_validator(mode="before")
+    @classmethod
+    def ignore_legacy_dsm(cls, values: Any) -> Any:
+        return without_legacy_dsm(values) if isinstance(values, dict) else values
 
 
 class UploadConfig(Section):
@@ -147,33 +146,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def unique_dev_users(self) -> Settings:
-        if self.mode == "prod" and not self.nas.dsm_https:
-            raise ValueError("生产模式的 DSM 登录必须使用 HTTPS")
-        self.validate_dsm_tls()
         names = [user.username for user in self.dev_users]
         if len(set(names)) != len(names):
             raise ValueError("开发账号不能重复")
         return self
-
-    def validate_dsm_tls(self) -> None:
-        if self.nas.dsm_verify_ssl:
-            return
-        require_mac_dsm_test(self.nas.dsm_https)
-        if self.mode != "prod" or self.server.host != "127.0.0.1":
-            raise ValueError("关闭 DSM 证书验证时必须以 prod 模式仅监听 127.0.0.1")
-
-
-def require_dsm_test_listener(config: Settings, listener: socket.socket | None) -> None:
-    config.validate_dsm_tls()
-    if config.nas.dsm_verify_ssl:
-        return
-    try:
-        if (listener is not None and listener.family == socket.AF_INET and listener.type == socket.SOCK_STREAM
-                and listener.getsockname() == ("127.0.0.1", config.server.port)):
-            return
-    except OSError:
-        pass
-    raise ValueError("关闭 DSM 证书验证时请用 python -m app 启动 127.0.0.1 监听")
 
 
 def load_settings(config_file: Path | str | None = None) -> Settings:
@@ -195,6 +171,4 @@ def load_settings(config_file: Path | str | None = None) -> Settings:
         settings.paths.data_dir = (path.parent / settings.paths.data_dir).resolve()
     if not settings.paths.dev_nas_dir.is_absolute():
         settings.paths.dev_nas_dir = (path.parent / settings.paths.dev_nas_dir).resolve()
-    if settings.nas.dsm_ca_file is not None and not settings.nas.dsm_ca_file.is_absolute():
-        settings.nas.dsm_ca_file = (path.parent / settings.nas.dsm_ca_file).resolve()
     return settings

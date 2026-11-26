@@ -3,15 +3,12 @@ from datetime import datetime, timezone
 from hashlib import sha256
 
 from fastapi.testclient import TestClient
-import httpx
 import pytest
 from sqlalchemy import select
 import yaml
 
-from app.config import NasConfig
 from app.db.models import Batch, CatalogFile, Job, Link, Oplog, Project
 from app.main import create_app
-from app.services.auth.backends import AuthUnavailable, DsmAuthBackend
 from app.services.nas import NasPermissionDenied, Region
 from app.services.nas.factory import create_paths
 from app.services.nas_settings import probe
@@ -47,7 +44,7 @@ def login(client, name="admin"):
 
 
 def candidate(**changes):
-    return {"host": "192.168.1.10", "dsm_port": 5001, "share": "工作台共享",
+    return {"host": "192.168.1.10", "share": "工作台共享",
             "work_root": "部门/工作台", "system_user": "wb-system",
             "actor_password": ADMIN_PASSWORD, "system_password": SECRET, **changes}
 
@@ -69,7 +66,7 @@ def test_roles_redaction_and_browse_boundaries(instance):
         assert active["active"]["work_root"] is None and "system_password_enc" not in str(active)
 
         args = candidate()
-        target = {key: args[key] for key in ("host", "share", "dsm_port", "actor_password")}
+        target = {key: args[key] for key in ("host", "share", "actor_password")}
         result = client.post(BASE + "/browse", json={**target, "path": "部门/工作台"})
         assert result.status_code == 200
         assert set(result.json()["nodes"]) == {"设计资产", "工作台临时区"}
@@ -87,9 +84,7 @@ def test_connection_failures_and_permission_profiles(instance):
     config, root = instance
     with TestClient(create_app(config_file=config)) as client:
         actor = login(client)
-        body = {"host": "192.168.1.10", "share": "工作台共享", "actor_password": "incorrect", "protocol": "dsm"}
-        assert client.post(BASE + "/test", json=body).json()[0]["state"] == "failed"
-        body["protocol"] = "smb"
+        body = {"host": "192.168.1.10", "share": "工作台共享", "actor_password": "incorrect"}
         assert client.post(BASE + "/test", json=body).json()[0]["state"] == "failed"
         body.update(username="employee", actor_password="employee-dev", permission_profile="employee", work_root="部门/工作台")
         assert [row["state"] for row in client.post(BASE + "/test", json=body).json()] == ["passed", "manual"]
@@ -142,7 +137,10 @@ def test_new_root_is_pending_until_restart_and_enforces_three_regions(instance):
             stream.write(b"backup")
         assert (root / "_工作台备份" / "模拟备份").read_bytes() == b"backup"
         old_secret = yaml.safe_load(config.read_text())["nas"]["system_password_enc"]
-        payload = candidate(dsm_port=5002)
+        new_root = root.parent / "工作台二"
+        for name in probe.REGION_NAMES.values():
+            (new_root / name).mkdir(parents=True)
+        payload = candidate(work_root="部门/工作台二")
         payload.pop("system_password")
         assert client.post(BASE + "/apply", json={**payload, "revision": client.get(BASE + "/config").json()["revision"],
                                                 "confirmed": True}).status_code == 200
@@ -210,20 +208,6 @@ def test_inflight_work_blocks_config(instance, status):
         assert submit(client).status_code == 409 and config.read_bytes() == before
 
 
-def test_dsm_redirect_is_blocked_and_certificate_name_is_retained():
-    seen = []
-    def upstream(request):
-        seen.append(request)
-        return httpx.Response(302, headers={"Location": "https://outside.example/test"})
-    backend = DsmAuthBackend(NasConfig(host="nas.internal", verified_address="192.168.1.10"),
-                             httpx.MockTransport(upstream))
-    with pytest.raises(AuthUnavailable, match="重定向"):
-        backend.discover()
-    assert len(seen) == 1 and seen[0].url.host == "192.168.1.10"
-    assert seen[0].extensions["sni_hostname"] == "nas.internal"
-    assert seen[0].headers["host"] == "nas.internal:5001"
-
-
 def test_concurrent_request_blocks_change(instance):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
@@ -271,7 +255,7 @@ def test_two_sibling_paths_still_reject_overlap():
         NasPaths("/部门/设计资产", "/部门/设计资产/临时", "/部门/备份")
 
 
-def test_windows_config_relocation_keeps_data_and_ca_paths(tmp_path):
+def test_windows_config_relocation_keeps_data_paths_and_credentials(tmp_path):
     from app.config import load_settings
     from app.db.database import Database
     from app.services.crypto import SecretCipher
@@ -290,7 +274,8 @@ def test_windows_config_relocation_keeps_data_and_ca_paths(tmp_path):
     assert new.parent.name == "configuration"
     config = load_settings(new)
     assert config.paths == load_settings(old).paths
-    assert config.nas.dsm_ca_file == tmp_path / "test.pem"
+    assert "dsm_ca_file" not in yaml.safe_load(new.read_text())["nas"]
+    assert config.nas.system_password_enc == load_settings(old).nas.system_password_enc
     assert SECRET not in new.read_text()
     package = tmp_path / "backups/pre.zip"
     package.parent.mkdir()
@@ -299,16 +284,3 @@ def test_windows_config_relocation_keeps_data_and_ca_paths(tmp_path):
     new.write_bytes(original + b"\n# after")
     rollback(tmp_path, package)
     assert new.read_bytes() == original and old.exists()
-
-
-def test_managed_deployment_rejects_mac_tls_exception_even_with_authorization(tmp_path, monkeypatch):
-    from app import config as config_module
-    from deploy.ops import validate_config
-
-    monkeypatch.setattr(config_module.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(config_module, "RELEASE_MANIFEST", tmp_path / "RELEASE.json")
-    monkeypatch.setenv(config_module.MAC_LOCAL_DSM_TEST_ENV, "1")
-    source = tmp_path / "config.yaml"
-    source.write_text("mode: prod\nserver: {host: 127.0.0.1}\nnas: {dsm_verify_ssl: false}\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="托管部署必须验证 DSM HTTPS 证书"):
-        validate_config(source, tmp_path)

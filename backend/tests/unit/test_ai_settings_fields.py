@@ -16,7 +16,6 @@ from app.errors import AppError
 from app.schemas.ai import AiSettingsWrite, TagFieldEdit, TagFieldItem, TagFieldsWrite
 from app.services.ai.fields import TagFieldService
 from app.services.ai.settings import AiSettingsService
-from app.services.auth.backends import FakeAuthBackend
 from app.services.auth.service import AuthService
 from app.services.crypto import SecretCipher
 from app.services.nas.factory import create_session_pool
@@ -30,7 +29,7 @@ def services(database: Database, settings: Settings, tmp_path: Path) -> Iterator
         session.flush()
     settings.paths.dev_nas_dir = tmp_path / "nas"
     with create_session_pool(settings) as pool:
-        auth = AuthService(database, pool, FakeAuthBackend([]), settings)
+        auth = AuthService(database, pool, settings)
         yield AiSettingsService(auth, SecretCipher(settings.paths.data_dir)), TagFieldService(auth), actor
 
 

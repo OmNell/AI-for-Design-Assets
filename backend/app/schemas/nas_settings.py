@@ -7,7 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 class NasTarget(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     host: str = Field(min_length=1, max_length=253)
-    dsm_port: int = Field(default=5001, ge=1, le=65535)
     share: str = Field(min_length=1, max_length=80)
 
 
@@ -25,7 +24,6 @@ class NasBrowse(NasTarget):
 
 class NasTest(NasTarget):
     actor_password: SecretStr = Field(min_length=1, max_length=512)
-    protocol: Literal["dsm", "smb"]
     permission_profile: Literal["employee", "final"] | None = None
     work_root: str = Field(default="", max_length=768)
     username: str | None = Field(default=None, min_length=1, max_length=128)
@@ -46,7 +44,6 @@ class NasPublic(NasTarget):
     work_root: str | None
     system_user: str
     has_system_password: bool
-    certificate: Literal["trusted_ca", "system_ca", "legacy_http", "mac_test_disabled"]
     regions: dict[str, str]
 
 

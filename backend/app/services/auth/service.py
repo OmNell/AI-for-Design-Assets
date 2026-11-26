@@ -7,17 +7,19 @@ import secrets
 import threading
 import logging
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.db.database import Database
 from app.db.models import User, UserSession, utcnow
 from app.errors import AppError
-from app.services.auth.backends import AuthBackend, AuthUnavailable
 from app.services.nas import NasPermissionDenied, NasSessionExpired, NasUnavailable, SessionPool
+from app.services.nas.errors import NasLoginError
 from app.services.oplog import OplogService
 
 UPLOAD_DEVICE_COOKIE = "nas_upload_device"
@@ -32,6 +34,10 @@ def is_expired(value: datetime) -> bool:
     return value.replace(tzinfo=timezone.utc) <= utcnow()
 
 
+def account_alias(username: str) -> str:
+    return username.strip().rpartition("\\")[2].split("@", 1)[0].casefold()
+
+
 @dataclass(frozen=True)
 class LoginContext:
     user: User
@@ -39,10 +45,9 @@ class LoginContext:
 
 
 class AuthService:
-    def __init__(self, database: Database, pool: SessionPool, backend: AuthBackend, config: Settings) -> None:
+    def __init__(self, database: Database, pool: SessionPool, config: Settings) -> None:
         self.database = database
         self.pool = pool
-        self.backend = backend
         self.config = config
         self.lock = threading.RLock()
         self._device_key = secrets.token_bytes(32)
@@ -59,26 +64,41 @@ class AuthService:
             OplogService(session).write(user.id if user else None, "anonymous", "登录", "user",
                                        str(user.id) if user else None, None, None, "失败", host)
 
+    def _local_user(self, session: Session, username: str) -> User | None:
+        user = session.scalar(select(User).where(User.username == username))
+        if user is not None and not user.enabled:
+            raise AppError("user_disabled", "工作台账号已停用，请联系管理员", 403)
+        if self.config.mode == "prod":
+            alias = account_alias(username)
+            aliases = [enabled for name, enabled in session.execute(
+                select(User.username, User.enabled).where(User.username != username)) if account_alias(name) == alias]
+            if False in aliases:
+                raise AppError("user_disabled", "工作台账号已停用，请联系管理员", 403)
+            administrator = self.config.bootstrap_admin
+            if aliases or (administrator and administrator != username and account_alias(administrator) == alias):
+                raise AppError("nas_account_name_conflict", "请使用工作台登记的完整 NAS 账号名，或联系管理员核对账号", 403)
+        return user
+
     def login(self, username: str, password: str, host: str) -> tuple[User, str, datetime]:
+        try:
+            current = self.pool.connect(username, password)
+        except NasLoginError as error:
+            self._failed_login(username, host)
+            raise AppError(error.code, str(error), error.status_code) from None
+        except NasPermissionDenied:
+            self._failed_login(username, host)
+            raise AppError("nas_share_permission_denied", "账号无法访问工作台配置的 NAS 共享", 403) from None
+        except (NasUnavailable, NasSessionExpired):
+            self._failed_login(username, host)
+            raise AppError("nas_unavailable", "NAS 连接暂时不可用", 503) from None
+        finally:
+            password = ""
+
         with self.lock:
-            try:
-                verified = self.backend.verify(username, password)
-            except AuthUnavailable:
-                self._failed_login(username, host)
-                raise AppError("auth_unavailable", "身份验证服务暂时不可用", 503) from None
-            if not verified:
-                self._failed_login(username, host)
-                raise AppError("invalid_credentials", "账号或密码不正确", 401)
-            with self.database.session() as session:
-                existing = session.scalar(select(User).where(User.username == username))
-                disabled = existing is not None and not existing.enabled
-            if disabled:
-                self._failed_login(username, host)
-                raise AppError("user_disabled", "账号已停用，请联系管理员", 403)
             opened_id: int | None = None
             try:
                 with self.database.session() as session:
-                    user = session.scalar(select(User).where(User.username == username))
+                    user = self._local_user(session, username)
                     if user is None:
                         roles = ["uploader"]
                         if username == self.config.bootstrap_admin:
@@ -91,7 +111,7 @@ class AuthService:
                     login = UserSession(token_hash=token_hash(token), user_id=user.id, client_host=host, expires_at=expires)
                     session.add(login)
                     session.flush()
-                    self.pool.open(login.id, username, password)
+                    self.pool.adopt(login.id, current)
                     opened_id = login.id
                     user.last_login_at = utcnow()
                     OplogService(session).write(user.id, ",".join(user.roles), "登录", "user", str(user.id),
@@ -102,17 +122,15 @@ class AuthService:
                     except Exception:
                         logging.getLogger("nas_workbench").error("登录后的缩略图恢复未完成，可在任务列表重试")
                 return user, token, expires
-            except (NasPermissionDenied, NasUnavailable) as error:
-                self._failed_login(username, host)
-                code = "nas_permission_denied" if isinstance(error, NasPermissionDenied) else "nas_unavailable"
-                raise AppError(code, "NAS 无权限" if isinstance(error, NasPermissionDenied) else "NAS 连接暂时不可用",
-                               403 if isinstance(error, NasPermissionDenied) else 503) from None
-            except Exception:
-                if opened_id is not None:
-                    self.pool.close(opened_id)
+            except BaseException as error:
+                with suppress(NasUnavailable):
+                    if opened_id is None:
+                        current.close()
+                    else:
+                        self.pool.close(opened_id)
+                if isinstance(error, AppError) and error.code in {"user_disabled", "nas_account_name_conflict"}:
+                    self._failed_login(username, host)
                 raise
-            finally:
-                password = ""
 
     def close_session(self, session_id: int, host: str, *, force: bool = False) -> None:
         try:

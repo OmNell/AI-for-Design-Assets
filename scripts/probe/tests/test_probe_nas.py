@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from typing import BinaryIO
 from unittest.mock import Mock
 
-import httpx
 import pytest
 from smbprotocol.exceptions import SMBOSError
 
@@ -138,51 +137,13 @@ def test_invalid_paths(path: str) -> None:
         probe.relative_path(path)
 
 
-def test_dsm_discovery_post_login_logout_and_redaction() -> None:
-    requests: list[httpx.Request] = []
-    recorder = probe.Recorder(["p&a ss"])
-    def handle(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        body = request.content.decode()
-        if "SYNO.API.Info" in body:
-            payload = {"success": True, "data": {"SYNO.API.Auth": {
-                "path": "entry.cgi", "minVersion": 3, "maxVersion": 7}}}
-        elif "method=login" in body:
-            payload = {"success": True, "data": {"sid": "secret-sid"}}
-        else:
-            payload = {"success": True}
-        return httpx.Response(200, json=payload)
-    dsm = probe.DsmClient("nas", 5001, True, True, 10, recorder.secrets.append)
-    dsm.client.close()
-    dsm.client = httpx.Client(base_url="https://nas:5001/webapi/", transport=httpx.MockTransport(handle))
-    assert "v6" in dsm.login("alice", "p&a ss")
-    assert dsm.sid == "secret-sid"
-    assert "p%26a+ss" in requests[1].content.decode()
-    assert all(r.method == "POST" and not r.url.query for r in requests)
-    assert "secret-sid" not in recorder.redact("secret-sid p&a ss p%26a+ss")
-    assert "p&a ss" not in recorder.redact("secret-sid p&a ss p%26a+ss")
-    dsm.logout()
-    assert dsm.sid is None and dsm.client.is_closed
-    assert "method=logout" in requests[-1].content.decode()
-
-
-def test_dsm_failure_preserves_error_and_no_smb_attempt(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    monkeypatch.setattr(probe.DsmClient, "login", Mock(side_effect=probe.DsmError({"success": False, "error": {"code": 403}})))
-    connect = Mock()
-    monkeypatch.setattr(probe.SmbNasFs, "connect", connect)
-    assert probe.main(args()) == 1
-    connect.assert_not_called()
-    output = capsys.readouterr().out
-    assert '"code": 403' in output and "汇总表" in output
-    assert "pw-a" not in output and "pw-b" not in output
-
-
 def test_smb_adapter_uses_private_caches_everywhere(monkeypatch: pytest.MonkeyPatch) -> None:
     instances: list[SimpleNamespace] = []
     calls: list[dict[str, object]] = []
     def register(host: str, **kwargs: object) -> SimpleNamespace:
         calls.append(kwargs)
-        session = SimpleNamespace(password=kwargs["password"], connection=SimpleNamespace(transport=SimpleNamespace(connected=True)))
+        session = SimpleNamespace(password=kwargs["password"], session_key=b"key",
+                                  connection=SimpleNamespace(transport=SimpleNamespace(connected=True)))
         instances.append(session)
         return session
     monkeypatch.setattr(probe.smbclient, "register_session", register)
@@ -214,6 +175,15 @@ def test_smb_adapter_uses_private_caches_everywhere(monkeypatch: pytest.MonkeyPa
     assert probe.smbclient.reset_connection_cache.call_args.kwargs["connection_cache"] is a.cache
 
 
+def test_smb_guest_is_refused_without_retaining_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    guest = SimpleNamespace(password="secret", session_key=None)
+    monkeypatch.setattr(probe.smbclient, "register_session", Mock(return_value=guest))
+    fs = probe.SmbNasFs("nas", "共享", "alice", 10)
+    with pytest.raises(PermissionError, match="来宾或匿名"):
+        fs.connect("secret")
+    assert guest.password is None and fs.session is None
+
+
 def args() -> list[str]:
     return ["--host", "nas", "--share", "共享", "--test-dir", "读写", "--read-only-dir", "只读",
             "--user", "alice", "--password", "pw-a", "--user", "bob", "--password", "pw-b"]
@@ -235,7 +205,6 @@ def test_two_account_full_flow(local: LocalFs, monkeypatch: pytest.MonkeyPatch, 
             self.session = None
             return "已关闭"
     monkeypatch.setattr(probe, "SmbNasFs", FakeSmb)
-    monkeypatch.setattr(probe.DsmClient, "login", lambda *a: "成功")
     assert probe.main(args()) == 0
     output = capsys.readouterr().out
     assert "双账号同时存活：成功" in output and "B 加入后仍拒写：成功" in output
@@ -246,12 +215,14 @@ def test_two_account_full_flow(local: LocalFs, monkeypatch: pytest.MonkeyPatch, 
 
 
 def test_connection_failure_closes_and_exits_nonzero(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    monkeypatch.setattr(probe.DsmClient, "login", lambda *a: "成功")
-    monkeypatch.setattr(probe.SmbNasFs, "connect", Mock(side_effect=ConnectionError("断开 pw-a")))
+    failure = Mock(side_effect=SMBOSError(0xC000006d, "断开 pw-a"))
+    monkeypatch.setattr(probe.SmbNasFs, "connect", failure)
     assert probe.main(args()) == 1
+    assert failure.call_count == 2
     output = capsys.readouterr().out
+    assert "SMB 身份认证：失败" in output and "0xC000006D" in output
     assert "关闭 SMB：成功" in output and "双账号同时存活：跳过" in output
-    assert "pw-a" not in output
+    assert "pw-a" not in output and "pw-b" not in output
 
 
 def test_cli_bad_arguments_never_echo_password(capsys: pytest.CaptureFixture[str]) -> None:
@@ -286,7 +257,6 @@ def test_hidden_password_input_cannot_fall_back_to_echo(monkeypatch: pytest.Monk
 
 
 def test_single_account_is_incomplete(local: LocalFs, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    monkeypatch.setattr(probe.DsmClient, "login", lambda *a: "成功")
     monkeypatch.setattr(probe.SmbNasFs, "connect", Mock(side_effect=ConnectionError("离线替身")))
     assert probe.main(args()[:-4]) == 1
     assert "未提供两个账号" in capsys.readouterr().out

@@ -8,7 +8,8 @@ import pytest
 
 from app.config import Settings, DevUser, PathsConfig, load_settings
 from app.services.nas import Access, LocalFs, NasPaths, NasPermissionDenied, NasSessionExpired, NasUnavailable, Region, SessionPool, safe_join
-from app.services.nas.factory import create_auth_backend, create_fs, create_paths, create_session_pool, create_system_fs
+from app.services.nas.errors import NasLoginError
+from app.services.nas.factory import create_fs, create_paths, create_session_pool, create_system_fs
 from app.services.nas.paths import SYSTEM_PERMISSIONS
 
 
@@ -125,12 +126,10 @@ def test_factory_dev_config_and_real_system_not_used(tmp_path: Path) -> None:
     config_file.write_text('mode: dev\ndev_users:\n - username: demo\n   password: dummy\n   permissions: {formal: read, temp: write}\n', encoding="utf-8")
     config = load_settings(config_file)
     assert config.paths.dev_nas_dir == tmp_path / "devdata" / "nas"
-    auth = create_auth_backend(config)
-    assert auth.verify("demo", "dummy") and not auth.verify("demo", "wrong")
-    assert not auth.verify("unknown", "dummy")
     assert "dummy" not in repr(config)
-    with pytest.raises(NasPermissionDenied):
+    with pytest.raises(NasLoginError) as failure:
         create_fs(config, "demo", "wrong")
+    assert failure.value.code == "invalid_credentials"
     with create_session_pool(config) as pool:
         fs = pool.open(1, "demo", "dummy")
         fs.mkdir(create_paths(config).join(Region.TEMP, "folder"))

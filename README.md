@@ -51,35 +51,17 @@ npm --prefix frontend run build
 - WP06 的 `0004_ai` 增加 tag_fields、batch_products、company_industry_map、ai_calls、ai_alerts，并初始化业务文档9.5的11个自由文本字段。
 - 密钥 POSIX 权限为 `0600`；Windows 使用受保护 DACL，仅当前服务身份、管理员组及 SYSTEM 可访问。应部署在支持权限控制的本地文件系统，权限设置失败会中止启动。Windows ACL 分支尚待在实际 Windows 环境验证。
 - 密钥与数据库应一并备份；已有密钥无效时会报错，不自动覆盖。删除 `data/` 并重新启动会创建全新数据库与密钥，旧密钥加密的内容无法用新密钥解密。
-- 普通 NAS 密码不写配置；`nas.system_password_enc` 和 `ai.api_key_enc` 只放密文。prod 登录时使用真实 DSM 和本人 SMB；只有显式使用系统会话才解密系统账号密码，不连接百炼。
+- 普通 NAS 密码不写配置；`nas.system_password_enc` 和 `ai.api_key_enc` 只放密文。prod 登录时使用本人 SMB；只有显式使用系统会话才解密系统账号密码，不连接百炼。
 
-### Mac 本机连接真实 NAS 测试
+### Mac 本机连接真实 NAS
 
-DSM 证书验证默认开启。正式环境的私有证书可通过 `nas.dsm_ca_file` 配置受信 CA。若 Mac 本机临时测试的 DSM 证书尚未受信，可以在 **Mac 源码工作副本** 中使用下面的例外。编辑独立测试配置 `~/nas-workbench-real-test/config.yaml`，把以下字段合并到现有配置中，保留 `paths`、共享名和其他设置：
-
-```yaml
-mode: prod
-server:
-  host: 127.0.0.1
-  port: 8081
-nas:
-  host: 192.168.0.177
-  dsm_port: 5001
-  dsm_https: true
-  dsm_verify_ssl: false
-```
-
-停止正在使用这份配置的旧进程。在仓库根目录执行：
+使用独立的本机配置，设置 `mode: prod`、`server.host: 127.0.0.1`、`server.port: 8081`，并填写 `nas.host`、共享文件夹名称和业务区域。保留该环境原有的数据路径。构建前端后，在仓库根目录启动：
 
 ```sh
-npm --prefix frontend run build
-NASWB_CONFIG="$HOME/nas-workbench-real-test/config.yaml" \
-  NASWB_MAC_LOCAL_DSM_TEST=1 .venv/bin/python -m app
+NASWB_CONFIG="$HOME/nas-workbench-real-test/config.yaml" .venv/bin/python -m app
 ```
 
-打开 <http://127.0.0.1:8081>。看到「本机测试环境：DSM 证书验证已关闭」后，使用真实 NAS 用户名和密码登录。工作台实际绑定 IPv4 回环地址，DSM 仍走 HTTPS，SMB 仍以登录人本人连接。请直接访问本机地址，避免通过转发或代理向其他设备开放测试实例。
-
-测试结束后把 `nas.dsm_verify_ssl` 改回 `true` 或删除该项，取消命令中的 `NASWB_MAC_LOCAL_DSM_TEST=1` 后重启。Windows 托管部署和发布包会拒绝该例外。
+打开 <http://127.0.0.1:8081>，使用本人 NAS 账户登录。工作台直接连接 SMB TCP 445，要求 SMB 签名并拒绝匿名与 Guest 会话。旧配置中的 `dsm_port`、`dsm_https`、`dsm_verify_ssl`、`dsm_ca_file` 仍可读取，解析时忽略这些字段和旧 DSM 测试环境变量。部署升级时保留 NAS 地址、共享、工作目录和原数据。
 
 ### 加密工具与操作日志
 
@@ -127,7 +109,7 @@ python -m alembic -c backend/alembic.ini current
 curl http://localhost:8080/api/health
 ```
 
-成功示例：`{"version":"1.1.5","mode":"dev","database_available":true,"dsm_verify_ssl":true}`。数据库不可用时返回 503；所有 API 错误采用 `{code,message,detail}`，不返回内部异常、配置或请求体。非 `/api` 页面路由回退 `index.html`，未知 API 和缺失 `/assets/` 资源返回结构化 404，前端未构建时首页为 404，health 仍可用。
+成功示例：`{"version":"1.1.5","mode":"dev","database_available":true}`。数据库不可用时返回 503；所有 API 错误采用 `{code,message,detail}`，不返回内部异常、配置或请求体。非 `/api` 页面路由回退 `index.html`，未知 API 和缺失 `/assets/` 资源返回结构化 404，前端未构建时首页为 404，health 仍可用。
 
 重建验收：停止后端，将开发环境的 `data/` 移至临时备份位置或删除，再启动；应自动生成新数据库及新密钥，health 恢复正常。此操作仅针对可丢弃的开发数据。
 
@@ -148,7 +130,6 @@ nas:
   # 保留原有 host/share/root_path/temp_path/backup_path 等字段
   idle_minutes: 30
   timeout_s: 30
-  dsm_ca_file: null
 paths:
   data_dir: ./data
   dev_nas_dir: ./devdata/nas
@@ -161,18 +142,16 @@ dev_users:
     permissions: {formal: write, temp: write, backup: none}
 ```
 
-权限键为 `formal`（正式）、`temp`（临时）、`backup`（备份）；值为 `read`（只读）、`write`（读写）、`none`（无权限），缺项默认无权限。三个区域根由 `nas.root_path/temp_path/backup_path` 配置，必须不重叠。`paths.dev_nas_dir` 和 `nas.dsm_ca_file` 的相对路径仍以配置文件目录为准。
+权限键为 `formal`（正式）、`temp`（临时）、`backup`（备份）；值为 `read`（只读）、`write`（读写）、`none`（无权限），缺项默认无权限。三个区域根由 `nas.root_path/temp_path/backup_path` 配置，必须不重叠。`paths.dev_nas_dir` 的相对路径仍以配置文件目录为准。
 
 调用示例（在激活的 Python 环境中）：
 
 ```python
 from app.config import load_settings
 from app.services.nas import Region
-from app.services.nas.factory import create_auth_backend, create_paths, create_session_pool
+from app.services.nas.factory import create_paths, create_session_pool
 
 config = load_settings()
-auth = create_auth_backend(config)
-assert auth.verify("demo-uploader", "demo-uploader-only")
 paths = create_paths(config)
 with create_session_pool(config) as pool:
     fs = pool.open(1, "demo-uploader", "demo-uploader-only")
@@ -196,14 +175,13 @@ with create_session_pool(config) as pool:
 - 禁止删除/改名三个区域根；LocalFs 拒绝符号链接/联接点，SmbFs 拒绝路径上的重解析点。不接受 DFS、其他服务器/共享文件夹路径；LocalFs 是受控开发模拟器，不作为多用户本机操作系统沙箱。
 - 统一异常为 `NasPermissionDenied`、`NasNotFound`、`NasAlreadyExists`、`NasUnavailable`；错误消息为中文，不包含原始凭据或上游请求对象。
 - `SessionPool.open/get/close/system` 线程安全；取不存在或空闲过期的用户会话抛 `NasSessionExpired`，要求重新登录。池有后台回收线程，默认每 30 秒扫一次，`get` 也会同步检查。`get` 和实际文件操作均刷新活动时间；打开的文件流阻止空闲回收，使用完必须关闭。应用结束调用 `shutdown()`，或使用上下文管理器。
-- 每个 SmbFs 以本人凭据、私有缓存建立独立 SMB 连接；使用 NTLM 并要求签名。每次登录独立建连接，会话成立后释放普通用户密码引用。DSM SID 不能替代 SMB 密码。
+- 每个 SmbFs 以本人凭据、私有缓存建立独立 SMB 连接；使用 NTLM 并要求签名。每次登录独立建连接，会话成立后释放普通用户密码引用。登录后的文件操作复用已验证的设备会话。
 - SMB 断线后返回会话失效，保存上次确认的偏移。重新登录后校对尺寸与分片边界再继续。已发出的变更和读写不自动重放。
-- `DsmAuthBackend.verify` 发现接口后 POST 登录，成功立即 POST 注销，SID/密码不保留到实例。身份拒绝返回 False；网络、协议或注销失败抛 `AuthUnavailable`。没有 OTP / Secure SignIn 交互和自动认证重试；HTTPS 默认校验证书，自签名用 `dsm_ca_file` 指定受信 CA。
 - `system()` 采用独立实例：dev 使用固定权限（正式只读、备份读写、临时无权限）；prod 解密 `nas.system_password_enc` 后建立系统账号连接，同时保留上述权限上限，实际 NAS ACL 仍须正确配置。普通用户文件操作从不回退系统账号。
 
 ### 内网真实 NAS 测试
 
-默认 `python -m pytest -q` 排除 nas/bailian；即使只指定 `backend/tests` 也使用根测试配置。真实测试与本地实现共用 `backend/tests/nas/test_contract.py` 中的同一套参数化用例，另有两个账号的 DSM 登录/立即注销测试。
+默认 `python -m pytest -q` 排除 nas/bailian；即使只指定 `backend/tests` 也使用根测试配置。真实测试与本地实现共用 `backend/tests/nas/test_contract.py` 中的同一套参数化用例，并核对测试账号的设备会话与目录权限。
 
 先由管理员创建**专用测试共享文件夹内的三个空区域目录**，例如 `WP02测试/正式`、`WP02测试/临时`、`WP02测试/备份`。不要指向公司正式资产目录。账号 A 对正式区只读、临时区读写，B 对正式区及临时区读写；两账号对测试目录需有列目录/遍历权限。备份区不参与写测试。测试将在正式测试区创建 UUID 子目录、写入并删除测试文件，因此 B 必须是被授权的终审测试账号。NAS 实际 ACL 是 prod 的最终权限执行点。
 
@@ -219,10 +197,7 @@ $env:NAS_TEST_USER_A = "测试上传人"
 $env:NAS_TEST_USER_B = "测试终审"
 $env:NAS_TEST_PASSWORD_A = [Net.NetworkCredential]::new("", (Read-Host "账号 A 密码" -AsSecureString)).Password
 $env:NAS_TEST_PASSWORD_B = [Net.NetworkCredential]::new("", (Read-Host "账号 B 密码" -AsSecureString)).Password
-$env:NAS_TEST_DSM_PORT = "5001"
-$env:NAS_TEST_DSM_HTTPS = "true"
 # 自签名证书时设置受信 CA，证书名称须与 HOST 匹配：
-# $env:NAS_TEST_CA_FILE = "C:\certs\nas-ca.pem"
 python -m pytest backend/tests/nas -m nas -q --tb=short
 Remove-Item Env:NAS_TEST_PASSWORD_A, Env:NAS_TEST_PASSWORD_B
 ```
@@ -240,9 +215,6 @@ export NAS_TEST_USER_B='测试终审'
 read -r -s -p '账号 A 密码：' NAS_TEST_PASSWORD_A
 read -r -s -p '账号 B 密码：' NAS_TEST_PASSWORD_B
 export NAS_TEST_PASSWORD_A NAS_TEST_PASSWORD_B
-export NAS_TEST_DSM_PORT=5001
-export NAS_TEST_DSM_HTTPS=true
-# export NAS_TEST_CA_FILE=/path/to/nas-ca.pem
 python -m pytest backend/tests/nas -m nas -q --tb=short
 unset NAS_TEST_PASSWORD_A NAS_TEST_PASSWORD_B
 ```
@@ -251,7 +223,7 @@ unset NAS_TEST_PASSWORD_A NAS_TEST_PASSWORD_B
 
 现场验收需确认：全部 nas 用例通过；A/B 同时连接时 ACL 分别生效；A 不能把文件移入正式测试区、B 能用本人会话完成移动。也请继续填写 WP00 的 `scripts/probe/RESULT.md`（20MiB 与 rename <1 秒的性能验收属于探路脚本）。本次开发未连接真实 NAS，不能用本地测试结果替代内网验收。
 
-实现参考：[smbprotocol 1.16.1 官方连接缓存实现](https://github.com/jborean93/smbprotocol/blob/v1.16.1/src/smbclient/_pool.py)、[DSM 官方登录 API 指南](https://global.download.synology.com/download/Document/Software/DeveloperGuide/Os/DSM/All/enu/DSM_Login_Web_API_Guide_enu.pdf)。
+实现参考：[smbprotocol 1.16.1 官方连接缓存实现](https://github.com/jborean93/smbprotocol/blob/v1.16.1/src/smbclient/_pool.py)。
 
 ## WP03 · 登录、角色与界面框架
 
@@ -282,7 +254,7 @@ python -m app
 - 工作台角色不能授予 NAS ACL。dev 模式从 dev_users 模拟权限，prod 仍由本人 SMB 连接和群晖 ACL 实际执行文件权限。
 - 上传及首页我的批次已在 WP04 实现；待初审、待终审、项目、搜索、设置仍为建设中占位。管理页可维护角色。组件样例 `/components` 仅 dev 模式显示，prod 直接访问跳回首页。
 - V1.1 使用 `src/components/ui/` 的共享控件、表格、空状态及弹窗。组件样例仍是开发模式入口。
-- 退出或任一 API 返回 401 时清除内存用户及角色缓存，守卫跳转登录；令牌、用户名密码不写 localStorage。表单提交后清空密码字段；SMB 建连后释放普通用户密码。生产环境 DSM 和百炼使用 HTTPS。工作台内网 HTTP 登录页提示口令及 Cookie 明文传输风险，写接口拒绝跨站浏览器请求。
+- 退出或任一 API 返回 401 时清除内存用户及角色缓存，守卫跳转登录；令牌、用户名密码不写 localStorage。表单提交后清空密码字段；SMB 建连后释放普通用户密码。生产环境百炼使用 HTTPS。工作台内网 HTTP 登录页提示口令及 Cookie 明文传输风险，写接口拒绝跨站浏览器请求。
 
 手动验证：
 
@@ -290,7 +262,7 @@ python -m app
 2. 用 demo-admin 登录，管理 → 角色表，给 demo-uploader 勾选初审并保存；对方重新登录后应出现“待初审”。普通账号直接请求 GET/PUT `/api/admin/roles` 返回 403。
 3. 在开发模式的组件样例页打开弹窗，测试 Escape、关闭按钮和回到触发按钮的键盘焦点。
 4. 测试令牌和 NAS 超时的自动化用例位于 `backend/tests/integration/test_auth_roles.py`；默认测试无真实 NAS 依赖。
-5. 内网 prod 验证：配置真实 NAS 主机、共享及区域根、受信 CA 与 bootstrap_admin，`mode: prod` 后重启；在登录页输入本人真实 NAS 凭据，应完成 DSM 验证和本人 SMB 建连。本包未在真实 NAS 上执行此项，不能把 dev 测试视作通过。
+5. 内网 prod 验证：配置真实 NAS 主机、共享及区域根与 bootstrap_admin，`mode: prod` 后重启；在登录页输入本人真实 NAS 凭据，应完成 SMB 认证、共享连接和工作台角色校验。本包未在真实 NAS 上执行此项，不能把 dev 测试视作通过。
 
 ## WP04 · 文件夹预检与分片上传
 

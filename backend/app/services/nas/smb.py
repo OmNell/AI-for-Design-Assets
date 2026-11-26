@@ -1,20 +1,22 @@
-"""每个实例独立缓存、显式凭据；仅安全的读请求允许重放一次。"""
+"""每个登录独立的签名 SMB 会话。同一连接用于认证和业务读写。"""
 from __future__ import annotations
 
 import errno
 import re
 import stat
 import uuid
+from contextlib import suppress
 from typing import BinaryIO, Callable, Mapping, TypeVar, cast
 
 import smbclient
 from smbprotocol.connection import Connection
-from smbprotocol.exceptions import BadNetworkName, SMBConnectionClosed
+from smbprotocol.exceptions import SMBConnectionClosed
+from smbprotocol.header import Commands, NtStatus
 from smbprotocol.tree import TreeConnect
-from smbprotocol.session import Session
+from smbprotocol.session import SMB2SessionSetupResponse, Session, SessionFlags
 from smbprotocol.open import DirectoryAccessMask
 
-from .errors import NasNotFound, NasPermissionDenied, NasSessionExpired, translate
+from .errors import NasLoginError, NasNotFound, NasPermissionDenied, NasSessionExpired, translate
 from .fs import BaseFs, NasStat
 from .paths import Access, NasPaths, Region, safe_join
 
@@ -24,7 +26,8 @@ T = TypeVar("T")
 def disconnected(error: Exception) -> bool:
     return (isinstance(error, (SMBConnectionClosed, ConnectionError, TimeoutError))
             or getattr(error, "errno", None) in (errno.ECONNRESET, errno.EPIPE, errno.ETIMEDOUT, errno.ENOTCONN)
-            or getattr(error, "status", getattr(error, "ntstatus", None)) in (0xC000020C, 0xC000020D, 0xC00000C9))
+            or getattr(error, "status", getattr(error, "ntstatus", None)) in (
+                NtStatus.STATUS_USER_SESSION_DELETED, 0xC000035C, 0xC000020C, 0xC000020D, 0xC00000C9))
 
 
 class DirectConnection(Connection):
@@ -32,80 +35,129 @@ class DirectConnection(Connection):
     def __init__(self, host: str, timeout: float) -> None:
         super().__init__(uuid.uuid4(), host, require_signing=True)
         self.operation_timeout = timeout
+        self.bound_to_share = False
+
+    def send(self, message, *args, **kwargs):
+        if self.bound_to_share:
+            if message.COMMAND == Commands.SMB2_SESSION_SETUP:
+                raise NasSessionExpired("SMB 连接已失效，请重新登录")
+            if message.COMMAND == Commands.SMB2_TREE_CONNECT:
+                raise NasPermissionDenied("不允许重连或访问其他 SMB 共享")
+        return super().send(message, *args, **kwargs)
 
     def receive(self, request, wait=True, timeout=None, resolve_symlinks=True):
-        return super().receive(request, wait, min(timeout or self.operation_timeout, self.operation_timeout), False)
+        result = super().receive(request, wait, min(timeout or self.operation_timeout, self.operation_timeout), False)
+        if (request.message["command"].get_value() == Commands.SMB2_SESSION_SETUP
+                and result["status"].get_value() == NtStatus.STATUS_SUCCESS):
+            setup = SMB2SessionSetupResponse()
+            setup.unpack(result["data"].get_value())
+            flags = setup["session_flags"].get_value()
+            if flags & (SessionFlags.SMB2_SESSION_FLAG_IS_GUEST | SessionFlags.SMB2_SESSION_FLAG_IS_NULL):
+                raise NasLoginError("nas_guest_rejected", "SMB 返回来宾或匿名会话，请使用本人 NAS 账号", 401)
+        return result
+
+
+def login_failure(error: Exception, phase: str) -> NasLoginError:
+    if isinstance(error, NasLoginError):
+        return error
+    status = getattr(error, "status", getattr(error, "ntstatus", None))
+    # smbprotocol 的 TCP 层会将套接字错误放在 ValueError 的异常链中。
+    os_error = error.__cause__ if isinstance(error.__cause__, OSError) else error
+    if getattr(os_error, "errno", None) == errno.ECONNREFUSED or status == NtStatus.STATUS_SERVER_UNAVAILABLE:
+        return NasLoginError("smb_unavailable", "NAS 的 SMB 服务暂不可用", 503)
+    if isinstance(os_error, OSError) and status is None:
+        return NasLoginError("nas_network_unreachable", "无法建立或维持与 NAS 的网络连接", 503)
+    if phase == "negotiate":
+        if isinstance(error, SMBConnectionClosed):
+            return NasLoginError("smb_unavailable", "NAS 的 SMB 服务暂不可用", 503)
+        return NasLoginError("smb_negotiation_failed", "SMB 协议协商失败，请检查 NAS 的 SMB 设置", 503)
+    if isinstance(error, SMBConnectionClosed) or status == NtStatus.STATUS_IO_TIMEOUT:
+        return NasLoginError("nas_network_unreachable", "无法建立或维持与 NAS 的网络连接", 503)
+    if phase == "share":
+        if status == NtStatus.STATUS_BAD_NETWORK_NAME:
+            return NasLoginError("nas_share_not_found", "工作台配置的 SMB 共享不存在", 503)
+        if status in (NtStatus.STATUS_ACCESS_DENIED, NtStatus.STATUS_PRIVILEGE_NOT_HELD):
+            return NasLoginError("nas_share_permission_denied", "账号无法访问工作台配置的 NAS 共享", 403)
+        return NasLoginError("smb_share_unavailable", "无法建立 SMB 共享连接，请检查共享设置", 503)
+    if status in (0xC0000064, NtStatus.STATUS_WRONG_PASSWORD, NtStatus.STATUS_LOGON_FAILURE):
+        return NasLoginError("invalid_credentials", "NAS 账号或密码不正确", 401)
+    # 账号限制、登录时间、工作站限制、密码过期、账号停用/过期、须改密、账号锁定。
+    if status in (0xC000006E, 0xC000006F, 0xC0000070, NtStatus.STATUS_PASSWORD_EXPIRED, 0xC0000072,
+                  0xC000015B, 0xC0000193, 0xC0000224, 0xC0000234):
+        return NasLoginError("nas_account_restricted", "NAS 账号已停用或受到登录限制，请联系 NAS 管理员", 403)
+    return NasLoginError("smb_auth_failed", "SMB 身份验证未能完成，请检查 NAS 认证设置", 503)
 
 
 def direct_session(host: str, share: str, username: str, password: str, timeout: float) -> TreeConnect:
+    if not username or not password:
+        raise NasLoginError("invalid_credentials", "SMB 必须提供指定账号和密码", 401)
     connection = DirectConnection(host, timeout)
+    phase = "negotiate"
     try:
         connection.connect(timeout=timeout)
+        phase = "authenticate"
         session = Session(connection, username=username, password=password, require_encryption=False, auth_protocol="ntlm")
-        session.connect()
-        session.password = None
-        tree = TreeConnect(session, rf"\\{host}\{share}")
         try:
-            tree.connect()
-        except BadNetworkName:
-            raise NasNotFound("SMB 共享文件夹不存在") from None
+            session.connect()
+        finally:
+            session.password = None
+        if not session.session_id or not session.session_key or not (session.signing_required or session.encrypt_data):
+            raise NasLoginError("smb_auth_failed", "SMB 未建立可验证的本人会话", 503)
+        phase = "share"
+        tree = TreeConnect(session, rf"\\{host}\{share}")
+        tree.connect()
         if tree.is_dfs_share:
-            raise NasPermissionDenied("不支持跨共享 DFS 转介")
+            raise NasLoginError("smb_dfs_unsupported", "工作台仅支持直连 SMB 共享", 503)
+        connection.bound_to_share = True
         return tree
     except Exception as error:
         if connection.transport is not None:
-            try:
+            with suppress(Exception):
                 connection.disconnect(close=False, timeout=timeout)
-            except Exception:
-                pass
-        raise translate(error) from None
+        raise login_failure(error, phase) from None
+
+
+class SessionCache(dict[str, DirectConnection]):
+    """供 smbclient 复用既有本人会话，拒绝默认连接和自动重新认证。"""
+    def get(self, key, default=None):
+        connection = super().get(key)
+        if connection is None:
+            raise NasPermissionDenied("不允许访问其他 SMB 服务器")
+        if not connection.transport.connected:
+            raise NasSessionExpired("SMB 连接已断开，请重新登录")
+        return connection
+
+    def __setitem__(self, key, connection):
+        # 连接可能在 smbclient 取出缓存后立即中断。禁止新连接进入缓存。
+        with suppress(Exception):
+            connection.disconnect(close=False)
+        raise NasSessionExpired("SMB 连接已断开，请重新登录")
 
 
 class SmbFs(BaseFs):
     def __init__(self, host: str, share: str, username: str, password: str,
                  paths: NasPaths | None = None, timeout: float = 30,
-                 permissions: Mapping[Region, Access] | None = None, *, strict_share: bool = False) -> None:
+                 permissions: Mapping[Region, Access] | None = None) -> None:
         super().__init__(paths or NasPaths(), permissions)
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", host) or "/" in safe_join(share):
             raise ValueError("NAS 地址或共享文件夹名称无效")
-        if not username or not password:
-            raise NasPermissionDenied("SMB 必须提供指定账号和密码")
         self.host = host
         self.share = share
         self.username = username
         self.timeout = timeout
-        self.strict_share = strict_share
         self._disconnected = False
-        self._cache: dict[str, object] = {}
-        self._session: Session | None = None
-        self.browser_tree: TreeConnect | None = None
-        try:
-            self._connect(password)
-        except Exception as error:
-            self.close()
-            raise translate(error) from None
-
-    def _connect(self, password: str) -> None:
-        if self.strict_share:
-            tree = direct_session(self.host, self.share, self.username, password, self.timeout)
-            self.browser_tree = tree
-            self._session = tree.session
-            self._cache[f"{self.host.lower()}:445"] = tree.session.connection
-            return
-        self._session = smbclient.register_session(
-            self.host, username=self.username, password=password,
-            connection_cache=self._cache, connection_timeout=self.timeout,
-            auth_protocol="ntlm", require_signing=True,
-        )
-        # 已有连接不需要登录口令；连接失效时由本人重新登录。
-        self._session.password = None
+        tree = direct_session(host, share, username, password, timeout)
+        self.browser_tree: TreeConnect | None = tree
+        self._session: Session | None = tree.session
+        self._cache = SessionCache({f"{host.lower()}:445": tree.session.connection})
 
     def _options(self) -> dict[str, object]:
         return {"username": self.username, "connection_cache": self._cache,
                 "connection_timeout": self.timeout, "auth_protocol": "ntlm", "require_signing": True}
 
     def _check_connection(self) -> None:
-        if self._disconnected or self._session is None or not self._session.connection.transport.connected:
+        if (self._disconnected or self._session is None or self.browser_tree is None
+                or not self._session.connection.transport.connected):
             raise NasSessionExpired("SMB 连接已断开，请重新登录")
 
     def touch(self) -> None:
@@ -187,8 +239,16 @@ class SmbFs(BaseFs):
             smbclient.remove(target, **self._options())
 
     def _close_backend(self) -> None:
+        session = self._session
         try:
-            smbclient.reset_connection_cache(connection_cache=self._cache, fail_on_error=True)
+            if session is not None:
+                connection = session.connection
+                try:
+                    connection.disconnect(timeout=self.timeout)
+                except Exception:
+                    with suppress(Exception):
+                        connection.disconnect(close=False, timeout=self.timeout)
+                    raise
         finally:
             self._session = None
             self.browser_tree = None

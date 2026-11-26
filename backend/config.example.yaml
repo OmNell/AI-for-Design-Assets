@@ -8,16 +8,12 @@ server:
   public_base_url: http://nas-workbench.company.local:8080
 nas:
   host: 192.168.0.177
-  dsm_port: 5001
-  dsm_https: true
-  dsm_verify_ssl: true
   share: 设计资产共享
   root_path: /设计资产
   temp_path: /工作台临时区
   backup_path: /_工作台备份
   idle_minutes: 30
   timeout_s: 30
-  dsm_ca_file: null  # 自签名证书的受信 CA PEM 文件，不关闭证书校验。
   system_user: wb-system
   system_password_enc: ""
 jobs:

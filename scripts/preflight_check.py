@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from contextlib import closing
 from dataclasses import asdict, dataclass
-from getpass import getpass
+from getpass import GetPassWarning, getpass
 import json
 from pathlib import Path
 import platform
@@ -18,6 +18,7 @@ import sys
 from time import perf_counter
 from typing import Callable
 from urllib.parse import urlsplit
+import warnings
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
@@ -26,17 +27,16 @@ import httpx
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import select
-from app.config import DSM_LOCAL_TEST_NOTICE, Settings, load_settings
+from app.config import Settings, load_settings
 from app.db.database import Database
 from app.db.models import ProductEmbedding, Setting
 from app.services.ai.client import AiClient
 from app.services.ai.settings import AiSettingsService
 from app.services.crypto import SecretCipher
-from app.services.auth.backends import DsmAuthBackend
 from app.services.ingest.vectors import FORMAL_MODEL, _model_identity, _valid
 from app.services.maintenance.settings import SystemParameters, daily_time
 from app.services.nas import NasFs, NasNotFound, Region, safe_join
-from app.services.nas.factory import create_auth_backend, create_fs, create_paths, create_system_fs
+from app.services.nas.factory import create_fs, create_paths, create_system_fs
 from build_release import verify
 
 
@@ -140,7 +140,7 @@ def write_probe(fs: NasFs, first: str, destination: str | None = None) -> str:
 
 
 def network_checks(config: Settings, args, report: Report) -> None:
-    names = ("DNS", "HTTP 8080", "DSM HTTPS", "SMB 系统账号与正式区读取", "系统账号备份区读取",
+    names = ("DNS", "HTTP 8080", "SMB TCP 445", "SMB 系统账号与正式区读取", "系统账号备份区读取",
              "系统账号备份区写入", "员工临时区读写", "终审临时区与正式区同卷移动")
     if not args.network or config.mode != "prod":
         for name in names:
@@ -163,12 +163,10 @@ def network_checks(config: Settings, args, report: Report) -> None:
             report.run("HTTP 8080", health)
         else:
             report.put("HTTP 8080", "SKIP", "固定域名未解析到允许的内网地址")
-        def dsm() -> str:
-            if not config.nas.dsm_https:
-                raise ValueError("生产 DSM 必须配置 HTTPS")
-            DsmAuthBackend(config.nas.model_copy(update={"timeout_s": 5})).discover()
-            return "DSM HTTPS 与登录 API 发现通过" if config.nas.dsm_verify_ssl else DSM_LOCAL_TEST_NOTICE
-        report.run("DSM HTTPS", dsm)
+        def smb() -> str:
+            with socket.create_connection((str(config.nas.verified_address or config.nas.host), 445), timeout=5):
+                return "SMB 传输端口可达"
+        report.run("SMB TCP 445", smb)
         paths = create_paths(config)
         try:
             fs = create_system_fs(config)
@@ -190,17 +188,17 @@ def network_checks(config: Settings, args, report: Report) -> None:
             if not args.write_probe or not username:
                 report.put(name, "SKIP", "未指定已授权测试身份和专用目录")
                 continue
-            if not config.nas.dsm_https:
-                report.put(name, "SKIP", "生产 DSM 必须配置 HTTPS")
-                continue
             if username.casefold() == config.nas.system_user.casefold():
                 report.put(name, "FAIL", "系统账号不能用于临时区或正式区测试")
                 continue
             def person() -> str:
-                password = getpass(f"{username} 密码（隐藏输入）：")
-                if not create_auth_backend(config).verify(username, password):
-                    raise ValueError("测试身份 DSM 登录失败")
-                probe = create_fs(config, username, password)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", GetPassWarning)
+                    password = getpass(f"{username} 密码（隐藏输入）：")
+                try:
+                    probe = create_fs(config, username, password)
+                finally:
+                    password = ""
                 try:
                     return write_probe(probe, sandbox_path(paths, Region.TEMP, args.temp_test_dir),
                                        sandbox_path(paths, Region.FORMAL, destination) if name == names[7] else None)
@@ -208,10 +206,10 @@ def network_checks(config: Settings, args, report: Report) -> None:
                     probe.close()
             report.run(name, person)
     for name, explanation in (
-        ("实际 NAS ACL：系统账号禁止写正式区和访问临时区", "在群晖有效权限页核验继承和组成员。客户端限制不代表 DSM ACL。"),
+        ("实际 NAS ACL：系统账号禁止写正式区和访问临时区", "在群晖有效权限页核验继承和组成员。客户端限制和 NAS 实际 ACL 分别验证。"),
         ("实际 NAS ACL：员工与管理员未获正式写权限", "在群晖按角色核对。核对管理员本人跨用户临时区清理和拒绝非授权访问。"),
         ("每设备会话和权限", "用独立浏览器会话检查本人 NAS 权限、注销和超时隔离。"),
-        ("NAS 可用容量", "在 DSM 存储管理器记录卷可用空间及快照配额，覆盖预计上传和保留的历史副本。"),
+        ("NAS 可用容量", "在群晖存储管理器记录卷可用空间及快照配额，覆盖预计上传和保留的历史副本。"),
         ("内网隔离", "从允许、拒绝的网段分别验证 8080，检查竞争防火墙规则、GPO、代理和公网转发。"),
         ("现有正式永久链接", "使用授权普通业务账号打开已有项目、商品、历史文件链接。记录结果，不记录 Cookie。"),
     ):

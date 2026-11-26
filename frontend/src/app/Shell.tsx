@@ -4,7 +4,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { logout } from '../api/auth'
 import { getHealth } from '../api/health'
 import { roleLabels } from '../api/types'
-import { DsmLocalTestNotice } from '../components/DsmLocalTestNotice'
 import { Button, ErrorState, Icon, Input, type IconName } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 import { canAccess, navigation } from './navigation'
@@ -18,7 +17,6 @@ export function Shell() {
   const user = useAuthStore(state => state.user)!
   const query = useQueryClient()
   const health = useQuery({ queryKey: ['health'], queryFn: () => getHealth() })
-  const macDsmTest = health.data?.dsm_verify_ssl === false
   const [error, setError] = useState('')
   const [exiting, setExiting] = useState(false)
   const [term, setTerm] = useState('')
@@ -43,7 +41,7 @@ export function Shell() {
     { label: '审核', paths: ['/first-review', '/final-review'] },
     { label: '系统', paths: ['/admin/roles', '/settings', '/admin/nas-settings'] },
   ]
-  return <div className="app-shell" data-notice={macDsmTest}>
+  return <div className="app-shell">
     <header className="app-header col-span-2 border-b border-slate-200 bg-white">
       <Link to="/" aria-label="设计资产工作台" className="app-brand flex shrink-0 items-center gap-3">
         <span className="brand-mark"><Icon name="brand" className="size-5" /></span><span className="app-brand-label font-semibold text-slate-900">设计资产工作台</span>
@@ -64,7 +62,6 @@ export function Shell() {
         <Button className="app-logout" primary={false} aria-label="退出" loading={exiting} onClick={() => void exit()}><Icon name="logout" /><span>退出</span></Button>
       </div>
     </header>
-    {macDsmTest && <div className="col-span-2"><DsmLocalTestNotice /></div>}
     <aside className="app-sidebar flex min-h-0 flex-col overflow-auto border-r border-slate-200 bg-white pt-5">
       <nav className="space-y-6" aria-label="主导航">{sections.map(section => {
         const links = section.paths.flatMap(path => navigation.filter(item => item.path === path && canAccess(user.roles, item)))

@@ -29,6 +29,19 @@ class SessionPool:
         if self._stopped.is_set():
             raise NasSessionExpired("NAS 会话池已关闭")
 
+    def connect(self, username: str, password: str) -> BaseFs:
+        """认证并打开本人会话，交给调用方在登录记录创建后登记。"""
+        self._ensure_open()
+        return self._factory(username, password)
+
+    def adopt(self, login_session_id: int, current: BaseFs) -> None:
+        """登记已经认证的连接，不替换其他设备正在使用的会话。"""
+        with self._lock:
+            self._ensure_open()
+            if login_session_id in self._sessions:
+                raise ValueError("NAS 会话已登记")
+            self._sessions[login_session_id] = current
+
     def open(self, login_session_id: int, username: str, password: str) -> BaseFs:
         with self._lock:
             self._ensure_open()
@@ -37,7 +50,7 @@ class SessionPool:
                 self._sessions[login_session_id].touch()
                 return self._sessions[login_session_id]
             # 先建立新连接；认证失败不替换旧会话，也不回退到其他身份。
-            current = self._factory(username, password)
+            current = self.connect(username, password)
             old = self._sessions.pop(login_session_id, None)
             if old is not None:
                 try:

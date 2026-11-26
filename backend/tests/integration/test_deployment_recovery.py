@@ -298,8 +298,45 @@ def test_preflight_never_counts_fake_backend_as_prod(maintained, tmp_path):
     assert verified.returncode == 0, verified.stdout + verified.stderr
     result = {row["name"]:row["status"] for row in json.loads(out.read_text())["checks"]}
     assert result["SQLite 可读写"] == "PASS"
+    assert result["SMB TCP 445"] == "SKIP"
     assert result["SMB 系统账号与正式区读取"] == result["百炼识图"] == result["百炼向量"] == "SKIP"
     assert result["实际 NAS ACL：系统账号禁止写正式区和访问临时区"] == "MANUAL"
+
+
+def test_relocating_legacy_windows_config_preserves_smb_and_secrets(tmp_path):
+    import yaml
+    from deploy.ops import relocate_config, validate_config
+    from app.services.crypto import SecretCipher
+
+    (tmp_path / "configuration").mkdir()
+    cipher = SecretCipher(tmp_path / "data")
+    original = {
+        "mode": "prod",
+        "bootstrap_admin": "管理员",
+        "nas": {
+            "host": "nas.internal",
+            "share": "业务共享",
+            "system_user": "备份账号",
+            "system_password_enc": cipher.encrypt("测试凭据"),
+            "dsm_port": 5001,
+            "dsm_https": True,
+            "dsm_verify_ssl": False,
+            "dsm_ca_file": "legacy.pem",
+        },
+        "ai": {"model_embed": "已有模型"},
+        "paths": {"data_dir": "./data"},
+    }
+    source = tmp_path / "config.yaml"
+    source.write_text(yaml.safe_dump(original, allow_unicode=True), encoding="utf-8")
+    relocate_config(tmp_path)
+    destination = tmp_path / "configuration/config.yaml"
+    migrated = yaml.safe_load(destination.read_bytes())
+    assert yaml.safe_load(source.read_bytes()) == original
+    assert migrated["nas"] == {key: value for key, value in original["nas"].items() if not key.startswith("dsm_")}
+    assert migrated["ai"] == original["ai"]
+    loaded = validate_config(destination, tmp_path)
+    assert loaded.paths.data_dir == tmp_path / "data"
+    assert cipher.decrypt(loaded.nas.system_password_enc.get_secret_value()) == "测试凭据"
 
 
 def test_release_verification_rejects_overrides_and_non_allowlist(tmp_path):

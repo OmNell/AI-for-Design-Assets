@@ -6,7 +6,6 @@ import argparse
 import errno
 import getpass
 import hashlib
-import json
 import logging
 import ntpath
 import re
@@ -18,7 +17,6 @@ from dataclasses import dataclass
 from typing import BinaryIO, Callable, Protocol, TypeVar, cast
 from urllib.parse import quote, quote_plus
 
-import httpx
 import smbclient
 from smbprotocol.session import Session
 
@@ -47,12 +45,15 @@ class SmbNasFs:
         self.session: Session | None = None
 
     def connect(self, password: str) -> str:
-        self.session = smbclient.register_session(
+        session = smbclient.register_session(
             self.host, username=self.username, password=password,
             connection_cache=self.cache, connection_timeout=self.timeout,
             auth_protocol="ntlm", require_signing=True,
         )
-        self.session.password = None
+        session.password = None
+        if not session.session_key:
+            raise PermissionError("拒绝来宾或匿名 SMB 会话")
+        self.session = session
         return "已建立独立 SMB 会话（NTLM，要求签名，不挂盘）"
 
     def options(self) -> dict[str, object]:
@@ -85,72 +86,6 @@ class SmbNasFs:
         smbclient.reset_connection_cache(connection_cache=self.cache, fail_on_error=True)
         self.session = None
         return "连接已关闭"
-
-
-class DsmError(RuntimeError):
-    def __init__(self, response: dict[str, object]) -> None:
-        self.response = response
-        super().__init__(json.dumps(response, ensure_ascii=False))
-
-
-class DsmClient:
-    def __init__(self, host: str, port: int, https: bool, verify: bool | str,
-                 timeout: float, remember: Callable[[str], None]) -> None:
-        self.client = httpx.Client(
-            base_url=f"{'https' if https else 'http'}://{host}:{port}/webapi/",
-            verify=verify, timeout=timeout, trust_env=False, follow_redirects=False,
-        )
-        self.sid: str | None = None
-        self.remember = remember
-        self.auth_path = "entry.cgi"
-        self.auth_version = "6"
-
-    def request(self, path: str, data: dict[str, str]) -> dict[str, object]:
-        response = self.client.post(path, data=data)
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise ValueError("DSM 响应不是 JSON 对象")
-        if payload.get("success") is not True:
-            raise DsmError(payload)
-        return payload
-
-    def login(self, username: str, password: str) -> str:
-        info = self.request("query.cgi", {
-            "api": "SYNO.API.Info", "version": "1", "method": "query", "query": "SYNO.API.Auth",
-        })
-        auth = info["data"]["SYNO.API.Auth"]
-        path = auth["path"]
-        if not re.fullmatch(r"[A-Za-z0-9_/]+\.cgi", path) or ".." in path:
-            raise ValueError("DSM 返回了异常的认证接口路径")
-        self.auth_path = path
-        version = min(6, int(auth["maxVersion"]))
-        if version < int(auth["minVersion"]):
-            raise ValueError("DSM 不支持探路脚本使用的认证版本")
-        self.auth_version = str(version)
-        payload = self.request(self.auth_path, {
-            "api": "SYNO.API.Auth", "version": self.auth_version, "method": "login",
-            "account": username, "passwd": password, "session": "DSM", "format": "sid",
-        })
-        sid = payload.get("data", {}).get("sid")
-        if not isinstance(sid, str) or not sid:
-            raise ValueError("DSM 登录成功但未返回 sid")
-        self.sid = sid
-        self.remember(sid)
-        self.client.cookies.clear()
-        return f"身份验证成功（SYNO.API.Auth v{version}）"
-
-    def logout(self) -> str:
-        try:
-            if self.sid:
-                self.request(self.auth_path, {
-                    "api": "SYNO.API.Auth", "version": self.auth_version, "method": "logout",
-                    "session": "DSM", "_sid": self.sid,
-                })
-            return "DSM 会话已注销"
-        finally:
-            self.sid = None
-            self.client.close()
 
 
 @dataclass
@@ -195,7 +130,7 @@ class Recorder:
         self.add(account, step, "跳过", 0, reason)
 
     def summary(self) -> None:
-        print("\n汇总表（成功不等于权限符合预期，请与 DSM ACL 逐项核对）")
+        print("\n汇总表（请与群晖实际 ACL 逐项核对）")
         print("| 账号 | 项目 | 结果 | 秒 | 详情 |")
         print("|---|---|---|---:|---|")
         for row in self.results:
@@ -377,20 +312,15 @@ class SafeParser(argparse.ArgumentParser):
 
 
 def parser() -> argparse.ArgumentParser:
-    result = SafeParser(description="WP00：DSM 与按账号隔离的 SMB 探路（只操作专用测试目录）", add_help=False)
+    result = SafeParser(description="按账号隔离的 SMB 探路（只操作专用测试目录）", add_help=False)
     result.add_argument("-h", "--help", action="help", help="显示帮助信息并退出")
     result.add_argument("--host", required=True, help="NAS IPv4 地址或主机名，不含协议/路径/端口")
-    result.add_argument("--dsm-port", type=int, help="默认 HTTPS 5001 / HTTP 5000")
-    result.add_argument("--https", action=argparse.BooleanOptionalAction, default=True)
     result.add_argument("--share", type=relative_path, required=True, help="一个共享文件夹名称")
     result.add_argument("--user", action="append", required=True, help="按 A、B 顺序重复 1～2 次")
     result.add_argument("--password", action="append", help="与账号按出现顺序配对；全部省略则隐藏输入")
     result.add_argument("--test-dir", type=relative_path, required=True, help="预先建立的读写测试目录，相对于共享文件夹")
     result.add_argument("--read-only-dir", type=relative_path, required=True, help="A 可读不可写、B 可读写的预建测试目录")
-    tls = result.add_mutually_exclusive_group()
-    tls.add_argument("--ca-file", help="信任的 CA PEM 文件")
-    tls.add_argument("--insecure", action="store_true", help="仅内网自签名证书探路时跳过 TLS 校验")
-    result.add_argument("--timeout", type=float, default=30, help="DSM 请求及 SMB 建连超时秒数，默认 30")
+    result.add_argument("--timeout", type=float, default=30, help="SMB 建连超时秒数，默认 30")
     return result
 
 
@@ -403,7 +333,6 @@ def main(argv: list[str] | None = None) -> int:
         or any(not u.strip() or any(ord(c) < 32 for c in u) for u in args.user)
         or (args.password is not None and len(args.password) != len(args.user))
         or not 0 < args.timeout < float("inf")
-        or (args.dsm_port is not None and not 1 <= args.dsm_port <= 65535)
         or args.test_dir.casefold() == args.read_only_dir.casefold()):
         cli.error("参数非法")
     passwords = args.password
@@ -420,27 +349,17 @@ def main(argv: list[str] | None = None) -> int:
     # 禁用第三方日志，协议调试日志可能包含认证材料；仅输出经脱敏的步骤结果。
     logging.disable(logging.CRITICAL)
     connections: list[SmbNasFs] = []
-    dsm_clients: list[tuple[str, DsmClient]] = []
     interrupted = False
     print("仅在明确授权的专用测试目录运行；结果不自动写盘，请将脱敏汇总填入 RESULT.md。")
-    if not args.https:
-        print("当前使用 HTTP：DSM 登录凭据没有 TLS 保护。")
     try:
         for index, username in enumerate(args.user):
             account = chr(65 + index)
-            dsm = DsmClient(args.host, args.dsm_port or (5001 if args.https else 5000), args.https,
-                            args.ca_file or not args.insecure, args.timeout, recorder.secrets.append)
-            dsm_clients.append((account, dsm))
-            ok, _ = recorder.run(account, "DSM 登录", lambda: dsm.login(username, passwords[index]))
             fs = SmbNasFs(args.host, args.share, username, args.timeout)
             connections.append(fs)
-            if not ok:
-                recorder.skip(account, "SMB 及文件测试", "DSM 身份验证失败，不尝试 SMB")
-                continue
-            ok, _ = recorder.run(account, "SMB 连接", lambda: fs.connect(passwords[index]))
+            ok, _ = recorder.run(account, "SMB 身份认证", lambda: fs.connect(passwords[index]))
             passwords[index] = ""
             if not ok:
-                recorder.skip(account, "文件测试", "SMB 建连失败")
+                recorder.skip(account, "文件测试", "SMB 身份认证失败")
                 continue
             file_checks(fs, args.test_dir, recorder, account)
             recorder.run(account, "只读目录拒绝写入" if index == 0 else "同目录写权限对照",
@@ -460,8 +379,6 @@ def main(argv: list[str] | None = None) -> int:
         passwords.clear()
         for index, fs in enumerate(connections):
             recorder.run(chr(65 + index), "关闭 SMB", fs.close)
-        for account, dsm in dsm_clients:
-            recorder.run(account, "DSM 注销", dsm.logout)
         recorder.summary()
         recorder.secrets.clear()
     return 130 if interrupted else int(any(row.status != "成功" for row in recorder.results))

@@ -15,7 +15,7 @@ from smbprotocol.open import CreateDisposition, CreateOptions, DirectoryAccessMa
 
 from app.config import NasConfig, Settings
 from app.errors import AppError
-from app.services.auth.backends import AuthUnavailable, DsmAuthBackend, FakeAuthBackend
+from app.services.auth.backends import FakeAuthBackend
 from app.services.nas.errors import NasNotFound, NasPermissionDenied, NasUnavailable, translate
 from app.services.nas.paths import REGION_NAMES, SYSTEM_PERMISSIONS, Region, work_path
 from app.services.nas.smb import direct_session
@@ -202,16 +202,6 @@ class LocalRead:
 class Connections:
     def __init__(self, config: Settings) -> None:
         self.config = config
-
-    def dsm(self, nas: NasConfig, username: str | None = None, password: str = "") -> None:
-        if self.config.mode == "dev":
-            if username and not FakeAuthBackend(self.config.dev_users).verify(username, password):
-                raise AuthUnavailable("模拟 DSM 账号或密码不正确")
-            return
-        backend = DsmAuthBackend(nas.model_copy(update={"timeout_s": min(5, nas.timeout_s)}))
-        backend.discover()
-        if username and not backend.verify(username, password):
-            raise AuthUnavailable("DSM 拒绝该账号或密码")
 
     @contextmanager
     def open(self, nas: NasConfig, username: str, password: str = "", *, system: bool = False) -> Iterator[LocalRead | SmbRead]:

@@ -8,16 +8,12 @@ server:
   public_base_url: http://nas-workbench.company.local:8080
 nas:
   host: nas.company.local
-  dsm_port: 5001
-  dsm_https: true
-  dsm_verify_ssl: true
   share: 设计资产共享
   root_path: /设计资产
   temp_path: /工作台临时区
   backup_path: /_工作台备份
   system_user: wb-system
   system_password_enc: ''
-  dsm_ca_file: null
 ai:
   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api_key_enc: ''

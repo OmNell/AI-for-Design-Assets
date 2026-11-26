@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.config import load_settings
+from app.config import has_nas_env_override, load_settings
 from app.services.crypto import CryptoError, SecretCipher
 
 
@@ -31,6 +31,20 @@ def test_config_env_file_and_secret_repr(tmp_path: Path, monkeypatch: pytest.Mon
     settings = load_settings()
     assert "ciphertext-not-plaintext" not in repr(settings)
     assert settings.nas.system_password_enc.get_secret_value() == "ciphertext-not-plaintext"
+
+
+def test_legacy_dsm_values_are_ignored_without_relaxing_config_validation(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    path.write_text("mode: prod\nnas: {share: test-share, dsm_port: 5001, dsm_verify_ssl: false}", encoding="utf-8")
+    monkeypatch.setenv("NASWB_NAS__DSM_VERIFY_SSL", "false")
+    assert not has_nas_env_override()
+    assert "dsm_port" not in load_settings(path).nas.model_dump()
+    monkeypatch.setenv("NASWB_NAS__HOST", "test-nas")
+    assert has_nas_env_override()
+    assert load_settings(path).nas.host == "test-nas"
+    path.write_text("nas: {unknown: true}", encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_settings(path)
 
 
 @pytest.mark.parametrize("contents", ["mode: invalid", "server:\n  port: 0", "unknown: true"])

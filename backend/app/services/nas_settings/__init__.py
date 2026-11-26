@@ -5,7 +5,6 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hmac
-import os
 from pathlib import Path
 from threading import BoundedSemaphore
 
@@ -13,12 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 import yaml
 
-from app.config import NasConfig, Settings, load_settings
+from app.config import NasConfig, Settings, has_nas_env_override, load_settings, without_legacy_dsm
 from app.db.database import Database
 from app.db.models import Batch, CatalogFile, ExpectedDeletion, HistoryVersion, Job, Project, User
 from app.errors import AppError
 from app.schemas.nas_settings import NasApply, NasBrowse, NasCandidate, NasCheck, NasNodes, NasPublic, NasStatus, NasTarget, NasTest, NasValidation
-from app.services.auth.backends import AuthUnavailable
 from app.services.auth.service import AuthService
 from app.services.crypto import CryptoError, SecretCipher
 from app.services.jobs import JobQueue
@@ -38,17 +36,15 @@ LABELS = {Region.FORMAL: "正式资产区", Region.TEMP: "上传临时区", Regi
 
 def public(nas: NasConfig) -> NasPublic:
     paths = NasPaths(nas.root_path, nas.temp_path, nas.backup_path)
-    certificate = "trusted_ca" if nas.dsm_ca_file else "system_ca" if nas.dsm_https else "legacy_http"
-    return NasPublic(host=nas.host, dsm_port=nas.dsm_port, share=nas.share, work_root=nas.work_root,
+    return NasPublic(host=nas.host, share=nas.share, work_root=nas.work_root,
                      system_user=nas.system_user, has_system_password=bool(nas.system_password_enc.get_secret_value()),
-                     certificate=certificate if nas.dsm_verify_ssl else "mac_test_disabled",
                      regions={r.value: "/" + paths.root(r) for r in Region})
 
 
 def check(name: str, task: Callable[[], str | None]) -> NasCheck:
     try:
         result = task()
-    except (AuthUnavailable, NasError) as error:
+    except NasError as error:
         return NasCheck(name=name, state="failed", message=str(error))
     return NasCheck(name=name, state="passed", message=result or "检查通过")
 
@@ -148,7 +144,7 @@ class NasSettingsService:
         target_name(target.host, target.share)
         address = endpoint(target.host) if self.config.mode == "prod" else None
         return self.config.nas.model_copy(update={"host": target.host, "share": target.share,
-            "dsm_port": target.dsm_port, "dsm_https": True, "verified_address": address})
+            "verified_address": address})
 
     def _revision(self, raw: bytes) -> str:
         # 客户端只见加密密钥保护的文件版本，不能用它离线猜测配置中的值。
@@ -172,12 +168,9 @@ class NasSettingsService:
             try:
                 target_name(nas.host, nas.share)
                 if self.config.mode == "prod":
-                    if not nas.dsm_https:
-                        raise AppError("dsm_https_required", "生产 DSM 必须使用 HTTPS", 422)
                     nas = nas.model_copy(update={"verified_address": nas.verified_address or endpoint(nas.host)})
-                checks = [check("当前 DSM HTTPS", lambda: self.connections.dsm(nas))]
                 active = self.config.model_copy(update={"nas": nas})
-                checks.extend(system_checks(active, self.cipher, self.connections)[0])
+                checks, _ = system_checks(active, self.cipher, self.connections)
             except AppError as error:
                 checks = [NasCheck(name="当前连接配置", state="failed", message=error.message)]
         return state.model_copy(update={"connection_checks": checks})
@@ -201,13 +194,10 @@ class NasSettingsService:
                     else:
                         fs.check(paths.formal, ADD_FILE | ADD_DIR)
         with self.slot():
-            if body.protocol == "dsm":
-                checks.append(check("DSM HTTPS 认证", lambda: self.connections.dsm(nas, username, password)))
-            else:
-                checks.append(check("SMB 会话与目录授权", smb))
-                if body.permission_profile:
-                    checks.append(NasCheck(name="实际写入与权限继承", state="manual", message=MANUAL))
-        self._action(actor, "测试 NAS 连接", host, "成功" if checks[0].state == "passed" else "失败", {"protocol": body.protocol})
+            checks.append(check("SMB 会话与目录授权", smb))
+            if body.permission_profile:
+                checks.append(NasCheck(name="实际写入与权限继承", state="manual", message=MANUAL))
+        self._action(actor, "测试 NAS 连接", host, "成功" if checks[0].state == "passed" else "失败")
         return checks
 
     def browse(self, actor: User, body: NasBrowse, host: str) -> NasNodes:
@@ -248,8 +238,8 @@ class NasSettingsService:
         nas = candidate.nas
         old = self.config.nas
         after, before = public(nas), public(old)
-        changes = [title for key, title in {"host":"NAS 地址", "dsm_port":"DSM 端口", "share":"SMB 共享",
-                   "work_root":"工作目录", "regions":"业务目录", "system_user":"系统账号", "certificate":"证书策略"}.items()
+        changes = [title for key, title in {"host":"NAS 地址", "share":"SMB 共享",
+                   "work_root":"工作目录", "regions":"业务目录", "system_user":"系统账号"}.items()
                    if getattr(after,key) != getattr(before,key)]
         if body.system_password and body.system_password.get_secret_value():
             changes.append("更新系统账号加密密码")
@@ -257,7 +247,7 @@ class NasSettingsService:
         with self.auth.database.session() as session:
             blocked = conflicts(session, old, nas)
             has_data = retained(session)
-        if any(key.upper().startswith("NASWB_NAS") for key in os.environ):
+        if has_nas_env_override():
             blocked.append("本机环境变量覆盖 NAS 配置，请由运维移除覆盖后重试")
         if not self.source.is_file():
             blocked.append("找不到运行中的 YAML 配置文件")
@@ -275,7 +265,6 @@ class NasSettingsService:
                     results.append(check("管理员 · 临时区删除子项授权", lambda: fs.check(paths.temp, DELETE_CHILD)))
                     results.append(NasCheck(name="管理员清理实际文件", state="manual", message=MANUAL))
                     return results
-            checks.append(check("DSM HTTPS", lambda: self.connections.dsm(nas, actor.username, password)))
             try:
                 checks += operator()
             except NasError as error:
@@ -330,9 +319,9 @@ class NasSettingsService:
                 if blocked:
                     raise AppError("nas_configuration_blocked", "还有关联业务，不能切换", 409, blocked)
             doc = yaml.safe_load(raw)
-            new_nas = candidate.nas.model_dump(mode="json", exclude={"system_password_enc", "dsm_ca_file"})
+            new_nas = candidate.nas.model_dump(mode="json", exclude={"system_password_enc"})
             new_nas["system_password_enc"] = candidate.nas.system_password_enc.get_secret_value()
-            new_file = yaml.safe_dump({**doc, "nas": {**doc.get("nas", {}), **new_nas}},
+            new_file = yaml.safe_dump({**doc, "nas": {**without_legacy_dsm(doc.get("nas", {})), **new_nas}},
                                        allow_unicode=True, sort_keys=False).encode()
             info = {"state": "pending_restart", "before": revision(raw), "after": revision(new_file),
                     "actor_id": actor.id, "saved_at": datetime.now(timezone.utc).isoformat(), "identity": identity,
@@ -365,7 +354,7 @@ class NasSettingsService:
 
 
 def activate_at_boot(config: Settings, source: Path, database: Database, cipher: SecretCipher) -> Settings:
-    """先确认候选，随后才创建 DSM 后端、会话池和后台执行器。"""
+    """先确认候选，随后才创建会话池和后台执行器。"""
     journal = Journal(config.paths.data_dir)
     record = journal.read()
     if record.get("state") != "pending_restart":
@@ -379,20 +368,19 @@ def activate_at_boot(config: Settings, source: Path, database: Database, cipher:
     try:
         if saved == record["before"]:
             raise NasPermissionDenied("上次保存未完成")
-        if any(key.upper().startswith("NASWB_NAS") for key in os.environ):
+        if has_nas_env_override():
             raise NasPermissionDenied("环境变量覆盖了配置")
         connections = Connections(config)
         if config.mode == "prod":
             target_name(config.nas.host, config.nas.share)
             if endpoint(config.nas.host) != config.nas.verified_address:
                 raise NasPermissionDenied("候选 DNS 地址已改变")
-        connections.dsm(config.nas)
         rows, identity = system_checks(config, cipher, connections)
         if any(row.state == "failed" for row in rows) or not identity or identity != record["identity"]:
             raise NasPermissionDenied("重启时系统账号或 SMB 身份复检失败")
         if record["check_sample"]:
             asset_sample(config, database)
-    except (AppError, NasError, AuthUnavailable, ValueError, CryptoError):
+    except (AppError, NasError, ValueError, CryptoError):
         atomic_write(source, old)
         config = load_settings(source)
         outcome, message = "failed", "候选 NAS 启用复检失败，原 YAML 配置已恢复"

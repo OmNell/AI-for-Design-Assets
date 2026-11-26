@@ -20,7 +20,7 @@ function Checks({ rows }: { rows: NasCheck[] }) {
 
 function Addresses({ config }: { config: NasPublic }) {
   return <dl className="space-y-1 break-words text-xs text-slate-600">
-    <dt className="sr-only">服务器</dt><dd>{config.host}:{config.dsm_port} · {config.share}</dd>
+    <dt className="sr-only">服务器</dt><dd>{config.host}:445 · {config.share}</dd>
     <dt className="sr-only">工作目录</dt><dd>{config.work_root ? `/${config.work_root}` : '沿用 YAML 的三个独立区域'}</dd>
   </dl>
 }
@@ -31,7 +31,7 @@ function Workspace({ initial }: { initial: NasStatus }) {
   const { active } = initial
   const account = useAuthStore(state => state.user?.username)
   const [status, setStatus] = useState(initial)
-  const [target, setTarget] = useState({ host: active.host, dsm_port: String(active.dsm_port), share: active.share })
+  const [target, setTarget] = useState({ host: active.host, share: active.share })
   const [workRoot, setWorkRoot] = useState(active.work_root ?? '')
   const [username, setUsername] = useState(active.system_user)
   const [systemPassword, setSystemPassword] = useState('')
@@ -47,11 +47,10 @@ function Workspace({ initial }: { initial: NasStatus }) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
   const locked = status.state === 'pending_restart'
-  const port = Number(target.dsm_port)
-  const targetReady = target.host.trim() !== '' && target.share.trim() !== '' && Number.isInteger(port) && port > 0 && port <= 65535
+  const targetReady = target.host.trim() !== '' && target.share.trim() !== ''
   const canConnect = targetReady && !!actorPassword && !locked
   const canCheck = canConnect && !!workRoot && !!username
-  const server = { host: target.host.trim(), dsm_port: port, share: target.share.trim() }
+  const server = { host: target.host.trim(), share: target.share.trim() }
   const candidate: NasCandidate = { ...server, work_root: workRoot, system_user: username.trim(), actor_password: actorPassword,
     ...(systemPassword ? { system_password: systemPassword } : {}) }
   const clearChecks = (connection = false) => {
@@ -74,8 +73,8 @@ function Workspace({ initial }: { initial: NasStatus }) {
     setPath(next)
     setNodes(await browseNas(server, next, actorPassword))
   })
-  const runTest = (protocol: 'dsm' | 'smb') => void perform(protocol, async () =>
-    setTestChecks(await testNas({ ...server, protocol, actor_password: actorPassword })))
+  const runTest = () => void perform('smb', async () =>
+    setTestChecks(await testNas({ ...server, actor_password: actorPassword })))
   const relatives = path ? path.split('/') : []
   const refresh = () => void perform('status', async () => {
     const fresh = await getNasStatus()
@@ -97,17 +96,12 @@ function Workspace({ initial }: { initial: NasStatus }) {
           <h2 className="mb-4 font-semibold">NAS 服务器</h2>
           <fieldset disabled={!!busy || locked} className="grid min-w-0 gap-4 md:grid-cols-2">
             <label>NAS IP 或内网域名<Input className="mt-1" maxLength={253} value={target.host} onChange={e => { setTarget({ ...target, host: e.target.value }); clearChecks(true) }} /></label>
-            <label>DSM HTTPS 端口<Input type="number" className="mt-1" min={1} max={65535} value={target.dsm_port} onChange={e => { setTarget({ ...target, dsm_port: e.target.value }); clearChecks(true) }} /></label>
             <label>SMB 共享文件夹<Input className="mt-1" maxLength={80} value={target.share} onChange={e => { setTarget({ ...target, share: e.target.value }); clearChecks(true) }} /></label>
-            <div><p>DSM 证书验证</p><p className="mt-2 text-xs text-slate-600">{active.certificate === 'mac_test_disabled' ? 'HTTPS 已启用，证书验证关闭（本机测试）' :
-              active.certificate === 'trusted_ca' ? '使用服务器配置的专用 CA' :
-              active.certificate === 'legacy_http' ? '旧配置使用 HTTP，待保存的候选强制使用 HTTPS 验证' : '使用系统受信任 CA'}</p></div>
             <label>系统账号名称<Input className="mt-1" value={username} maxLength={128} onChange={e => { setUsername(e.target.value); clearChecks() }} /></label>
             <label>更新系统账号密码<Input className="mt-1" type="password" autoComplete="new-password" maxLength={512} placeholder={active.has_system_password ? '留空保留现有密码' : '请输入系统账号密码'} value={systemPassword} onChange={e => { setSystemPassword(e.target.value); clearChecks() }} /></label>
             <label className="md:col-span-2">当前管理员 NAS 密码（{account}）<Input className="mt-1" type="password" autoComplete="off" maxLength={512} value={actorPassword} onChange={e => { setActorPassword(e.target.value); clearChecks(true) }} /></label>
             <div className="flex flex-wrap gap-2 md:col-span-2">
-              <Button primary={false} loading={busy === 'dsm'} disabled={!canConnect} onClick={() => runTest('dsm')}>测试 DSM</Button>
-              <Button primary={false} loading={busy === 'smb'} disabled={!canConnect} onClick={() => runTest('smb')}>测试 SMB</Button>
+              <Button primary={false} loading={busy === 'smb'} disabled={!canConnect} onClick={runTest}>测试 SMB</Button>
             </div>
           </fieldset>
           {testChecks.length > 0 && <Checks rows={testChecks} />}
@@ -171,7 +165,7 @@ function Workspace({ initial }: { initial: NasStatus }) {
         </Panel>
         <Panel><details><summary className="cursor-pointer font-semibold">检查授权测试账号</summary>
           <form className="mt-3 space-y-3" onSubmit={(e: FormEvent) => { e.preventDefault(); void perform('profile', async () => {
-            try { setTestChecks(await testNas({ ...server, protocol: 'smb', username: testUser.trim(), actor_password: testPassword, permission_profile: profile, work_root: workRoot })) }
+            try { setTestChecks(await testNas({ ...server, username: testUser.trim(), actor_password: testPassword, permission_profile: profile, work_root: workRoot })) }
             finally { setTestPassword('') }
           }) }}>
             <label>角色<Select className="mt-1" value={profile} onChange={e => setProfile(e.target.value as typeof profile)}><option value="employee">普通员工</option><option value="final">终审</option></Select></label>
