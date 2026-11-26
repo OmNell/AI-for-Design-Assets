@@ -217,3 +217,44 @@ def test_offline_compare_and_approved_incremental_cli(maintained, tmp_path):
     with db.session() as session:
         assert session.get(Project, project.id).status == "active"
     db.close()
+
+
+def test_crash_before_commit_resume_and_reinsert_missing_product(maintained, tmp_path, monkeypatch):
+    from app.services.postops import embeddings
+
+    class Interrupted(BaseException):
+        pass
+
+    def interrupt(*args, **kwargs):
+        raise Interrupted
+
+    flow, project, settings, _ = maintained
+    fs = flow.client.app.state.auth.pool.system()
+    root = create_paths(settings).root(Region.FORMAL)
+    with flow.client.app.state.database.session() as session:
+        baseline = archive.from_catalog(session, session.get(Project, project.id))
+    product_id = baseline["products"][0]["id"]
+    with new_environment(settings, "crash-restore", tmp_path) as client:
+        target = client.app.state
+        plan = plan_incremental(target.database, fs, root)
+        with monkeypatch.context() as patch:
+            patch.setattr(embeddings, "publish", interrupt)
+            with pytest.raises(Interrupted):
+                apply_incremental(target.ai, fs, root, plan)
+        with target.database.session() as session:
+            assert session.get(Project, project.id) is None
+            assert session.get(Product, product_id) is None
+            assert session.scalar(select(Setting).where(Setting.key.startswith("archive_restore_vector:"))) is not None
+
+        assert apply_incremental(target.ai, fs, root, plan)["recovered"] == [project.id]
+        with target.database.session() as session:
+            session.execute(delete(ProductTag).where(ProductTag.product_id == product_id))
+            session.execute(delete(ProductEmbedding).where(ProductEmbedding.product_id == product_id))
+            session.execute(delete(Link).where(Link.kind == "product", Link.target_id == product_id))
+            session.execute(delete(Product).where(Product.id == product_id))
+        plan = plan_incremental(target.database, fs, root)
+        assert item(plan, project.id)["kind"] == "incomplete"
+        assert apply_incremental(target.ai, fs, root, plan)["recovered"] == [project.id]
+        with target.database.session() as session:
+            assert archive.matches_catalog(session, session.get(Project, project.id), baseline)
+            assert session.scalar(select(ProductEmbedding).where(ProductEmbedding.product_id == product_id)).state == "ready"

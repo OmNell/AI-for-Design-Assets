@@ -15,7 +15,8 @@ from app.db.database import Database
 from app.db.models import BackupRecord, Job, Setting, User, utcnow
 from app.errors import AppError
 from app.services.ai.orchestrator import AiService
-from app.services.backup.recovery import BACKUP_NAME, list_candidates, stage_from_nas
+from app.services.backup.format import BACKUP_NAME, BackupFormatError
+from app.services.backup.recovery import BackupRecoveryError, list_candidates, stage_from_nas
 from app.services.crypto import CryptoError
 from app.services.jobs import JobContext, JobFailure, JobQueue
 from app.services.maintenance.settings import ASSET_RECOVERY_CONFIRMED, SystemService
@@ -198,6 +199,8 @@ class RecoveryAdmin:
             raise JobFailure("备份数据库完整性检查或迁移失败，原运行库保持原状", retryable=False) from None
         except OSError:
             raise JobFailure("本机暂存目录不可写，请使用停机部署恢复工具", retryable=False) from None
+        except (BackupRecoveryError, BackupFormatError) as error:
+            raise JobFailure(str(error), retryable=False) from None
         except (ValueError, BadZipFile):
             message = ("无法验证或暂存备份，请核对文件完整性、数据库兼容性和目标环境配置"
                        if action == "stage" else "档案校验未完成，请核对 NAS 状态后重试")

@@ -82,6 +82,8 @@ def main() -> None:
         parser.exit(1, f"恢复失败，{exc}。\n")
     except BadZipFile:
         parser.exit(1, "恢复失败，备份 ZIP 无法读取。\n")
+    except (BackupRecoveryError, BackupFormatError) as exc:
+        parser.exit(1, f"恢复失败：{exc}。\n")
     except Exception as exc:
         parser.exit(1, f"恢复失败（{type(exc).__name__}），请检查归档、NAS 权限和目标目录。\n")
     print(f"隔离恢复目录：{target.resolve()}")

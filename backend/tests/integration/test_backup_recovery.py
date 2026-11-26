@@ -13,7 +13,7 @@ from app.config import load_settings
 from app.db.models import Link, Product, ProductEmbedding, Setting, UserSession
 from app.main import create_app
 from app.services.auth.service import COOKIE_NAME
-from app.services.backup.recovery import list_candidates, stage_backup, stage_from_nas
+from app.services.backup.recovery import BackupRecoveryError, list_candidates, stage_backup, stage_from_nas
 from app.services.nas import Region
 from app.services.nas.factory import create_paths
 from test_maintenance import maintained
@@ -104,3 +104,29 @@ def test_backup_with_matching_member_hashes_but_wrong_crypto_key_is_rejected(mai
     with pytest.raises(ValueError, match="原密钥"):
         stage_backup(swapped, isolated)
     assert not isolated.exists()
+
+
+def test_failed_stage_migration_preserves_source_and_never_activates(maintained, tmp_path, monkeypatch):
+    from alembic.util.exc import CommandError
+
+    from app.db.database import Database
+
+    flow, project, settings, _ = maintained
+    assert flow.call("admin", "POST", "/api/admin/maintenance/backup/run").status_code == 202
+    assert flow.client.app.state.jobs.wait_idle(8)
+    record = flow.call("admin", "GET", "/api/admin/backups").json()[0]
+    path = settings.paths.dev_nas_dir / create_paths(settings).root(Region.BACKUP) / record["name"]
+    original = sha256(path.read_bytes()).hexdigest()
+    stage = tmp_path / "failed-migration-stage"
+
+    def fail_migration(database):
+        assert database.data_dir == stage / "data"
+        raise CommandError("模拟隔离库数据库版本错误")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Database, "migrate", fail_migration)
+        with pytest.raises(BackupRecoveryError, match="版本不兼容或无法迁移"):
+            stage_backup(path, stage, destination_config=settings)
+    assert not stage.exists()
+    assert sha256(path.read_bytes()).hexdigest() == original
+    assert flow.call("one", "GET", f"/api/projects/{project.id}").status_code == 200
