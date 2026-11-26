@@ -1,6 +1,6 @@
 # NAS 设计资产工作台
 
-公司内网设计资产工作台。当前开发版为 **V1.1.4**，涵盖 WP00–WP14。业务流程从项目文件夹预检和分片上传开始，经主图预描述、AI 打标、人工核对和两级审核，完成正式入库后可浏览、检索与下载。
+公司内网设计资产工作台。当前开发版为 **V1.1.5**，涵盖 WP00–WP14。业务流程从项目文件夹预检和分片上传开始，经主图预描述、AI 打标、人工核对和两级审核，完成正式入库后可浏览、检索与下载。
 
 如需了解当前可用功能、各阶段交付和新版改动，查看 [开发与版本变更日志](docs/CHANGELOG.md)。实现细节和验收步骤见 [开发进度](docs/PROGRESS.md)。
 
@@ -127,7 +127,7 @@ python -m alembic -c backend/alembic.ini current
 curl http://localhost:8080/api/health
 ```
 
-成功示例：`{"version":"0.1.0","mode":"dev","database_available":true,"dsm_verify_ssl":true}`。数据库不可用时返回 503；所有 API 错误采用 `{code,message,detail}`，不返回内部异常、配置或请求体。非 `/api` 页面路由回退 `index.html`，未知 API 和缺失 `/assets/` 资源返回结构化 404，前端未构建时首页为 404，health 仍可用。
+成功示例：`{"version":"1.1.5","mode":"dev","database_available":true,"dsm_verify_ssl":true}`。数据库不可用时返回 503；所有 API 错误采用 `{code,message,detail}`，不返回内部异常、配置或请求体。非 `/api` 页面路由回退 `index.html`，未知 API 和缺失 `/assets/` 资源返回结构化 404，前端未构建时首页为 404，health 仍可用。
 
 重建验收：停止后端，将开发环境的 `data/` 移至临时备份位置或删除，再启动；应自动生成新数据库及新密钥，health 恢复正常。此操作仅针对可丢弃的开发数据。
 

@@ -19,7 +19,7 @@ def test_health_success_and_database_failure(settings: Settings, tmp_path: Path,
     with TestClient(app) as client:
         response = client.get("/api/health")
         assert response.status_code == 200
-        assert response.json() == {"version": "0.1.0", "mode": "dev", "database_available": True, "dsm_verify_ssl": True}
+        assert response.json() == {"version": "1.1.5", "mode": "dev", "database_available": True, "dsm_verify_ssl": True}
         monkeypatch.setattr(app.state.database, "is_available", lambda: False)
         failed = client.get("/api/health")
         assert failed.status_code == 503
