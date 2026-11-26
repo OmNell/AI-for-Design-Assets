@@ -23,26 +23,31 @@ def create_paths(config: Settings) -> NasPaths:
 def create_fs(config: Settings, username: str, password: str) -> BaseFs:
     paths = create_paths(config)
     if config.mode == "prod":
-        return SmbFs(str(config.nas.verified_address or config.nas.host), config.nas.share, username, password, paths, config.nas.timeout_s)
+        return SmbFs(str(config.nas.verified_address or config.nas.host), config.nas.share, username, password,
+                     paths, config.nas.timeout_s, {region: Access.READ for region in Region}
+                     if config.recovery.read_only else None)
     if not FakeAuthBackend(config.dev_users).verify(username, password):
         raise NasLoginError("invalid_credentials", "账号或密码不正确", 401)
     user = next(user for user in config.dev_users if user.username == username)
     permissions = {Region(region): Access(access) for region, access in user.permissions.items()}
+    if config.recovery.read_only:
+        permissions = {region: Access.READ if access == Access.WRITE else access for region, access in permissions.items()}
     return LocalFs(config.paths.dev_nas_dir, permissions, paths, initialize=config.nas.work_root is None,
                    browser_read=user.nas_browser_read)
 
 
 def create_system_fs(config: Settings) -> BaseFs:
     paths = create_paths(config)
+    permissions = {**SYSTEM_PERMISSIONS, Region.BACKUP: Access.READ} if config.recovery.read_only else SYSTEM_PERMISSIONS
     if config.mode == "dev":
-        return LocalFs(config.paths.dev_nas_dir, SYSTEM_PERMISSIONS, paths, initialize=config.nas.work_root is None)
+        return LocalFs(config.paths.dev_nas_dir, permissions, paths, initialize=config.nas.work_root is None)
     encrypted = config.nas.system_password_enc.get_secret_value()
     if not encrypted:
         raise NasPermissionDenied("尚未配置加密的系统账号密码")
     password = SecretCipher(config.paths.data_dir, read_only=True).decrypt(encrypted)
     try:
         return SmbFs(str(config.nas.verified_address or config.nas.host), config.nas.share, config.nas.system_user, password,
-                     paths, config.nas.timeout_s, SYSTEM_PERMISSIONS)
+                     paths, config.nas.timeout_s, permissions)
     finally:
         password = ""
 

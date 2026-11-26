@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterator
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.db.database import Database
@@ -20,7 +21,7 @@ from app.services.auth.service import AuthService
 from app.services.crypto import SecretCipher
 from app.services.ingest import vectors
 from app.services.jobs import JobQueue
-from app.services.nas import NasFs, NasNotFound, Region, safe_join
+from app.services.nas import NasFs, NasNotFound, NasPermissionDenied, Region, safe_join
 from app.services.nas.factory import create_paths, create_session_pool
 from app.services.oplog import OplogService
 from app.services.thumbs import ThumbService
@@ -60,23 +61,33 @@ class Candidate:
         return self.data["project"].get("asset_version", 0) if self.data else None
 
 
-def _project_directories(fs: NasFs, root: str, relative: str = "") -> Iterator[str]:
+def _project_directories(fs: NasFs, root: str, inaccessible: list[dict], relative: str = "") -> Iterator[str]:
     skip = {"_工作台准备", archive.HISTORY_DIR, *archive.PRODUCT_DIR.values()}
     current = safe_join(root, relative) if relative else root
-    for name in fs.list(current):
+    try:
+        names = fs.list(current)
+    except (NasNotFound, NasPermissionDenied):
+        if not relative:
+            raise
+        inaccessible.append({"path": relative, "reason": "目录不存在或系统账号无法读取"})
+        return
+    for name in names:
         if name in skip:
             continue
-        path = safe_join(relative, name) if relative else name
-        absolute = safe_join(root, path)
-        if not fs.stat(absolute).is_dir:
-            continue
-        parts = path.split("/")
-        project_name = len(name.split("_")) == 3 and bool(name.partition("_")[0])
-        project_folder = project_name and (len(parts) >= 4 or parts[0] == "_已作废项目")
-        if project_folder or fs.exists(safe_join(absolute, archive.PROJECT_FILE)):
-            yield path
-        else:
-            yield from _project_directories(fs, root, path)
+        path = f"{relative}/{name}" if relative else name
+        try:
+            absolute = safe_join(root, path)
+            if not fs.stat(absolute).is_dir:
+                continue
+            parts = path.split("/")
+            project_name = len(name.split("_")) == 3 and bool(name.partition("_")[0])
+            project_folder = project_name and (len(parts) >= 4 or parts[0] == "_已作废项目")
+            if project_folder or fs.exists(safe_join(absolute, archive.PROJECT_FILE)):
+                yield path
+            else:
+                yield from _project_directories(fs, root, inaccessible, path)
+        except (NasNotFound, NasPermissionDenied):
+            inaccessible.append({"path": path, "reason": "目录不存在、路径不合法或系统账号无法读取"})
 
 
 def _validate(data: archive.Manifest) -> None:
@@ -133,10 +144,12 @@ def verify_files(fs: NasFs, root: str, data: archive.Manifest) -> None:
             raise archive.ArchiveError(f"原文件未通过完整 SHA-256 校验（文件 ID {row['id']}）")
 
 
-def scan(fs: NasFs, root: str, selections: dict[str, dict] | None = None) -> tuple[dict, list[Candidate]]:
+def scan(fs: NasFs, root: str, selections: dict[str, dict] | None = None, *,
+         verify_contents: bool = True) -> tuple[dict, list[Candidate]]:
     candidates: dict[str, list[Candidate]] = defaultdict(list)
+    inaccessible: list[dict] = []
     review = selections or {}
-    for path in _project_directories(fs, root):
+    for path in _project_directories(fs, root, inaccessible):
         absolute = safe_join(root, path)
         guess = path.rsplit("/", 1)[-1].partition("_")[0]
         row = Candidate(path, guess, None)
@@ -149,6 +162,8 @@ def scan(fs: NasFs, root: str, selections: dict[str, dict] | None = None) -> tup
             if guess.casefold() != row.code.casefold():
                 raise archive.ArchiveError("目录编号与项目档案不一致")
             row.verified = publication.confirmed(fs, absolute, row.data, path)
+        except NasPermissionDenied:
+            row.error = "系统账号无法读取或档案路径不合法"
         except (archive.ArchiveError, NasNotFound, ValueError, TypeError, KeyError) as exc:
             row.error = str(exc) if isinstance(exc, archive.ArchiveError) else "档案缺失或字段不合法"
         candidates[row.code.casefold()].append(row)
@@ -166,10 +181,10 @@ def scan(fs: NasFs, root: str, selections: dict[str, dict] | None = None) -> tup
             matches = [r for r in proved if r.version == highest]
             chosen = matches[0] if len(matches) == 1 and all(
                 r is matches[0] or r.version is not None and r.version < highest for r in rows) else None
-        if chosen:
+        if chosen and verify_contents:
             try:
                 verify_files(fs, safe_join(root, chosen.path), chosen.data)
-            except (archive.ArchiveError, NasNotFound) as exc:
+            except (archive.ArchiveError, NasNotFound, NasPermissionDenied) as exc:
                 chosen.error = str(exc)
                 chosen = None
         if chosen:
@@ -182,10 +197,10 @@ def scan(fs: NasFs, root: str, selections: dict[str, dict] | None = None) -> tup
     identities: dict[tuple[str, object], list[Candidate]] = defaultdict(list)
     for entry in selected:
         data = entry.data
-        identities["project", data["project"]["id"]].append(entry)
+        identities["stable_id", data["project"]["id"]].append(entry)
         for name in ("files", "products", "history"):
             for row in data[name]:
-                identities[name, row["id"]].append(entry)
+                identities["stable_id", row["id"]].append(entry)
         for row in data["products"]:
             identities["product_code", row["product_code"].casefold()].append(entry)
         for row in data["links"]:
@@ -196,12 +211,28 @@ def scan(fs: NasFs, root: str, selections: dict[str, dict] | None = None) -> tup
             unresolved.append({"project_code": row.code, "reason": "稳定 ID、商品编号或原短链接与另一项目冲突",
                                "candidates": [row.report()]})
     selected = [row for row in selected if row.path not in conflict]
-    return {"selected": [row.report() for row in selected], "unresolved": unresolved,
+    return {"selected": [row.report() for row in selected], "unresolved": unresolved, "inaccessible": inaccessible,
             "scanned": sum(map(len, candidates.values())), "not_recoverable": list(UNRECOVERABLE)}, selected
 
 
 def recovery_identity(selected: list[Candidate]) -> dict:
     return {str(row.data["project"]["id"]): {"path": row.path, "sha256": row.sha} for row in selected}
+
+
+def reserve_identities(session: Session, data: archive.Manifest) -> None:
+    highest = max((data["project"]["id"], *(row["id"] for name in ("files", "products", "history") for row in data[name])))
+    counter = session.scalar(select(Setting).where(Setting.key == archive.IDENTITY_SEQUENCE))
+    if counter is None:
+        session.add(Setting(key=archive.IDENTITY_SEQUENCE, value=highest, encrypted=False))
+    else:
+        counter.value = max(int(counter.value), highest)
+    if match := re.fullmatch(r"H(\d{4})-(\d+)", data["project"]["project_code"]):
+        year, number = map(int, match.groups())
+        historical = session.get(HCodeSequence, year)
+        if historical is None:
+            session.add(HCodeSequence(year=year, last_sequence=number))
+        else:
+            historical.last_sequence = max(historical.last_sequence, number)
 
 
 def rebuild(fs: NasFs, root: str, target: Path, selected: list[Candidate]) -> dict[str, int]:
@@ -222,14 +253,8 @@ def rebuild(fs: NasFs, root: str, target: Path, selected: list[Candidate]) -> di
                 if row.verified and not publication.confirmed(fs, absolute, data, row.path):
                     raise archive.ArchiveError("正式发布凭据在验证后变化")
                 verify_files(fs, absolute, data)
-                project = archive.register(session, data, current_path=row.path)
-                if match := re.fullmatch(r"H(\d{4})-(\d+)", project.project_code):
-                    year, sequence = map(int, match.groups())
-                    counter = session.get(HCodeSequence, year)
-                    if counter:
-                        counter.last_sequence = max(counter.last_sequence, sequence)
-                    else:
-                        session.add(HCodeSequence(year=year, last_sequence=sequence))
+                archive.register(session, data, current_path=row.path)
+                reserve_identities(session, data)
                 totals["projects"] += 1
                 for name in totals.keys() - {"projects"}:
                     totals[name] += len(data[name])
@@ -249,10 +274,10 @@ def rebuild_auxiliary(config: Settings, directory: Path, fs: NasFs, root: str,
     """只在新恢复库生成派生数据，用既有正式向量门禁控制公开。"""
     work = config.model_copy(deep=True)
     work.paths.data_dir = directory
-    database = Database(directory)
-    pool = create_session_pool(work)
     cipher = (SecretCipher(directory) if work.mode == "dev"
               else SecretCipher(config.paths.data_dir, read_only=True))
+    database = Database(directory)
+    pool = create_session_pool(work)
     auth = AuthService(database, pool, work)
     queue = JobQueue(database, pool)
     ai = AiService(auth, queue, AiSettingsService(auth, cipher), cipher, ThumbService(auth, queue))
@@ -262,7 +287,6 @@ def rebuild_auxiliary(config: Settings, directory: Path, fs: NasFs, root: str,
             origin = session.scalar(select(Setting).where(Setting.key == "archive_recovery"))
             if origin is None or origin.value != recovery_identity(selected):
                 raise ValueError("目标并非同一份已核验计划生成的隔离库")
-            model = vectors.model_for(ai, session)
         for candidate in selected:
             data = candidate.data
             project_id = data["project"]["id"]
@@ -270,16 +294,20 @@ def rebuild_auxiliary(config: Settings, directory: Path, fs: NasFs, root: str,
                 continue
             files = {row["id"]: (row, path) for row, path in _files(data) if row["status"] == "active"}
             products = [row for row in data["products"] if row["status"] == "active" and row["file_id"] in files]
-            with database.session() as session:
-                current = session.get(Project, project_id)
-                if current and current.status == "active":
-                    result["active"].append(project_id)
-                    continue
-                inputs = vectors.project_inputs(ai, session, {**data, "products": products})
             try:
+                with database.session() as session:
+                    current = session.get(Project, project_id)
+                    if current and current.status == "active":
+                        result["active"].append(project_id)
+                        continue
+                    inputs = vectors.project_inputs(ai, session, {**data, "products": products})
+                    model = vectors.model_for(ai, session) if inputs else None
                 if inputs:
                     vectors.generate(ai, None, model, inputs)
                 absolute = safe_join(root, candidate.path)
+                fresh = archive.parse(fs, absolute)
+                if publication.digest(fresh) != candidate.sha or candidate.verified and not publication.confirmed(fs, absolute, fresh, candidate.path):
+                    raise archive.ArchiveError("档案或正式发布凭据变化，请重新生成恢复计划")
                 verify_files(fs, absolute, data)
                 for row in products:
                     f, relative = files[row["file_id"]]
@@ -297,7 +325,7 @@ def rebuild_auxiliary(config: Settings, directory: Path, fs: NasFs, root: str,
                         raise ValueError("该项目不在隔离恢复状态")
                     project.status = "active"
                     OplogService(session).write(None, "system", "灾难恢复向量核验通过", "project", str(project_id),
-                                                None, {"model": model.name, "items": len(inputs)}, "成功", "离线恢复")
+                                                None, {"model": model.name if model else None, "items": len(inputs)}, "成功", "离线恢复")
                 result["active"].append(project_id)
             except Exception as exc:
                 result["blocked"].append({"project_id": project_id, "error": type(exc).__name__})

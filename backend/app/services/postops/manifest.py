@@ -31,7 +31,6 @@ VOIDED_ROOT = "_已作废项目"
 COOLING_PERIOD = timedelta(days=30)
 AUTOMATIC_DEACTIVATION = {"item_void", "set_void", "project_void"}
 RECOGNIZED_CONFIRMATIONS = {"confirmed_value", "confirmed_unknown"}
-IDENTITY_SETTING = "catalog_identity_sequence"
 Row = dict[str, Any]
 
 
@@ -244,7 +243,7 @@ class _ManifestChange:
         self.batch_product_codes: dict[int, str] = {}
         self.now, self.stamp = moment, archive.utc_text(moment)
         self.purge: list[Row] = []
-        self.reserved = session.scalar(select(Setting).where(Setting.key == IDENTITY_SETTING))
+        self.reserved = session.scalar(select(Setting).where(Setting.key == archive.IDENTITY_SEQUENCE))
         self.last_id = max(self.reserved.value if self.reserved else 0,
                            *(session.scalar(select(func.max(model.id))) or 0 for model in (Project, CatalogFile, Product, HistoryVersion)))
         self.first_id = self.last_id
@@ -259,7 +258,7 @@ class _ManifestChange:
         if self.first_id == self.last_id:
             return
         if self.reserved is None:
-            self.session.add(Setting(key=IDENTITY_SETTING, value=self.last_id, encrypted=False))
+            self.session.add(Setting(key=archive.IDENTITY_SEQUENCE, value=self.last_id, encrypted=False))
         else:
             self.reserved.value = self.last_id
 
@@ -738,15 +737,22 @@ def publish(session: Session, batch: Batch, prepared: Row) -> Project:
         raise _error("operation_base_changed", "发布时正式资产已发生变化，停止覆盖")
     if "baseline" in prepared and physical_paths(_physical_baseline(session, project.id, current)) != physical_paths(prepared["baseline"]):
         raise _error("operation_physical_path_changed", "发布时正式文件位置已经变化，停止覆盖")
+    return apply_catalog(session, project, target, batch_id=batch.id)
+
+
+def apply_catalog(session: Session, project: Project, target: archive.Manifest, *, batch_id: int | None) -> Project:
+    """写入已经核验的资产版本。档案恢复不创建新的业务批次。"""
     archive.validate(target)
     _assign(project, target["project"], ("ingested_at", "archive_updated_at", "voided_at", "deleted_at"))
+    if batch_id is None:
+        project.status = target["project"].get("status", "active")
     for model, rows, dates in ((CatalogFile, target["files"], ("voided_at", "deleted_at")),
                                (Product, target["products"], ("ingested_at", "voided_at", "deleted_at"))):
         current = {row.id: row for row in session.scalars(select(model).where(model.project_id == project.id))}
         for values in rows:
             record = current.get(values["id"])
             if record is None:
-                record = model(first_batch_id=batch.id) if model is CatalogFile else model()
+                record = model(first_batch_id=batch_id) if model is CatalogFile else model()
                 session.add(record)
             _assign(record, values, dates)
         session.flush()
@@ -767,7 +773,9 @@ def publish(session: Session, batch: Batch, prepared: Row) -> Project:
         existing_by = (record.confirmed_by_original_id or record.confirmed_by) if record else None
         source = values["confirmed_by"]
         original_id = record.confirmed_by_original_id if record else None
-        if existing_by != source:
+        if batch_id is None and (record is None or record.relation_version != values["relation_version"] or existing_by != source):
+            original_id = source
+        elif existing_by != source:
             original_id = source if source is not None and session.get(User, source) is None else None
         if record is None:
             record = ProductRelation()
@@ -781,7 +789,7 @@ def publish(session: Session, batch: Batch, prepared: Row) -> Project:
     for values in target["history"]:
         record = current_history.get(values["id"])
         if record is None:
-            session.add(HistoryVersion(**values, batch_id=batch.id))
+            session.add(HistoryVersion(**values, batch_id=batch_id))
         elif record.expected_missing != values["expected_missing"]:
             record.expected_missing = values["expected_missing"]
     for values in target["links"]:

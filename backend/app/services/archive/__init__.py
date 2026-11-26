@@ -16,6 +16,7 @@ from app.services.upload.fingerprint import fingerprint
 PRODUCT_DIR = {"item": "单品档案", "set": "套装档案"}
 PROJECT_FILE = "_项目档案.txt"
 HISTORY_DIR = "_历史版本"
+IDENTITY_SEQUENCE = "catalog_identity_sequence"
 DATA_START = "\n【恢复数据 JSON】\n"
 END = "\n结束标记：完\n"
 PROJECT_FIELDS = ("id", "project_code", "code_source", "company_name", "company_id", "industry_id", "won",

@@ -471,13 +471,29 @@ Alembic 头为 `0018_search`。生产升级前沿用一致性数据库快照流�
 
 管理员可在「管理 → 运营管理」查看巡检、手动备份和核对清理清单。定时任务采用中国标准时间，默认为 02:00 巡检、03:00 备份。备份包包含恢复密钥，请限制备份目录读取和备份下载权限。
 
-确认目标实例已经停止后，可将一个备份包验证并解到新目录：
+换机后先用原 NAS 的正确共享与业务区域启动。正式部署模板与备份恢复生成的配置启用 `recovery.read_only: true`。核验数据期间可保持旧部署运行。确认切换时停止旧部署写入，再由运维启用目标实例的业务写入。SQLite 数据目录须放在目标工作台的本地磁盘。
 
-```bash
-python scripts/restore_backup.py wb-backup-20261119-0300.zip --service-stopped
+有可用备份时，使用与原资产库同一 NAS 的目标配置。可以先列出 NAS 备份，也可以指定下载好的包。下面的 `新的隔离恢复目录` 须尚不存在，父目录须已存在。
+
+```sh
+python scripts/restore_backup.py --list-nas --config config.yaml
+python scripts/restore_backup.py --nas-backup wb-backup-20261119-0300.zip \
+  --config config.yaml --target 新的隔离恢复目录 --service-stopped --compare-nas
 ```
 
-默认目标为系统临时目录。也可传 `--target` 指定尚不存在的目录，其父目录需要已存在。工具核验归档结构、配置、密钥、SQLite 完整性及原有资产身份。在隔离实例启动前，将 `NASWB_PATHS__DATA_DIR` 指向目标的 `data/`，核对配置路径、外部证书、环境变量及 NAS 环境。
+用本地 ZIP 恢复时，以文件路径替代 `--nas-backup` 和文件名。暂时无法解密 NAS 系统账号时，可用 `--prompt-system-password` 在终端临时输入。工具校验包内文件、原密钥、加密配置、SQLite 完整性及资产身份，然后迁移暂存库、撤销旧登录令牌，并保留原配置用于核对。备份时间较早时，查看 `nas-difference.json` 中需补齐的项目。使用隔离目录里的 `config.yaml` 启动核验，切换时保留原配置和原数据目录用于回滚。
+
+从较早备份切换前，可在停机的隔离库继续应用经过确认的差异计划：
+
+```sh
+python scripts/rebuild_catalog.py --config 恢复目录/config.yaml \
+  --compare-data 恢复目录/data --report 新的核验计划.json
+python scripts/rebuild_catalog.py --config 恢复目录/config.yaml \
+  --compare-data 恢复目录/data --apply-plan 新的核验计划.json \
+  --service-stopped --report 新的恢复结果.json
+```
+
+没有有效备份时，可用 `scripts/rebuild_catalog.py` 从具有发布凭据的正式 NAS 档案恢复。普通 NAS 文件与审核中资料仍只保留原有归属；凭据缺失、指纹不符或身份冲突的项目进入报告。档案恢复保留现有项目、商品、文件、标签、套装关系和永久链接的稳定身份。用户角色、完整审核记录和操作日志需要依赖数据库备份。
 
 ## Windows 候选版本与上线验收
 

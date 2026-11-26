@@ -8,6 +8,8 @@ from pathlib import Path
 from collections.abc import Awaitable, Callable
 from typing import AsyncIterator
 
+from alembic.util.exc import CommandError
+from sqlalchemy.exc import DatabaseError
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
 from starlette.exceptions import HTTPException
@@ -45,11 +47,12 @@ from app.services.upload.service import UploadService
 from app.services.auth.service import AuthService
 from app.services.admin import RoleService
 from app.services.nas.factory import create_session_pool
+from app.services.recovery.status import RecoveryStatus
 from app.config import Settings, load_settings
 from app.db.database import Database
 from app.errors import error_response, register_handlers
 from app.logging_config import configure_logging
-from app.services.crypto import SecretCipher
+from app.services.crypto import CryptoError, SecretCipher
 from app.services.jobs import JobQueue
 from app.services.thumbs import ThumbService
 from app.services.ai.orchestrator import AiService
@@ -63,7 +66,8 @@ from app.services.notify import NotifyService
 from app.services.admin.company_map import CompanyMapService
 from app.services.review import ReviewService
 from app.api.ai_runtime import router as ai_runtime_router
-from app.db.models import Job
+from app.db.models import Job, Setting
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -82,6 +86,9 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
         handler = configure_logging(directory)
         logger = logging.getLogger("nas_workbench")
         database: Database | None = None
+        application.state.database_ready = False
+        application.state.startup_message = "本地数据库不可用，请由管理员离线验证并恢复备份"
+        recovery_status = None
         pool = None
         upload = None
         jobs = None
@@ -90,8 +97,26 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
         try:
             database = Database(config.paths.data_dir)
             application.state.settings = config
-            application.state.cipher = SecretCipher(config.paths.data_dir)
-            database.migrate()
+            try:
+                database.migrate()
+            except (DatabaseError, CommandError):
+                logger.error("本地数据库不可读或版本不兼容，请离线验证并恢复备份")
+                yield
+                return
+            try:
+                if not (config.paths.data_dir / "secret.key").is_file():
+                    with database.session() as session:
+                        encrypted = session.scalar(select(Setting.id).where(Setting.encrypted.is_(True)).limit(1))
+                    configured_secret = (config.nas.system_password_enc.get_secret_value() or
+                                         config.ai.api_key_enc.get_secret_value())
+                    if encrypted is not None or configured_secret:
+                        raise CryptoError("配置密文缺少原密钥")
+                application.state.cipher = SecretCipher(config.paths.data_dir)
+            except CryptoError:
+                application.state.startup_message = "本地密钥不可用，请由管理员核对备份中的原密钥"
+                logger.error("本地密钥不可用，工作台暂缓启动业务服务")
+                yield
+                return
             nas_gate.unfreeze()
             config = activate_at_boot(config, source, database, application.state.cipher)
             application.state.settings = config
@@ -155,9 +180,16 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             jobs.start()
             ai.start()
             system.start()
+            recovery_status = RecoveryStatus(config, database)
+            application.state.recovery_status = recovery_status
+            recovery_status.start()
+            application.state.database_ready = True
             logger.info("工作台启动完成，模式：%s", config.mode)
             yield
         finally:
+            application.state.database_ready = False
+            if recovery_status is not None:
+                recovery_status.shutdown()
             try:
                 try:
                     try:
@@ -191,6 +223,8 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
 
     @application.middleware("http")
     async def protect_api_writes(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        if request.url.path.startswith(("/api/", "/l/")) and not request.app.state.database_ready:
+            return error_response(503, "database_unavailable", request.app.state.startup_message)
         if request.url.path.startswith("/api/") and request.method not in {"GET", "HEAD", "OPTIONS"}:
             origin = request.headers.get("origin")
             if request.headers.get("sec-fetch-site") == "cross-site" or (

@@ -81,7 +81,8 @@ def project_inputs(ai: AiService, session: Session, data: Manifest) -> dict[int,
     source_company = metadata.get("source_company")
     if not source_company and metadata.get("snapshot_id") is not None:
         snapshot = session.get(ReviewSnapshot, metadata["snapshot_id"])
-        source_company = snapshot.content["review"]["batch"]["company_name"] if snapshot else None
+        if snapshot and snapshot.digest == metadata.get("snapshot_sha256"):
+            source_company = snapshot.content["review"]["batch"]["company_name"]
     private = [project["project_code"], nas.host, nas.share, nas.root_path.strip("/"), nas.temp_path.strip("/"),
                nas.backup_path.strip("/"), source_company or project["company_name"],
                project["company_name"], *metadata.get("actors", {}).values()]

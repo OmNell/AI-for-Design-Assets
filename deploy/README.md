@@ -80,7 +80,14 @@ Windows 安装器配置 SMB 连接参数并指定初始管理员。公司内部�
 ## 数据恢复
 
 **场景 A：存在数据库备份包**
-复用 `scripts/restore_backup.py <备份.zip> --service-stopped --target <新目录>`。工具校验成员和指纹，恢复 SQLite、配置和密钥并核查完整性及外键。通过隔离实例核对角色、审核日志、正式模型代次和原链接，确认后由 IT 决定恢复切换。配置里的绝对路径、监听地址和 NAS 配置须逐项核对。
+先从安装版本的目录运行下列命令。候选列表中的清单验证只检查 ZIP 结构和备份格式。选择最近的候选后，恢复工具会逐个核对文件 SHA-256、SQLite 完整性与外键、资产身份清单以及密文与密钥。候选损坏时可以重新选择较早的备份。
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\restore_backup.py --list-nas --config '<目标配置.yaml>'
+.\.venv\Scripts\python.exe .\scripts\restore_backup.py --nas-backup '<列表中的备份名>' --config '<目标配置.yaml>' --target '<尚不存在的新目录>' --service-stopped --compare-nas
+```
+
+已有本地 ZIP 时用文件路径替换 `--nas-backup '<备份名>'`。工具在新目录中迁移数据库、废止原登录会话，并保存 `source-config.yaml`、可启动的 `config.yaml` 和 `restore-report.json`。目标配置提供新环境的监听地址、域名和 NAS 路径。隔离配置启用 `recovery.read_only`。用回环地址和独立端口启动验证实例，核对人员与角色、审核历史、原链接、两种搜索和预览下载。查看 `nas-difference.json`，在隔离恢复库补齐晚于备份的已发布档案，处理计划中的冲突。只能从保护的本机目录启动恢复实例。
 
 **场景 B：SQLite 和全部备份丢失**
 先以 `wb-system` 只读扫描，输出新报告，省略目标目录即只扫描：
@@ -92,6 +99,13 @@ Windows 安装器配置 SMB 连接参数并指定初始管理员。公司内部�
 有匹配的发布凭据、唯一最新版本和完整 SHA-256 才自动选中。新版在双审、档案、文件及正式向量通过后，先用本轮终审会话写入并读回恢复凭据，再提交 SQLite 的可见状态。SQLite 完好时，若提交中断，由本轮终审继续原批次；SQLite 和全部备份损毁时，可用已落盘凭据重建，再通过向量门禁。旧版本曾经发布但缺少凭据时，SQLite 尚存可在巡检后发起档案双审修复。SQLite 和备份均已损毁的旧档案仍需独立证据。人工选项 `--selection` 使用按项目编号索引的 JSON，各条含计划报告中的 `path`、`manifest_sha256` 与独立证明发布已完成的 `basis`。有两个冲突版本时请保留双方证据。凭据可信度依赖正式档案 ACL 和现场对未经工作台改动的审计。
 
 加 `--target <尚不存在的隔离目录>` 重建原始项目、商品、文件、关系、标签、历史和链接。原始 NAS 正式区全程只读。显式加 `--rebuild-derived` 可生成缩略图并使用当前配置的模型走正式向量门禁。生产配置会调用真实百炼，使用前完成授权。派生失败的项目保持隐藏。处理后可用同样的来源与批准清单执行 `--resume-derived <原隔离目录>` 补跑。密钥也遗失时可加 `--prompt-system-password` 临时输入只读系统身份。数据库没有可证明的原会话、用户角色、审核记录、日志与调度历史时，报告列出缺失项。正式启用前由 IT 独立核准角色和启动配置。
+
+### Windows 托管服务恢复切换
+
+1. 在维护窗口停止原业务实例、隔离验证实例和目标 Windows 服务。加载目标版本的 `deploy/common.ps1`，使用 `Stop-Workbench <目标发布目录>` 核验目标服务、进程和端口已退出。记录现有防火墙规则状态，停用对客户端的工作台入站规则。
+2. 在安装根的受保护 `backups` 下保留原 `data` 整个目录和原 `configuration/config.yaml`，包括 SQLite 的 WAL/SHM、密钥和 NAS 配置状态。原库可用时，还可先运行 `deploy/ops.py snapshot --root <安装根> --package <新的本机快照.zip> --service-stopped`。把隔离库的 `data` 复制到空的安装根 `data`，再把隔离配置复制到 `configuration/config.yaml`。设置 `paths.data_dir: ../data`，核对实际内网域名和端口 8080，保持 `recovery.read_only: true`。
+3. 对安装根运行 `Protect-Directories`，用 `icacls` 核验数据、配置和密钥 ACL，并按安装流程为 LocalService 授权密钥。用当前发布的 `deploy/ops.py migrate --root <安装根>` 核验配置、密钥及数据库。启动服务后运行 `Test-Workbench <安装根> <目标发布目录>`，再用授权账号复核资产权限、链接和检索。确认同一套 NAS 正式资产只留一个写入实例后，才设置 `recovery.read_only: false`、重启并恢复原入站规则。
+4. 开放业务写入前如验证失败，重新停机并把尝试切换的 `data` 和配置另存到受保护目录，再成对恢复原数据目录、原配置及原密钥。核验 LocalService ACL 和健康检查后按原规则恢复服务。已开放写入时，先停止写入并核对切换后的变更，再决定如何回滚。
 
 ## 常见问题及签署项
 

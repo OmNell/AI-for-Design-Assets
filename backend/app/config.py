@@ -114,6 +114,10 @@ class ScheduleConfig(Section):
     backup: str = "0 3 * * *"
 
 
+class RecoveryConfig(Section):
+    read_only: bool = False
+
+
 class PathsConfig(Section):
     data_dir: Path = Path("./data")
     dev_nas_dir: Path = Path("./devdata/nas")
@@ -143,6 +147,7 @@ class Settings(BaseSettings):
     purge: PurgeConfig = Field(default_factory=PurgeConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
+    recovery: RecoveryConfig = Field(default_factory=RecoveryConfig)
 
     @model_validator(mode="after")
     def unique_dev_users(self) -> Settings:

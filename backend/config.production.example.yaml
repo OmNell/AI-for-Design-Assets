@@ -31,3 +31,5 @@ schedule:
   backup: '0 3 * * *'
 paths:
   data_dir: ./data
+recovery:
+  read_only: true  # 核验历史资产并停止旧环境写入后再启用业务写入。

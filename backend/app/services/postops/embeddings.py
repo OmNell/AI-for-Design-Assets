@@ -1,6 +1,8 @@
 """在公开卡片柜外准备向量，并与新版本一起提交。"""
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,14 +15,15 @@ from app.services.search.indexes import IndexService
 
 
 def inputs(ai: AiService, session: Session, data: dict) -> dict[int, str]:
-    if data["project"]["status"] != "active":
+    if data["project"].get("status", "active") != "active":
         return {}
     active_files = {r["id"] for r in data["files"] if r["status"] == "active"}
     active = {r["id"] for r in data["products"] if r["status"] == "active" and r["file_id"] in active_files}
     return {pid: text for pid, text in vectors.project_inputs(ai, session, data).items() if pid in active}
 
 
-def prepare(ai: AiService, data: dict, batch_id: int, prepared: dict) -> dict:
+def prepare(ai: AiService, data: dict, batch_id: int | None, prepared: dict, *,
+            checkpoint: Callable[[vectors.Model, int, dict], None] | None = None) -> dict:
     with ai.auth.database.session() as session:
         formal = vectors.model_for(ai, session)
         models = [formal, *(IndexService.profile(row) for row in session.scalars(select(EmbeddingIndex).where(
@@ -29,7 +32,7 @@ def prepare(ai: AiService, data: dict, batch_id: int, prepared: dict) -> dict:
     result = {}
     for model in models:
         key = str(model.generation)
-        saved = prepared.get(key, {})
+        saved = prepared.get(f"{key}:{model.version}", prepared.get(key, {}))
         fresh: dict[str, dict] = {}
         failed = []
         with ai.auth.database.session() as session:
@@ -43,7 +46,8 @@ def prepare(ai: AiService, data: dict, batch_id: int, prepared: dict) -> dict:
                     digest = vectors.text_hash(text)
                     prior = saved.get("items", {}).get(str(pid))
                     try:
-                        value = prior["vector"] if saved.get("version") == model.version and prior and prior["digest"] == digest else client.embed(text, batch_id)
+                        reused = saved.get("version") == model.version and prior and prior["digest"] == digest
+                        value = prior["vector"] if reused else client.embed(text, batch_id)
                         vectors.validate_vector(value, dimension)
                     except AiCallError:
                         failed.append(pid)
@@ -52,6 +56,8 @@ def prepare(ai: AiService, data: dict, batch_id: int, prepared: dict) -> dict:
                         continue
                     dimension = dimension or len(value)
                     fresh[str(pid)] = {"digest": digest, "vector": value}
+                    if checkpoint is not None and not reused:
+                        checkpoint(model, pid, fresh[str(pid)])
             except JobFailure:
                 if model == formal:
                     raise
@@ -61,7 +67,7 @@ def prepare(ai: AiService, data: dict, batch_id: int, prepared: dict) -> dict:
     return {"formal": formal.generation, "models": result}
 
 
-def publish(ai: AiService, session: Session, data: dict, batch_id: int, staged: dict) -> None:
+def publish(ai: AiService, session: Session, data: dict, batch_id: int | None, staged: dict) -> None:
     formal = vectors.model_for(ai, session)
     models = staged["models"]
     if staged["formal"] != formal.generation or models[str(formal.generation)]["version"] != formal.version:
@@ -82,7 +88,7 @@ def publish(ai: AiService, session: Session, data: dict, batch_id: int, staged: 
             if vectors._valid(existing, digest, dimension):
                 continue
             entry = payload["items"].get(str(pid))
-            if existing and existing.embedding and existing.dimension:
+            if batch_id is not None and existing and existing.embedding and existing.dimension:
                 session.add(ProductEmbeddingHistory(batch_id=batch_id, product_id=pid, model_id=model.name,
                     model_version=model.version, index_generation=model.generation, dimension=existing.dimension,
                     embedding=existing.embedding, text_hash=existing.text_hash))

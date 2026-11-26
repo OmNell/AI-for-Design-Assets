@@ -98,3 +98,60 @@ def test_missing_build_gives_structured_error(settings: Settings, tmp_path: Path
     with TestClient(create_app(settings, static_dir=tmp_path / "missing", log_dir=tmp_path / "logs")) as client:
         assert client.get("/").status_code == 404
         assert client.get("/api/health").status_code == 200
+
+
+def test_corrupt_database_serves_recovery_message_without_replacing_data(settings, tmp_path):
+    settings.paths.data_dir.mkdir(parents=True)
+    db = settings.paths.data_dir / "app.db"
+    corrupted = b"invalid sqlite file"
+    db.write_bytes(corrupted)
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("工作台", encoding="utf-8")
+    with TestClient(create_app(settings, static_dir=static, log_dir=tmp_path / "logs")) as client:
+        assert client.get("/").text == "工作台"
+        health = client.get("/api/health")
+        assert health.status_code == 503 and "离线" in health.json()["message"]
+        assert client.get("/api/auth/me").status_code == 503
+    assert db.read_bytes() == corrupted
+    assert not (settings.paths.data_dir / "secret.key").exists()
+
+
+def test_missing_original_key_with_encrypted_config_does_not_generate_new_key(settings, tmp_path):
+    from pydantic import SecretStr
+    settings.nas.system_password_enc = SecretStr("existing-ciphertext")
+    with TestClient(create_app(settings, log_dir=tmp_path / "logs")) as client:
+        response = client.get("/api/health")
+        assert response.status_code == 503 and "原密钥" in response.json()["message"]
+    assert not (settings.paths.data_dir / "secret.key").exists()
+
+
+def test_production_startup_does_not_wait_for_the_nas_probe(settings, tmp_path, monkeypatch):
+    from threading import Event
+
+    from pydantic import SecretStr
+
+    from app.services.crypto import SecretCipher
+    from app.services.nas import NasUnavailable
+    from app.services.recovery import status
+
+    started = Event()
+    release = Event()
+
+    def wait_for_nas(config):
+        started.set()
+        release.wait(3)
+        raise NasUnavailable("模拟连接中断")
+
+    monkeypatch.setattr(status, "create_system_fs", wait_for_nas)
+    settings.mode = "prod"
+    settings.nas.system_password_enc = SecretStr(SecretCipher(settings.paths.data_dir).encrypt("mock-only"))
+
+    with TestClient(create_app(settings, log_dir=tmp_path / "logs")) as client:
+        try:
+            assert started.wait(1)
+            assert client.get("/api/health").status_code == 200
+            state = client.app.state.recovery_status.local()
+            assert state["catalog_state"] == "empty_unconfirmed" and state["nas_state"] == "not_checked"
+        finally:
+            release.set()

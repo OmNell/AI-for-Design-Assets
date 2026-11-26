@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import closing
+import json
 from pathlib import Path
+import re
 import sqlite3
+import stat
 from typing import BinaryIO
+from zipfile import ZipFile
 
 FILES = ("app.db", "config.yaml", "secret.key")
 IDENTITY_TABLES = {
@@ -13,6 +17,35 @@ IDENTITY_TABLES = {
     "product_embeddings": "product_id,model_id,model_version,index_generation,text_hash,dimension,embedding",
 }
 BLOCK = 1024 * 1024
+BACKUP_NAME = re.compile(r"wb-backup-\d{8}-\d{4}\.zip")
+
+
+class BackupFormatError(ValueError):
+    """备份归档结构与数据清单不一致。"""
+
+
+def read_manifest(archive: ZipFile) -> dict:
+    entries = archive.infolist()
+    if (len(entries) != len(FILES) + 1 or {entry.filename for entry in entries} != {*FILES, "manifest.json"}
+            or any(entry.is_dir() or stat.S_ISLNK(entry.external_attr >> 16) or entry.flag_bits & 1 for entry in entries)):
+        raise BackupFormatError("归档只能包含工作台规定的普通文件")
+    if archive.getinfo("manifest.json").file_size > 64 * 1024:
+        raise BackupFormatError("备份清单大小不合法")
+    try:
+        manifest = json.loads(archive.read("manifest.json"))
+    except (UnicodeError, json.JSONDecodeError):
+        raise BackupFormatError("备份清单无法读取") from None
+    if (not isinstance(manifest, dict) or type(manifest.get("version")) is not int or manifest["version"] != 1
+            or not isinstance(manifest.get("identities"), dict)
+            or not isinstance(manifest.get("files"), dict) or set(manifest["files"]) != set(FILES)):
+        raise BackupFormatError("备份版本或清单不合法")
+    for name in FILES:
+        expected = manifest["files"][name]
+        if (not isinstance(expected, dict) or type(expected.get("size")) is not int
+                or expected["size"] != archive.getinfo(name).file_size or expected["size"] <= 0
+                or not isinstance(expected.get("sha256"), str) or not re.fullmatch(r"[a-f0-9]{64}", expected["sha256"])):
+            raise BackupFormatError("备份文件大小或指纹与清单不一致")
+    return manifest
 
 
 def measure(stream: BinaryIO) -> tuple[int, str]:

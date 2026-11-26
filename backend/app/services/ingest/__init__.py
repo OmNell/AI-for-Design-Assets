@@ -320,14 +320,14 @@ class IngestService:
                     "actors": actors, "industry": segment[1][2:], "submitted_at": archive.utc_text(snapshot.submitted_at),
                     "reviewed_at": archive.utc_text(execution.final_review.decided_at), "source_company": review["batch"]["company_name"]}
         # 数据库内分配确定不重叠的区间，连同商品编号、档案映射一次提交。
-        sequence = session.scalar(select(Setting).where(Setting.key == "catalog_identity_sequence"))
+        sequence = session.scalar(select(Setting).where(Setting.key == archive.IDENTITY_SEQUENCE))
         maxima = [session.scalar(select(func.max(model.id))) or 0 for model in (Project, CatalogFile, Product)]
         start_id = max(*maxima, sequence.value if sequence else 0) + 1
         end_id = start_id + len(content["files"]) + len(review["products"])
         if end_id >= 2**53:
             raise JobFailure("项目、商品或文件的身份编号已用完", retryable=False)
         if sequence is None:
-            session.add(Setting(key="catalog_identity_sequence", value=end_id, encrypted=False))
+            session.add(Setting(key=archive.IDENTITY_SEQUENCE, value=end_id, encrypted=False))
         else:
             sequence.value = end_id
         allocated_ids = iter(range(start_id, end_id + 1))
