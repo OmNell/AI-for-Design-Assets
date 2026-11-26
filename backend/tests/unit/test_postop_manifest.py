@@ -149,7 +149,7 @@ def test_replacement_retains_original_product_identity_and_old_image_link(initia
     params = {"files": [{"id": 301, "choice": "replace"}], "relation_reviews": {"111": [110]}}
     with initial.session() as session:
         draft = change(session, "supplement", params, STAMP, payload=payload, execute=False)
-        assert session.scalar(select(Setting).where(Setting.key == manifest.IDENTITY_SETTING)) is None
+        assert session.scalar(select(Setting).where(Setting.key == archive.IDENTITY_SEQUENCE)) is None
         draft_batch = session.scalar(select(Batch))
         draft_batch.status = "已终止"
         proof["ai_fingerprint"] = IMAGE_SHA

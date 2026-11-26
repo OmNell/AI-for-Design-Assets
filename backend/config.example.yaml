@@ -45,6 +45,8 @@ schedule:
   backup: "0 3 * * *"
 recovery:
   read_only: false  # 并行核验同一真实 NAS 时使用 true。
+  backup_on_publication: false
+  backup_delay_minutes: 10
 paths:
   data_dir: ./data
   dev_nas_dir: ./devdata/nas

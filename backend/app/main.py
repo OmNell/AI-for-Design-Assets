@@ -29,6 +29,7 @@ from app.services.postops.executor import PostopExecutor
 from app.services.ingest import IngestService
 from app.services.links import LinkService
 from app.api.health import router
+from app.api.recovery import router as recovery_router
 from app.api.maintenance import router as maintenance_router
 from app.services.backup import BackupService
 from app.services.inspection import InspectionService
@@ -47,6 +48,7 @@ from app.services.upload.service import UploadService
 from app.services.auth.service import AuthService
 from app.services.admin import RoleService
 from app.services.nas.factory import create_session_pool
+from app.services.recovery.admin import APPLY_JOB, RECOVERY_JOB, RecoveryAdmin
 from app.services.recovery.status import RecoveryStatus
 from app.config import Settings, load_settings
 from app.db.database import Database
@@ -160,11 +162,15 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             indexes = IndexService(ai, store)
             application.state.indexes = indexes
             application.state.search = SearchService(ai, application.state.catalog, store)
-            ingest.on_published = indexes.sync_after_publish
+            def after_publication(session: Session) -> None:
+                indexes.sync_after_publish(session)
+                system.schedule_after_publication(session)
+            ingest.on_published = after_publication
             jobs.register(INDEX_JOB, indexes.handle, concurrency=1, retries=0, recoverable=True)
             application.state.links = LinkService(application.state.auth, application.state.catalog)
             application.state.postops = DraftService(upload, application.state.review)
             executor = PostopExecutor(application.state.auth, jobs, ai, application.state.notify, indexes)
+            executor.after_publication = system.schedule_after_publication
             application.state.postop_executor = executor
             jobs.register("postop", executor.handle, concurrency=1, retries=1, recoverable=False, state_callback=executor.on_job_state)
             application.state.audit = AuditService(application.state.auth, application.state.review, application.state.notify, ingest, executor)
@@ -175,13 +181,18 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
             application.state.maintenance = admin
             application.state.cleanup = CleanupService(application.state.auth)
             jobs.register("inspection", inspection.handle, concurrency=1, retries=1, recoverable=True, state_callback=inspection.changed)
-            jobs.register("backup", backup.handle, concurrency=1, retries=1, recoverable=True)
+            jobs.register("backup", backup.handle, concurrency=1, retries=1, recoverable=True,
+                          state_callback=system.backup_job_changed)
             jobs.register("catalog_thumb", admin.rebuild_worker, concurrency=1, retries=0, recoverable=False)
+            recovery_status = RecoveryStatus(config, database)
+            recovery_admin = RecoveryAdmin(recovery_status, ai, indexes, jobs, system)
+            application.state.recovery_status = recovery_status
+            application.state.recovery_admin = recovery_admin
+            jobs.register(RECOVERY_JOB, recovery_admin.handle, concurrency=1, retries=0, recoverable=False)
+            jobs.register(APPLY_JOB, recovery_admin.handle, concurrency=1, retries=0, recoverable=True, exclusive=True)
             jobs.start()
             ai.start()
             system.start()
-            recovery_status = RecoveryStatus(config, database)
-            application.state.recovery_status = recovery_status
             recovery_status.start()
             application.state.database_ready = True
             logger.info("工作台启动完成，模式：%s", config.mode)
@@ -246,6 +257,7 @@ def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR,
     application.include_router(auth_router)
     application.include_router(admin_router)
     application.include_router(maintenance_router)
+    application.include_router(recovery_router)
     application.include_router(upload_router)
     application.include_router(ai_settings_router)
     application.include_router(ai_runtime_router)

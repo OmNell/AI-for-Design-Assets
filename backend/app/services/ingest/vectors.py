@@ -162,8 +162,8 @@ def store_vector(session: Session, model: Model, product_id: int, vector: list[f
 
 
 def generate(ai: AiService, batch_id: int | None, model: Model, inputs: dict[int, str],
-             fence: Callable[[Session, int, str], bool] | None = None) -> None:
-    client = client_for(ai, model)
+             fence: Callable[[Session, int, str], bool] | None = None, *, allow_partial: bool = False) -> int:
+    client = None
     failures = 0
     for product_id, text in inputs.items():
         digest = text_hash(text)
@@ -183,24 +183,31 @@ def generate(ai: AiService, batch_id: int | None, model: Model, inputs: dict[int
             row.text_hash, row.state, row.error = digest, "building", None
             row.attempts = (row.attempts or 0) + 1
         try:
+            if client is None:
+                client = client_for(ai, model)
             vector = client.embed(text, batch_id)
             with ai.auth.database.session() as session:
                 if fence is not None:
                     session.connection().exec_driver_sql("BEGIN IMMEDIATE")
                     if not fence(session, product_id, digest):
                         continue
+                    if _valid(session.get(ProductEmbedding, key), digest, dimension_for(session, model)):
+                        continue
                 store_vector(session, model, product_id, vector, digest, dimension_for(session, model))
         except (AiCallError, OverflowError, struct.error):
-            failures += 1
             with ai.auth.database.session() as session:
                 if fence is not None:
                     session.connection().exec_driver_sql("BEGIN IMMEDIATE")
                     if not fence(session, product_id, digest):
                         continue
                 row = session.get(ProductEmbedding, key)
+                if fence is not None and _valid(row, digest, dimension_for(session, model)):
+                    continue
                 row.state, row.error = "failed", "向量生成或维度校验失败"
-    if failures:
+                failures += 1
+    if failures and not allow_partial:
         raise JobFailure(f"{failures} 个商品的正式向量未生成，请继续入库重试", retryable=False)
+    return failures
 
 
 def publish_gate(ai: AiService, session: Session, model: Model, inputs: dict[int, str]) -> None:

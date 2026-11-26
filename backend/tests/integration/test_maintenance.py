@@ -21,6 +21,7 @@ from app.services.inspection import InspectionService
 from app.services.maintenance.settings import CST
 from app.services.nas import NasPermissionDenied, Region
 from app.services.nas.factory import create_paths
+from app.services.thumbs.images import cached_variant
 from test_ingest import start
 from test_two_stage_review import ALL, Flow, configure
 
@@ -277,6 +278,51 @@ def test_admin_settings_log_export_and_thumbnail(maintained):
         job = session.scalar(select(Job).where(Job.kind == "catalog_thumb"))
         assert job.status == "done" and job.run_as_user_id == flow.users["admin"]
     assert flow.call("admin", "GET", "/api/admin/maintenance/errors").status_code == 200
+
+
+def test_restore_missing_thumbnail_variants_ignores_warm_files(maintained, monkeypatch):
+    from app.services.maintenance import admin
+
+    flow, project, _, _ = maintained
+    state = flow.client.app.state
+    with state.database.session() as session:
+        product = session.scalar(select(Product).where(Product.project_id == project.id))
+        file = session.get(CatalogFile, product.file_id)
+    route = "/api/admin/thumbnails"
+    assert flow.call("other", "GET", f"{route}/status").status_code == 403
+    assert flow.call("other", "POST", f"{route}/rebuild", {"all_missing": True}).status_code == 403
+    assert flow.call("admin", "POST", f"{route}/rebuild", {"product_ids": [product.id]}).status_code == 202
+    assert state.jobs.wait_idle(8)
+    media = state.catalog.media
+    directory = media.thumbnail_directory(file.id, file.fingerprint)
+    untouched = directory / "1600.jpg"
+    original = (untouched.read_bytes(), untouched.stat().st_mtime_ns)
+    (media.cache / "product" / str(product.id) / "300.jpg").unlink(missing_ok=True)
+    (directory / "300.jpg").write_bytes(b"corrupt")
+    before = flow.call("admin", "GET", f"{route}/status").json()
+    assert before == {"total": 1, "ready": 0, "missing": 1, "running": 0}
+    rendering, released = Event(), Event()
+    original_render = admin.render_variants
+
+    def paused_render(*args):
+        rendering.set()
+        assert released.wait(5)
+        return original_render(*args)
+
+    monkeypatch.setattr(admin, "render_variants", paused_render)
+    try:
+        queued = flow.call("admin", "POST", f"{route}/rebuild", {"all_missing": True})
+        assert queued.status_code == 202 and len(queued.json()) == 1
+        assert rendering.wait(3)
+        assert flow.call("admin", "POST", f"{route}/rebuild", {"all_missing": True}).json() == []
+    finally:
+        released.set()
+    assert state.jobs.wait_idle(8)
+    assert cached_variant(directory, 300) is not None
+    assert (untouched.read_bytes(), untouched.stat().st_mtime_ns) == original
+    after = flow.call("admin", "GET", f"{route}/status").json()
+    assert after == {"total": 1, "ready": 1, "missing": 0, "running": 0}
+    assert flow.call("admin", "POST", f"{route}/rebuild", {"all_missing": True}).json() == []
 
 
 def test_inspection_preserves_wp12_history_while_detecting_unknown_files(maintained):

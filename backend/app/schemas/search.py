@@ -120,6 +120,10 @@ class IndexInfo(BaseModel):
     pending: int
     verified: bool
     running: bool
+    estimated_calls: int = 0
+    estimated_input_tokens: int | None = None
+    retry_product_ids: list[int] = Field(default_factory=list)
+    model_issue: str | None = None
 
 
 class IndexStatus(BaseModel):

@@ -122,3 +122,11 @@ it('我的待办显示 AI 超时和已入库批次的直达链接', async () => 
     ['AI 处理超时1', '/batches/41'], ['入库完成1', '/batches/42'],
   ])
 })
+
+it('本地数据库不可用时显示明确的离线恢复提示', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () =>
+    response({ code: 'database_unavailable', message: '本地数据库不可用，请由管理员离线验证并恢复备份' }, 503)))
+  act(() => root.render(<App />))
+  await until(() => !!host.querySelector('[role="alert"]')?.textContent?.includes('离线验证并恢复备份'))
+  expect(window.location.pathname).toBe('/login')
+})

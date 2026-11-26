@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.database import Database
-from app.db.models import Batch, CatalogFile, HistoryVersion, IngestPlan, Link, PostopPlan, Product, Project, Setting
+from app.db.models import Batch, CatalogFile, HistoryVersion, IngestPlan, Link, PostopPlan, Product, Project, Setting, User
 from app.errors import AppError
 from app.services import archive
 from app.services.ai.client import AiCallError
@@ -237,6 +237,10 @@ def apply_incremental(ai: AiService, fs: NasFs, root: str, plan: dict, *, actor_
             _confirm(fs, root, candidate)
             with ai.auth.lock, database.session() as session:
                 session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                if actor_id is not None:
+                    operator = session.get(User, actor_id)
+                    if operator is None or not operator.enabled or "admin" not in operator.roles:
+                        raise AppError("recovery_actor_disabled", "发起管理员的权限已失效", 403)
                 project, _, baseline = _local_snapshot(session, candidate.data)
                 if baseline != item["baseline"]:
                     raise archive.ArchiveError("恢复时本地数据已变化，请重新扫描")

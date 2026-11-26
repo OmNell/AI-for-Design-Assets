@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router'
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getMe } from '../api/auth'
+import { ApiError } from '../api/client'
 import { getHealth } from '../api/health'
 import { useAuthStore } from '../stores/auth'
 import { Shell } from './Shell'
@@ -31,6 +32,7 @@ import { safeLoginReturn, canAccess, navigation, type NavigationItem } from './n
 
 const NasSettingsPage = lazy(() => import('../pages/NasSettingsPage').then(module => ({ default: module.NasSettingsPage })))
 const MaintenancePage = lazy(() => import('../pages/MaintenancePage').then(module => ({ default: module.MaintenancePage })))
+const AssetRecoveryPage = lazy(() => import('../pages/AssetRecoveryPage').then(module => ({ default: module.AssetRecoveryPage })))
 const ArchiveRepairsPage = lazy(() => import('../pages/MaintenancePage').then(module => ({ default: module.ArchiveRepairsPage })))
 
 
@@ -56,7 +58,13 @@ function AuthBootstrap() {
   useEffect(() => {
     const controller = new AbortController()
     getMe(controller.signal).then(current => { if (!controller.signal.aborted) useAuthStore.getState().setUser(current) })
-      .catch(() => { if (!controller.signal.aborted && !useAuthStore.getState().initialized) useAuthStore.getState().clear('无法连接工作台，请重试登录') })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted && !useAuthStore.getState().initialized) {
+          const message = error instanceof ApiError && error.code === 'database_unavailable'
+            ? error.message : '无法连接工作台，请重试登录'
+          useAuthStore.getState().clear(message)
+        }
+      })
     return () => controller.abort()
   }, [])
   if (!initialized) return <p className="p-12 text-slate-600" role="status">正在确认登录状态…</p>
@@ -68,6 +76,7 @@ function AuthBootstrap() {
         {item.path === '/search' ? <SearchPage /> : item.path === '/projects' ? <AssetsPage /> : item.path === '/admin/roles' ? <RolesPage /> : item.path === '/upload' ? <UploadPage /> : item.path === '/admin/nas-settings' ? <Suspense fallback={<p role="status">正在加载 NAS 存储设置…</p>}><NasSettingsPage /></Suspense> : item.path === '/settings' ? <AiSettingsPage /> : item.path === '/first-review' ? <QueuePage stage="first" /> : item.path === '/final-review' ? <QueuePage stage="final" /> : <PlaceholderPage title={item.label} />}
       </RoleGuard>} />)}
       <Route path="/admin/maintenance" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><Suspense fallback={<p role="status">正在读取维护页面…</p>}><MaintenancePage /></Suspense></RoleGuard>} />
+      <Route path="/admin/recovery" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><Suspense fallback={<p role="status">正在读取资产恢复…</p>}><AssetRecoveryPage /></Suspense></RoleGuard>} />
       <Route path="/archive/repairs" element={<RoleGuard item={navigation.find(item => item.path === '/final-review')!}><Suspense fallback={<p role="status">正在读取修复申请…</p>}><ArchiveRepairsPage /></Suspense></RoleGuard>} />
       <Route path="/admin/tag-fields" element={<RoleGuard item={navigation.find(item => item.path === '/admin/roles')!}><TagFieldsPage /></RoleGuard>} />
       <Route path="/projects/:id" element={<ProjectPage />} />

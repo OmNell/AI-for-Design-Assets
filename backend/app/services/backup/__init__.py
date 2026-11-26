@@ -14,15 +14,16 @@ from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 from sqlalchemy import select
 
+from app import __version__
 from app.db.models import BackupRecord, Job, utcnow
 from app.services.auth.service import AuthService
 from app.services.jobs import JobContext, JobFailure
-from app.services.maintenance.settings import CST
+from app.services.maintenance.settings import CST, PUBLISHED_STATES, backup_allowed
 from app.services.nas import NasFs, Region
 from app.services.nas.factory import create_paths
 from app.services.oplog import OplogService
 
-from .format import FILES, inventory, measure
+from .format import FILES, inventory, measure, read_manifest
 
 
 class BackupService:
@@ -54,8 +55,15 @@ class BackupService:
             snapshot = Path(folder) / "app.db"
             with closing(sqlite3.connect(self.auth.database.data_dir / "app.db", timeout=20)) as connection:
                 connection.execute("VACUUM INTO ?", (str(snapshot),))
+            if self.auth.config.mode == "prod":
+                with closing(sqlite3.connect(snapshot.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+                    published = connection.execute(
+                        "SELECT 1 FROM projects WHERE ingested_at IS NOT NULL AND status IN (?, ?, ?) LIMIT 1",
+                        PUBLISHED_STATES).fetchone()
+                if published is None:
+                    raise JobFailure("备份快照没有已发布资产，已停止写入 NAS 备份区", retryable=False)
             sources = (snapshot, self.config_file, self.auth.database.data_dir / "secret.key")
-            info = {"version": 1, "identities": inventory(snapshot), "files": {}}
+            info = {"version": 1, "app_version": __version__, "identities": inventory(snapshot), "files": {}}
             part = dest.with_suffix(".part")
             fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "wb") as out, ZipFile(out, mode="w", compression=ZIP_DEFLATED) as archive:
@@ -87,6 +95,9 @@ class BackupService:
             raise JobFailure(f"本地备份文件读写失败（{type(exc).__name__}）") from None
 
     def _backup(self, context: JobContext) -> None:
+        with self.auth.database.session() as session:
+            if not backup_allowed(session, self.auth.config):
+                raise JobFailure("资产库未核验、没有已发布资产或处于只读模式，备份已停止", retryable=False)
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if os.name != "nt":
             self.directory.chmod(0o700)
@@ -95,11 +106,14 @@ class BackupService:
         if local.is_file():
             with local.open("rb") as stream:
                 length, digest = measure(stream)
-            if (record.size, record.fingerprint) != (length, digest):
+            if self.auth.config.mode == "prod" or (record.size, record.fingerprint) != (length, digest):
                 # 进程可能在落地和登记之间结束。核对归档后沿用已有文件。
                 with ZipFile(local) as archive:
-                    if archive.testzip() is not None or set(archive.namelist()) != {*FILES, "manifest.json"}:
+                    manifest = read_manifest(archive)
+                    if archive.testzip() is not None:
                         raise JobFailure("本地备份归档损坏，已保留待人工核查", retryable=False)
+                    if self.auth.config.mode == "prod" and not manifest["identities"].get("projects", {}).get("count"):
+                        raise JobFailure("本地暂存备份没有资产记录，已停止上传", retryable=False)
         else:
             length, digest = self._package(local)
         with self.auth.database.session() as session:

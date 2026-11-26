@@ -5,6 +5,7 @@ import { operationHref, operationLabels } from '../api/operations'
 import { getHealth } from '../api/health'
 import { getTodos, type Todo } from '../api/audit'
 import { getProjects } from '../api/catalog'
+import { getRecovery } from '../api/recovery'
 import { roleLabels } from '../api/types'
 import { useAuthStore } from '../stores/auth'
 import { Badge, ContextPane, EmptyState, ErrorState, Icon, LoadingState, Panel, Table } from '../components/ui'
@@ -42,6 +43,7 @@ export function HomePage() {
   const upload = navigation.some(item => item.path === '/upload' && canAccess(user.roles, item))
   const admin = user.roles.includes('admin')
   const health = useQuery({ queryKey: ['health'], queryFn: () => getHealth() })
+  const recovery = useQuery({ queryKey: ['asset-recovery'], queryFn: getRecovery, enabled: admin })
   const batches = useQuery({ queryKey: ['batches'], queryFn: getBatches, enabled: upload })
   const recent = useQuery({ queryKey: ['projects', 'home-recent'], queryFn: () => getProjects({ q: '', won: '', industry: '', company: '', page: 1, sort: 'newest' }) })
   const todos = useTodos()
@@ -53,6 +55,11 @@ export function HomePage() {
         <p className="mt-1 text-slate-500">你好，{user.display_name || user.username}</p></div>
       {upload && <Link to="/upload" className="ui-button ui-primary"><Icon name="upload" />上传新项目</Link>}
     </header>
+    {admin && (recovery.data?.catalog_state === 'empty_unconfirmed' || recovery.data?.catalog_state === 'needs_scan') &&
+      <section className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+        <span>当前工作台可能缺少 NAS 中的历史入库资产。</span>
+        <Link to="/admin/recovery" className="ui-link">检测并恢复资产</Link>
+      </section>}
     <div className="summary-layout">
       <div className="min-w-0 space-y-5">
         <Panel><div className="mb-4 flex items-center justify-between gap-3">

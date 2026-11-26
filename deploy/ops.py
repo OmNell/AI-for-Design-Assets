@@ -18,6 +18,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "scripts"))
+from app import __version__
 from app.config import Settings, load_settings, without_legacy_dsm
 from app.db.database import Database
 from app.services.backup.format import FILES, inventory
@@ -123,7 +124,7 @@ def snapshot(root: Path, package: Path) -> None:
         with closing(sqlite3.connect(sources[0].resolve().as_uri() + "?mode=rw", uri=True, timeout=5)) as handle:
             handle.execute("VACUUM INTO ?", (str(db),))
         with ZipFile(package, "x", ZIP_DEFLATED) as out:
-            manifest = {"version": 1, "identities": inventory(db), "files": {}}
+            manifest = {"version": 1, "app_version": __version__, "identities": inventory(db), "files": {}}
             for name, path in zip(FILES, (db, *sources[1:]), strict=True):
                 with path.open("rb") as reader:
                     digest = hashlib.file_digest(reader, "sha256").hexdigest()

@@ -13,14 +13,15 @@ from zipfile import BadZipFile, ZipFile
 
 from alembic.util import CommandError
 from pydantic_settings import PydanticBaseSettingsSource
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 import yaml
 
 from app.config import AiConfig, Settings, load_settings
 from app.db.database import Database
-from app.db.models import UserSession, utcnow
+from app.db.models import Setting, UserSession, utcnow
 from app.services.crypto import CryptoError, SecretCipher, restrict_key_permissions
+from app.services.maintenance.settings import ASSET_RECOVERY_CONFIRMED
 from app.services.nas import NasFs, NasNotFound, safe_join
 from app.services.nas.factory import create_paths
 
@@ -186,6 +187,11 @@ def stage_backup(package: Path, target: Path, *, destination_config: Settings | 
             with database.session() as session:
                 revoked = session.execute(update(UserSession).where(UserSession.revoked_at.is_(None))
                                           .values(revoked_at=utcnow())).rowcount
+                confirmation = session.scalar(select(Setting).where(Setting.key == ASSET_RECOVERY_CONFIRMED))
+                if confirmation is None:
+                    session.add(Setting(key=ASSET_RECOVERY_CONFIRMED, value=False, encrypted=False))
+                else:
+                    confirmation.value = False
         finally:
             database.close()
         staged_inventory = inventory(data / "app.db")
@@ -213,19 +219,25 @@ def list_candidates(fs: NasFs, backup_root: str, *, verify_manifest: bool = Fals
             continue
         if info.is_dir:
             continue
-        validation, version = "unverified", None
+        validation, version, projects, app_version = "unverified", None, None, None
         if verify_manifest and info.size < 128:
             validation = "invalid"
         elif verify_manifest:
             try:
                 with fs.open_read(path) as stream, ZipFile(stream) as archive:
-                    version = read_manifest(archive)["version"]
-                validation = "manifest_checked"
+                    manifest = read_manifest(archive)
+                version = manifest["version"]
+                app_version = manifest.get("app_version")
+                projects = manifest["identities"].get("projects", {}).get("count")
+                if type(projects) is not int or projects < 0:
+                    raise BackupRecoveryError("备份清单缺少有效的项目数量")
+                validation = "empty" if projects == 0 else "manifest_checked"
             except NasNotFound:
                 continue
-            except (BadZipFile, ValueError, NotImplementedError):
-                validation = "invalid"
-        candidates.append({"name": name, "size": info.size, "format": version, "validation": validation,
+            except (BadZipFile, ValueError, NotImplementedError, AttributeError):
+                validation, projects = "invalid", None
+        candidates.append({"name": name, "size": info.size, "format": version, "app_version": app_version,
+                           "validation": validation, "projects": projects,
                            "modified_at": datetime.fromtimestamp(info.mtime, timezone.utc).isoformat()})
     return candidates
 

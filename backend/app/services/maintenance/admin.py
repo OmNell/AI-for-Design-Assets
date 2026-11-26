@@ -8,13 +8,14 @@ from io import StringIO
 from typing import Iterator
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
-from app.db.models import (AiAlert, BackupRecord, Batch, InspectionFinding, InspectionRun, Job, Oplog, Product,
-                           ProductEmbedding, Project, SearchClick, SearchLog, User, utcnow)
+from app.db.models import (AiAlert, BackupRecord, Batch, CatalogFile, IngestPlan, InspectionFinding, InspectionRun,
+                           Job, Oplog, Product, ProductEmbedding, Project, SearchClick, SearchLog, User, utcnow)
 from app.errors import AppError
 from app.schemas.jobs import JobResponse
 from app.schemas.maintenance import (BackupView, ErrorItem, FindingView, LogFilter, LogPage, LogView,
-    RepairCandidate, RepairResult, RunView, SearchLogPage, SearchLogView)
+    RepairCandidate, RepairResult, RunView, SearchLogPage, SearchLogView, ThumbStatus)
 from app.schemas.postops import OperationBody
 from app.services.auth.service import AuthService, LoginContext
 from app.services.backup.format import measure
@@ -26,7 +27,7 @@ from app.services.nas.factory import create_paths
 from app.services.oplog import OplogService
 from app.services.postops.drafts import DraftService
 from app.services.postops.supplement import active_batch_id
-from app.services.thumbs.images import ImageDecodeError, render_variants
+from app.services.thumbs.images import ImageDecodeError, VARIANT_SIZES, render_variants
 from app.services.upload.service import UploadService
 
 
@@ -257,21 +258,77 @@ class AdminService:
                                              error=exc.message if isinstance(exc, AppError) else "NAS 项目目录不可用"))
         return results
 
-    def rebuild_thumbs(self, ids: list[int], login: LoginContext, host: str) -> list[JobResponse]:
+    @staticmethod
+    def _thumbnail_assets():
+        return select(Product.id, CatalogFile).join(Project, Project.id == Product.project_id).join(
+            CatalogFile, CatalogFile.id == Product.file_id).where(
+                Product.status == "active", Project.status == "active", CatalogFile.status == "active",
+                CatalogFile.project_id == Project.id)
+
+    @staticmethod
+    def _thumbnail_job_products(session: Session, statuses: tuple[str, ...]) -> set[int]:
+        return set(session.scalars(select(func.json_extract(Job.payload, "$.product_id")).where(
+            Job.kind == "catalog_thumb", Job.status.in_(statuses))))
+
+    def _thumbnail_checks(self, session: Session) -> Iterator[tuple[int, bool]]:
+        plans: dict[int, IngestPlan | None] = {}
+        for pid, file in session.execute(self._thumbnail_assets().order_by(Product.id).execution_options(yield_per=100)):
+            batch_id = file.first_batch_id
+            if batch_id is not None and batch_id not in plans:
+                plans[batch_id] = session.get(IngestPlan, batch_id)
+            yield pid, not self.media.missing_sizes(file, pid, plans.get(batch_id))
+
+    def thumbnail_status(self, actor: User) -> ThumbStatus:
+        with self.auth.database.session() as session:
+            self.queue._require_admin(session, actor)
+            running = self._thumbnail_job_products(session, ("queued", "running"))
+            ready = missing = 0
+            for _, valid in self._thumbnail_checks(session):
+                ready += int(valid)
+                missing += int(not valid)
+            return ThumbStatus(total=ready + missing, ready=ready, missing=missing, running=len(running))
+
+    def rebuild_thumbs(self, ids: list[int], login: LoginContext, host: str, *,
+                       missing_only: bool = False, all_missing: bool = False) -> list[JobResponse]:
+        if all_missing:
+            if ids:
+                raise AppError("thumbnail_selection_invalid", "批量恢复与指定商品只可选择一项", 422)
+            with self.auth.database.session() as session:
+                UploadService._check_login(session, login)
+                self.queue._require_admin(session, login.user)
+                running = self._thumbnail_job_products(session, ("queued", "running"))
+                failed = self._thumbnail_job_products(session, ("failed",))
+                ids = []
+                retries = []
+                for pid, valid in self._thumbnail_checks(session):
+                    if valid or pid in running:
+                        continue
+                    if pid in failed:
+                        if len(retries) < 100:
+                            retries.append(pid)
+                    else:
+                        ids.append(pid)
+                    if len(ids) == 100:
+                        break
+                # 优先覆盖还未执行的商品，少数损坏图片不会挡住后续批次。
+                ids.extend(retries[:100 - len(ids)])
+            missing_only = True
         with self.auth.lock, self.auth.database.session() as session:
             session.connection().exec_driver_sql("BEGIN IMMEDIATE")
             self.queue._require_admin(session, login.user)
             UploadService._check_login(session, login)
-            if not ids:
+            if not ids and not all_missing:
                 raise AppError("products_required", "请输入要重建的商品 ID", 422)
-            rows = list(session.scalars(select(Product).join(Project).where(Product.id.in_(ids),
-                                Product.status == "active", Project.status == "active")))
-            if set(ids) != {row.id for row in rows}:
+            active = set(session.scalars(self._thumbnail_assets().where(Product.id.in_(ids))))
+            if not all_missing and set(ids) != active:
                 raise AppError("product_not_found", "包含无效的正式商品", 404)
-            jobs = [self.queue.enqueue("catalog_thumb", {"product_id": row.id}, login.user.id,
-                                         session=session, run_as_session_id=login.session_id) for row in rows]
+            selected = sorted(active - self._thumbnail_job_products(session, ("queued", "running")))
+            jobs = [self.queue.enqueue("catalog_thumb", {"product_id": pid, "missing_only": missing_only}, login.user.id,
+                                         session=session, run_as_session_id=login.session_id) for pid in selected]
+            if not selected:
+                return []
             OplogService(session).write(login.user.id, "admin", "请求重建商品缩略图", "thumb", None,
-                                        None, {"ids": ids}, "成功", host)
+                                        None, {"ids": selected, "missing_only": missing_only}, "成功", host)
             return [JobResponse.model_validate(job) for job in jobs]
 
     def rebuild_worker(self, context: JobContext) -> None:
@@ -286,6 +343,13 @@ class AdminService:
             with self.media.open(file_id, login, "缩略图重建") as asset:
                 if asset.warning:
                     raise JobFailure("主图发生漂移，须先人工核对", retryable=False)
-                render_variants(asset.stream, self.media.cache / "catalog" / str(file_id) / asset.digest)
+                sizes = VARIANT_SIZES
+                if context.job.payload.get("missing_only"):
+                    file = asset.reference.file
+                    with self.auth.database.session() as session:
+                        plan = session.get(IngestPlan, file.first_batch_id) if file.first_batch_id is not None else None
+                    sizes = self.media.missing_sizes(file, pid, plan)
+                if sizes:
+                    render_variants(asset.stream, self.media.thumbnail_directory(file_id, asset.digest), sizes)
         except (ImageDecodeError, AppError) as exc:
             raise JobFailure(exc.message if isinstance(exc, AppError) else str(exc), retryable=False) from None

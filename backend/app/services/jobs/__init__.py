@@ -49,6 +49,7 @@ class Registration:
     retries: int
     recoverable: bool
     state_callback: StateCallback | None
+    exclusive: bool
 
 
 AI_KINDS = frozenset({"ai_tag_batch", "ai_tag_product", "embed"})
@@ -91,7 +92,7 @@ class JobQueue:
 
     def register(self, kind: str, handler: JobHandler, concurrency: int | None = None,
                  retries: int | None = None, recoverable: bool | None = None,
-                 state_callback: StateCallback | None = None) -> None:
+                 state_callback: StateCallback | None = None, *, exclusive: bool = False) -> None:
         limit = concurrency if concurrency is not None else DEFAULT_LIMITS.get(kind, 3 if kind in AI_KINDS else 1)
         retries = retries if retries is not None else 3 if kind in AI_KINDS else 1
         recoverable = recoverable if recoverable is not None else kind in RECOVERABLE_KINDS
@@ -102,7 +103,7 @@ class JobQueue:
                 raise RuntimeError("启动后不能修改任务注册表")
             if kind in self._registry:
                 raise ValueError("任务类型已注册")
-            self._registry[kind] = Registration(handler, limit, retries, recoverable, state_callback)
+            self._registry[kind] = Registration(handler, limit, retries, recoverable, state_callback, exclusive)
 
     def wake(self) -> None:
         self._wake.set()
@@ -182,15 +183,26 @@ class JobQueue:
         with self._auth_lock, self._lock:
             if self._paused or self._stop.is_set() or sum(self._active.values()) >= self.workers:
                 return None
+            if any(count and self._registry[kind].exclusive for kind, count in self._active.items()):
+                return None
+            running = self._active.total()
             kinds = [kind for kind, registration in self._registry.items()
-                     if self._active[kind] < registration.concurrency]
+                     if self._active[kind] < registration.concurrency and (not registration.exclusive or not running)]
             if not kinds:
                 return None
             claimed: tuple[Job, Registration] | None = None
             with self.database.session() as session:
                 # 条件更新是抢占的唯一依据；读出的候选不等于已获得执行权。
-                candidates = list(session.scalars(select(Job.id).where(Job.status == "queued", Job.kind.in_(kinds),
-                    or_(Job.scheduled_at.is_(None), Job.scheduled_at <= utcnow())).order_by(Job.id).limit(32)))
+                runnable_at = or_(Job.scheduled_at.is_(None), Job.scheduled_at <= utcnow())
+                ready = select(Job.id).where(Job.status == "queued", Job.kind.in_(kinds), runnable_at)
+                if running:
+                    exclusive_kinds = [kind for kind, registration in self._registry.items() if registration.exclusive]
+                    if exclusive_kinds:
+                        next_exclusive = session.scalar(select(Job.id).where(Job.status == "queued",
+                            Job.kind.in_(exclusive_kinds), runnable_at).order_by(Job.id).limit(1))
+                        if next_exclusive is not None:
+                            ready = ready.where(Job.id < next_exclusive)
+                candidates = list(session.scalars(ready.order_by(Job.id).limit(32)))
                 for job_id in candidates:
                     now = utcnow()
                     result = session.execute(update(Job).where(Job.id == job_id, Job.status == "queued").values(

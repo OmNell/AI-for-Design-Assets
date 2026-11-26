@@ -23,6 +23,8 @@ export interface IndexInfo {
   generation: number; name: string; version: string; revision: string; status: 'formal' | 'candidate' | 'rollback'
   dimension: number | null; total: number; ready: number; failures: number; pending: number
   verified: boolean; running: boolean
+  estimated_calls?: number; retry_product_ids?: number[]; model_issue?: string | null
+  estimated_input_tokens?: number | null
 }
 export interface IndexStatus { backend: string; indexes: IndexInfo[] }
 export type IndexAction = 'switch' | 'retry' | 'rollback' | 'cancel'
@@ -34,4 +36,6 @@ export async function searchClick(searchId: number, kind: 'project' | 'product',
 }
 export const getIndexes = (): Promise<IndexStatus> => request('/api/admin/vector-indexes')
 export const buildIndex = (name: string, revision: string): Promise<IndexStatus> => request('/api/admin/vector-indexes', json({ name, revision }))
-export const changeIndex = (id: number, action: IndexAction): Promise<IndexStatus> => request(`/api/admin/vector-indexes/${id}/${action}`, { method: 'POST' })
+export const changeIndex = (id: number, action: IndexAction, productId?: number): Promise<IndexStatus> => request(
+  `/api/admin/vector-indexes/${id}/${action}${productId === undefined ? '' : `?product_id=${productId}`}`, { method: 'POST' },
+)

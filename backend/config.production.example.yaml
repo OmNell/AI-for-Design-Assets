@@ -33,3 +33,5 @@ paths:
   data_dir: ./data
 recovery:
   read_only: true  # 核验历史资产并停止旧环境写入后再启用业务写入。
+  backup_on_publication: false  # 可启用正式发布后的合并备份。
+  backup_delay_minutes: 10

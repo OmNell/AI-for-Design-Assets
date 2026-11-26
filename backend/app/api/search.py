@@ -1,7 +1,7 @@
 """双模式检索、点击及管理员向量索引入口。"""
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 
 from app.api.dependencies import client_host, require_login_context
 from app.schemas.search import BuildIndex, ClickRequest, IndexStatus, SearchRequest, SearchResult
@@ -34,5 +34,5 @@ def build(body: BuildIndex, request: Request, login: Login) -> IndexStatus:
 
 @router.post("/admin/vector-indexes/{generation}/{action}", response_model=IndexStatus)
 def index_action(generation: int, action: Literal["retry", "switch", "rollback", "cancel"],
-                 request: Request, login: Login) -> IndexStatus:
-    return request.app.state.indexes.action(generation, action, login, client_host(request))
+                 request: Request, login: Login, product_id: Annotated[int | None, Query(gt=0)] = None) -> IndexStatus:
+    return request.app.state.indexes.action(generation, action, login, client_host(request), product_id=product_id)

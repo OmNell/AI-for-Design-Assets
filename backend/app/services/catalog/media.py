@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from functools import lru_cache
 from io import BytesIO
+from pathlib import Path
 import re
 import secrets
 from typing import BinaryIO, Iterator
@@ -15,13 +16,13 @@ from PIL import Image, ImageDraw
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import AccessLog, IngestPlan, Product, Project, User, utcnow
+from app.db.models import AccessLog, CatalogFile, IngestPlan, Product, Project, User, utcnow
 from app.errors import AppError
 from app.schemas.catalog import DownloadItem, DownloadProgress, FileCheck
 from app.services.auth.service import AuthService, LoginContext
 from app.services.nas import NasNotFound, NasPermissionDenied, NasSessionExpired, NasUnavailable, Region
 from app.services.oplog import OplogService
-from app.services.thumbs.images import ImageDecodeError, VARIANT_SIZES, render_variants
+from app.services.thumbs.images import ImageDecodeError, VARIANT_SIZES, cached_variant, render_variants
 from app.services.upload.service import UploadService
 from .locator import AssetLocator, CHUNK_SIZE, ReadAsset, reference
 
@@ -230,20 +231,30 @@ class MediaService:
                 items.append(DownloadItem(file_id=file_id, code=code, error=message))
         return items
 
+    def thumbnail_directory(self, file_id: int, digest: str) -> Path:
+        return self.cache / "catalog" / str(file_id) / digest
+
+    def _official_directory(self, plan: IngestPlan | None, file: CatalogFile, digest: str,
+                            product_id: int | None) -> Path | None:
+        if not plan or not any(row["id"] == file.id and row["fingerprint"] == digest for row in plan.manifest["files"]):
+            return None
+        origin = next((row["id"] for row in plan.manifest["products"] if row["file_id"] == file.id
+                       and (product_id is None or row["id"] == product_id)), None)
+        return self.cache / "product" / str(origin) if origin is not None else None
+
+    def missing_sizes(self, file: CatalogFile, product_id: int, plan: IngestPlan | None) -> tuple[int, ...]:
+        directory = self.thumbnail_directory(file.id, file.fingerprint)
+        official = self._official_directory(plan, file, file.fingerprint, product_id)
+        return tuple(size for size in VARIANT_SIZES
+                     if cached_variant(directory, size) is None and (official is None or cached_variant(official, size) is None))
+
     def _official_thumb(self, asset: ReadAsset, product_id: int | None, size: int) -> bytes | None:
-        if asset.warning or asset.reference.file.first_batch_id is None:
+        file = asset.reference.file
+        if asset.warning or file.first_batch_id is None:
             return None
         with self.auth.database.session() as session:
-            plan = session.get(IngestPlan, asset.reference.file.first_batch_id)
-            if not plan or not any(row["id"] == asset.reference.file.id and row["fingerprint"] == asset.digest
-                                   for row in plan.manifest["files"]):
-                return None
-            origin = next((row["id"] for row in plan.manifest["products"] if row["file_id"] == asset.reference.file.id
-                           and (product_id is None or row["id"] == product_id)), None)
-        if origin is None:
-            return None
-        target = self.cache / "product" / str(origin) / f"{size}.jpg"
-        return target.read_bytes() if target.is_file() else None
+            directory = self._official_directory(session.get(IngestPlan, file.first_batch_id), file, asset.digest, product_id)
+        return cached_variant(directory, size) if directory is not None else None
 
     def preview(self, file_id: int, size: int, login: LoginContext, host: str, *,
                 product_id: int | None = None, allow_changed: bool = False, transfer: str | None = None) -> tuple[bytes, dict[str, str]]:
@@ -255,12 +266,15 @@ class MediaService:
                     raise AppError("preview_unsupported", "该格式请下载后查看", 415)
                 if asset.warning and not allow_changed:
                     raise AppError("content_changed", asset.warning, 409)
-                directory = self.cache / "catalog" / str(file_id) / asset.digest
-                target = directory / f"{size}.jpg"
-                picture = target.read_bytes() if target.is_file() else self._official_thumb(asset, product_id, size)
+                directory = self.thumbnail_directory(file_id, asset.digest)
+                picture = cached_variant(directory, size) or self._official_thumb(asset, product_id, size)
                 if picture is None:
-                    render_variants(asset.stream, directory)
-                    picture = target.read_bytes()
+                    missing = tuple(candidate for candidate in VARIANT_SIZES if cached_variant(directory, candidate) is None)
+                    if missing:
+                        render_variants(asset.stream, directory, missing)
+                    picture = cached_variant(directory, size)
+                    if picture is None:
+                        raise ImageDecodeError("图片缩略图无法读取")
                 warning = bool(asset.warning)
         except ImageDecodeError:
             self.record(login, "preview", file_id, host, "decode_error", transfer)

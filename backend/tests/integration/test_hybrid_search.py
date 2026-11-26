@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import select
 
-from app.db.models import AiCall, Product, ProductEmbedding, SearchClick, SearchLog, Setting
+from app.db.models import AiCall, Job, Product, ProductEmbedding, SearchClick, SearchLog, Setting
 from app.services.ai.client import AiCallError
 from app.services.ingest.vectors import FORMAL_MODEL
 from app.services.nas import NasPermissionDenied
@@ -258,3 +258,51 @@ def test_index_switch_fails_on_inconsistent_row_and_can_retry(published_search):
     assert app.state.jobs.wait_idle(8)
     assert flow.call("admin", "POST", base + "/2/switch", {}).status_code == 200
     assert search(flow, "陶瓷")["index_generation"] == 2
+
+
+def test_retry_formal_index_keeps_valid_vectors_and_recovers_single_product(published_search, monkeypatch):
+    flow = published_search
+    state = flow.client.app.state
+    route = "/api/admin/vector-indexes/1/retry"
+    with state.database.session() as session:
+        vectors = list(session.scalars(select(ProductEmbedding).order_by(ProductEmbedding.product_id)))
+        missing = vectors[0].product_id
+        saved = {row.product_id: (row.embedding, row.text_hash, row.attempts) for row in vectors[1:]}
+        session.add(AiCall(model=vectors[0].model_id, kind="embed", prompt_tokens=900, duration_ms=1, success=True))
+        session.delete(vectors[0])
+    assert flow.call("other", "POST", route).status_code == 403
+    assert flow.call("admin", "POST", f"{route}?product_id=900000").status_code == 404
+    before = flow.call("admin", "GET", "/api/admin/vector-indexes").json()["indexes"][0]
+    assert before["estimated_calls"] == 1 and before["retry_product_ids"] == [missing]
+    assert before["estimated_input_tokens"] == 1
+    client = state.ai.client()
+    original_embed = client.embed
+    calls = []
+
+    def fail_once(text, batch_id):
+        calls.append(text)
+        raise AiCallError("模拟模型暂时失败")
+
+    monkeypatch.setattr(client, "embed", fail_once)
+    assert flow.call("admin", "POST", route).status_code == 200
+    assert state.jobs.wait_idle(8)
+    failed = flow.call("admin", "GET", "/api/admin/vector-indexes").json()["indexes"][0]
+    assert failed["failures"] == 1 and failed["retry_product_ids"] == [missing]
+
+    def embed(text, batch_id):
+        calls.append(text)
+        return original_embed(text, batch_id)
+
+    monkeypatch.setattr(client, "embed", embed)
+    assert flow.call("admin", "POST", f"{route}?product_id={missing}").status_code == 200
+    assert state.jobs.wait_idle(8)
+    assert len(calls) == 2
+    recovered = flow.call("admin", "GET", "/api/admin/vector-indexes").json()["indexes"][0]
+    assert recovered["verified"] and recovered["estimated_calls"] == 0 and recovered["ready"] == len(vectors)
+    assert recovered["estimated_input_tokens"] == 0
+    assert flow.call("admin", "POST", route).status_code == 200
+    with state.database.session() as session:
+        current = list(session.scalars(select(ProductEmbedding).where(ProductEmbedding.product_id != missing)))
+        assert {row.product_id: (row.embedding, row.text_hash, row.attempts) for row in current} == saved
+        assert len(list(session.scalars(select(Job).where(Job.kind == "embed_index")))) == 2
+    assert search(flow, "陶瓷")["index_generation"] == 1

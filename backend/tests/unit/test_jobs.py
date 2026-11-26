@@ -231,3 +231,43 @@ def test_admin_retry_checks_current_role_and_is_atomic(database: Database, tmp_p
             session.get(User, admin.id).roles = ['uploader']
         with pytest.raises(AppError):
             queue.list_jobs(admin)
+
+
+def test_exclusive_recovery_drains_older_jobs_and_defers_new_writes(database, tmp_path):
+    previous_running, release_previous = threading.Event(), threading.Event()
+    recovery_running, release_recovery = threading.Event(), threading.Event()
+    next_running = threading.Event()
+    with make_pool(tmp_path) as pool:
+        queue = JobQueue(database, pool, workers=3, poll_seconds=.005)
+
+        def ordinary(context):
+            if context.job.payload["prior"]:
+                previous_running.set()
+                assert release_previous.wait(3)
+            else:
+                next_running.set()
+
+        def recover(context):
+            recovery_running.set()
+            assert release_recovery.wait(3)
+
+        queue.register("publish", ordinary, concurrency=3)
+        queue.register("asset_recovery_apply", recover, exclusive=True)
+        queue.enqueue("publish", {"prior": True})
+        queue.start()
+        try:
+            assert previous_running.wait(2)
+            queue.enqueue("asset_recovery_apply", {})
+            queue.enqueue("publish", {"prior": False})
+            assert not recovery_running.wait(.08)
+            assert not next_running.is_set()
+            release_previous.set()
+            assert recovery_running.wait(2)
+            assert not next_running.wait(.08)
+            release_recovery.set()
+            assert next_running.wait(2)
+            assert queue.wait_idle(2)
+        finally:
+            release_previous.set()
+            release_recovery.set()
+            queue.shutdown()

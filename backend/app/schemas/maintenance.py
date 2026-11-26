@@ -156,3 +156,12 @@ class RepairResult(BaseModel):
 
 class ThumbRebuild(BaseModel):
     product_ids: list[int] = Field(default_factory=list, max_length=100)
+    missing_only: bool = False
+    all_missing: bool = False
+
+
+class ThumbStatus(BaseModel):
+    total: int
+    ready: int
+    missing: int
+    running: int

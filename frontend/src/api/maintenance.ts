@@ -49,6 +49,7 @@ export interface SearchLog extends LogBase {
 export interface LogPage<T> { total: number; items: T[] }
 export interface RepairCandidate { project_id: number; project_code: string; project_name: string; ready: boolean; detail: string }
 export interface RepairResult { project_id: number; batch_id: number | null; error: string | null }
+export interface ThumbnailStatus { total: number; ready: number; missing: number; running: number }
 
 export const getSystem = (): Promise<SystemParameters> => request('/api/settings/system')
 export const saveSystem = (value: SystemParameters): Promise<SystemParameters> => request('/api/settings/system', { method: 'PUT', body: JSON.stringify(value) })
@@ -66,6 +67,8 @@ export const getSearchLogs = (query: string): Promise<LogPage<SearchLog>> => req
 export const exportLogs = (search: boolean, query: string) => `${api}/${search ? 'search-logs' : 'oplog'}/export?${query}`
 export const getErrors = (): Promise<ErrorItem[]> => request(`${api}/maintenance/errors`)
 export const retrySystem = (job: number): Promise<unknown> => post(`${api}/jobs/${job}/retry`)
-export const rebuildThumbs = (product_ids: number[]): Promise<unknown> => post(`${api}/thumbnails/rebuild`, { product_ids })
+export const getThumbnailStatus = (): Promise<ThumbnailStatus> => request(`${api}/thumbnails/status`)
+export const rebuildThumbs = (product_ids: number[], missing_only = false, all_missing = false): Promise<{ id: number }[]> =>
+  post(`${api}/thumbnails/rebuild`, { product_ids, ...(missing_only && { missing_only }), ...(all_missing && { all_missing }) })
 export const getRepairs = (): Promise<RepairCandidate[]> => request('/api/archive/repairs')
 export const createRepairs = (project_ids: number[]): Promise<RepairResult[]> => post('/api/archive/repairs', { project_ids })

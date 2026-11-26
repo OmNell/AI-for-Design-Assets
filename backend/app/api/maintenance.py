@@ -13,7 +13,7 @@ from app.errors import AppError
 from app.schemas.auth import Role
 from app.schemas.jobs import JobResponse
 from app.schemas.maintenance import (BackupView, CleanupConfirm, CleanupPreview, CleanupTarget, ErrorItem, FindingView,
-    LogFilter, LogPage, RepairCandidate, RepairRequest, RepairResult, RunView, SearchLogPage, ThumbRebuild)
+    LogFilter, LogPage, RepairCandidate, RepairRequest, RepairResult, RunView, SearchLogPage, ThumbRebuild, ThumbStatus)
 from app.services.auth.service import LoginContext
 from app.services.maintenance.settings import SystemJob, SystemParameters
 
@@ -142,4 +142,10 @@ def repair(project_id: int, request: Request, login: LoginContext = Depends(requ
 
 @router.post("/admin/thumbnails/rebuild", response_model=list[JobResponse], status_code=202)
 def rebuild(body: ThumbRebuild, request: Request, login: LoginContext = Depends(require_login_context)) -> list[JobResponse]:
-    return request.app.state.maintenance.rebuild_thumbs(body.product_ids, login, client_host(request))
+    return request.app.state.maintenance.rebuild_thumbs(body.product_ids, login, client_host(request),
+                                                        missing_only=body.missing_only, all_missing=body.all_missing)
+
+
+@router.get("/admin/thumbnails/status", response_model=ThumbStatus)
+def thumbnail_status(request: Request, actor: User = Depends(admin)) -> ThumbStatus:
+    return request.app.state.maintenance.thumbnail_status(actor)

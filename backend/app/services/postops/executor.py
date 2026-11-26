@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import secrets
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
 from sqlalchemy import func, select
@@ -35,6 +35,7 @@ STEPS = ("校验审核和资产锁", "预备文件与档案", "准备正式及�
 
 class PostopExecutor:
     def __init__(self, auth: AuthService, queue: JobQueue, ai: AiService, notify: NotifyService, indexes: IndexService) -> None:
+        self.after_publication: Callable[[Session], None] | None = None
         self.auth, self.queue, self.ai, self.notify, self.indexes = auth, queue, ai, notify, indexes
         self.paths = create_paths(auth.config)
 
@@ -335,6 +336,8 @@ class PostopExecutor:
                       {"path": plan.target_path, "version": project.asset_version, "kind": batch.kind})
             self.notify.emit(session, "ingested", batch)
             self.indexes.sync_after_publish(session)
+            if self.after_publication is not None:
+                self.after_publication(session)
             publication.seal(session, batch, tree.fs, tree.target, plan.manifest)
 
     def on_job_state(self, session: Session, job: Job) -> None:

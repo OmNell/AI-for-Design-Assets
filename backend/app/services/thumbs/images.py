@@ -49,13 +49,30 @@ def render_preview(source: BinaryIO, size: int) -> bytes:
         return output.getvalue()
 
 
-def render_variants(source: BinaryIO, destination: Path) -> None:
+def cached_variant(directory: Path, size: int) -> bytes | None:
+    """校验本地 JPEG 的规格和解码结果，损坏缓存视作缺失。"""
+    try:
+        with (directory / f"{size}.jpg").open("rb") as stream:
+            limit = size * size * 4 + 65536
+            picture = stream.read(limit + 1)
+        if len(picture) > limit or not picture.endswith(b"\xff\xd9"):
+            return None
+        with Image.open(io.BytesIO(picture), formats=("JPEG",)) as image:
+            if image.mode != "RGB" or not 0 < min(image.size) <= max(image.size) <= size:
+                return None
+            image.load()
+        return picture
+    except (OSError, ValueError, SyntaxError, EOFError, Image.DecompressionBombError):
+        return None
+
+
+def render_variants(source: BinaryIO, destination: Path, sizes: tuple[int, ...] = VARIANT_SIZES) -> None:
     """校正方向后保比例缩小；小图不放大，临时文件全部完成才发布。"""
     temporary: list[tuple[Path, Path]] = []
     with _decode(source) as decoded:
         destination.mkdir(parents=True, exist_ok=True)
         try:
-            for size in VARIANT_SIZES:
+            for size in sizes:
                 with decoded.copy() as variant:
                     variant.thumbnail((size, size), Image.Resampling.LANCZOS)
                     variant.info.clear()

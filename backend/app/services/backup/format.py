@@ -18,6 +18,7 @@ IDENTITY_TABLES = {
 }
 BLOCK = 1024 * 1024
 BACKUP_NAME = re.compile(r"wb-backup-\d{8}-\d{4}\.zip")
+VERSION = re.compile(r"v?\d+\.\d+\.\d+(?:-rc\.\d+)?")
 
 
 class BackupFormatError(ValueError):
@@ -39,6 +40,10 @@ def read_manifest(archive: ZipFile) -> dict:
             or not isinstance(manifest.get("identities"), dict)
             or not isinstance(manifest.get("files"), dict) or set(manifest["files"]) != set(FILES)):
         raise BackupFormatError("备份版本或清单不合法")
+    if "app_version" in manifest and (
+        not isinstance(manifest["app_version"], str) or not VERSION.fullmatch(manifest["app_version"])
+    ):
+        raise BackupFormatError("备份工作台版本不合法")
     for name in FILES:
         expected = manifest["files"][name]
         if (not isinstance(expected, dict) or type(expected.get("size")) is not int

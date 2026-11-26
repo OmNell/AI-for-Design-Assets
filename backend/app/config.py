@@ -116,6 +116,8 @@ class ScheduleConfig(Section):
 
 class RecoveryConfig(Section):
     read_only: bool = False
+    backup_on_publication: bool = False
+    backup_delay_minutes: int = Field(default=10, ge=1, le=120)
 
 
 class PathsConfig(Section):
