@@ -29,7 +29,7 @@
 2. 在提升权限的 Windows PowerShell 中进入解压目录，执行：
 
    ```powershell
-   .\deploy\install.ps1 -Package 'D:\Staging\nas-workbench-v1.1.6-rc.1-windows.zip' -PackageSha256 '<批准的 SHA-256>' -Nssm 'D:\Staging\nssm.exe' -NssmSha256 '<批准的 NSSM SHA-256>' -NssmVersion '<文件属性 ProductVersion>' -AllowedCidrs @('10.42.10.0/24') -AcceptHttpRisk
+   .\deploy\install.ps1 -Package 'D:\Staging\nas-workbench-v1.1.7-rc.1-windows.zip' -PackageSha256 '<批准的 SHA-256>' -Nssm 'D:\Staging\nssm.exe' -NssmSha256 '<批准的 NSSM SHA-256>' -NssmVersion '<文件属性 ProductVersion>' -AllowedCidrs @('10.42.10.0/24') -AcceptHttpRisk
    ```
 
    网段仅为命令示例。需要自选目录时传 `-Root 'D:\NASDesignWorkbench'`。已有目录或服务应走升级/恢复流程。

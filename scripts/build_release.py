@@ -100,7 +100,7 @@ def _run(*command: str, cwd: Path = ROOT) -> None:
 
 def build(version: str, dist: Path) -> Path:
     if not re.fullmatch(r"v\d+\.\d+\.\d+-rc\.\d+", version):
-        raise ValueError("构建阶段只接受候选版本，例如 v1.1.6-rc.1")
+        raise ValueError("构建阶段只接受候选版本，例如 v1.1.7-rc.1")
     if sys.version_info[:2] != (3, 12):
         raise ValueError("发布构建需要 Python 3.12")
     _run("git", "diff", "--quiet", "HEAD", "--")
@@ -143,7 +143,7 @@ def build(version: str, dist: Path) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="v1.1.6-rc.1")
+    parser.add_argument("--version", default="v1.1.7-rc.1")
     parser.add_argument("--out", type=Path, default=ROOT / "dist")
     parser.add_argument("--verify", type=Path)
     parser.add_argument("--expected-sha")
