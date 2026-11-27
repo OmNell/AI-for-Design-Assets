@@ -55,16 +55,13 @@ class PostopExecutor:
             ReviewRound.batch_id == batch.id, ReviewRound.round == batch.round, ReviewRound.snapshot_id == snapshot.id,
             ReviewRound.decision == "pass"))}
         first, final = rounds.get("first"), rounds.get("final")
-        submitters = set(session.scalars(select(ReviewSnapshot.submitted_by).where(ReviewSnapshot.batch_id == batch.id)))
-        submitters.update((batch.uploader_id, batch.payload.get("created_by")))
         if (first is None or final is None or first.reviewer_id != batch.first_reviewer_id
                 or final.reviewer_id != batch.final_reviewer_id or first.reviewer_id == final.reviewer_id
-                or {first.reviewer_id, final.reviewer_id} & submitters
                 or not final.execution_session_id
                 or any(row.checklist != dict.fromkeys(CHECKLIST, True) for row in (first, final))
                 or ReviewService._digest(snapshot.content) != snapshot.digest
                 or snapshot.content.get("operation") is None):
-            raise AppError("operation_review_invalid", "双审、回避或审核快照校验失败", 409)
+            raise AppError("operation_review_invalid", "双审或审核快照校验失败", 409)
         return snapshot
 
     @staticmethod

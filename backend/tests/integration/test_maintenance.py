@@ -122,7 +122,7 @@ def test_readonly_drift_and_two_review_archive_repair(maintained):
     assert flow.call("other", "POST", f"/api/admin/inspection/findings/{broken['id']}/ack").status_code == 403
     ack = flow.call("admin", "POST", f"/api/admin/inspection/findings/{broken['id']}/ack")
     assert ack.status_code == 200 and ack.json()["acknowledged_at"]
-    assert flow.call("admin", "POST", f"/api/projects/{project.id}/archive/repair").status_code == 201  # 后续改用不同发起人进行本轮审核。
+    assert flow.call("admin", "POST", f"/api/projects/{project.id}/archive/repair").status_code == 201
     created = flow.call("final", "GET", "/api/archive/repairs").json()
     assert created and not created[0]["ready"]
     with app.state.database.session() as session:
@@ -132,9 +132,8 @@ def test_readonly_drift_and_two_review_archive_repair(maintained):
     submitted = flow.call("admin", "POST", f"/api/batches/{bid}/operation/submit", {"params": {}})
     assert submitted.status_code == 200, submitted.text
     flow.base = f"/api/review/{bid}"
-    assert flow.audit("admin", "claim").status_code == 403
-    assert flow.audit("first", "claim").status_code == 200
-    assert flow.audit("first", "pass", ALL).status_code == 200
+    assert flow.audit("admin", "claim").status_code == 200
+    assert flow.audit("admin", "pass", ALL).status_code == 200
     assert flow.audit("final", "claim").status_code == 200
     assert flow.audit("final", "pass", ALL).status_code == 200
     assert app.state.jobs.wait_idle(8)

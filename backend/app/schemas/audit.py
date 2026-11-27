@@ -75,7 +75,7 @@ class QueueItem(BaseModel):
     claimed_by: PersonView | None
     claimed_by_me: bool
     blocked: bool
-    self_review_exception: bool
+    self_review_exception: bool = False  # 兼容旧客户端
 
 
 class PathInfo(BaseModel):

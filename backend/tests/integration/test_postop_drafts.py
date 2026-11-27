@@ -208,7 +208,7 @@ def test_replacement_requires_visual_and_explicit_relation_review(formal, monkey
         historical_link = session.scalar(select(Link.link_id).where(Link.kind == "file", Link.target_id == old_product["file_id"]))
     assert flow.call("other", "GET", "/l/" + product_link).json()["image_file_id"] == old_product["file_id"]
     flow.base = f"/api/review/{batch_id}"
-    assert flow.audit("one", "claim").status_code == 403
+    assert flow.call("one", "GET", flow.base).json()["can_claim"]
     assert flow.audit("first", "claim").status_code == 200
     read = flow.call("first", "GET", flow.base).json()
     assert read["supplement"]["replaced"] == 1 and read["supplement"]["added"] == 0

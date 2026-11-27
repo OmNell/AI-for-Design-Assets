@@ -121,7 +121,7 @@ def test_whole_project_void_then_restore_from_split_install(settings, tmp_path, 
         submit(flow, batch_id, params)
         with monkeypatch.context() as patch:
             interrupt_after_install(patch)
-            approve(flow)
+            approve(flow, first="one")
             assert app.state.jobs.wait_idle(8)
         assert state(flow, batch_id)["status"] == "入库异常"
         assert flow.call("other", "GET", "/l/" + link).json()["status"] == "active"

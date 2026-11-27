@@ -82,8 +82,8 @@ def flow(settings: Settings, tmp_path: Path):
 
 def test_approval_snapshot_catalog_and_identity(flow):
     f = flow
-    assert f.todos("first")["first_review"] == 1 and "first_review" not in f.todos("one")
-    assert f.audit("one","claim").status_code == 403
+    assert f.todos("first")["first_review"] == f.todos("one")["first_review"] == 1
+    assert f.call("one", "GET", f.base).json()["can_claim"]
     f.roles("admin", ["admin"])
     assert f.audit("admin", "claim").status_code == 403
     assert f.call("other","GET",f.base).status_code == 403
@@ -157,7 +157,7 @@ def test_reject_resubmit_swap_and_prior_submitters(flow,reject_stage):
     second = f.call("admin","POST",f.batch+"/submit",{}).json()["batch"]
     assert second["status"]=="待初审" and second["round"]==2
     assert f.audit("final", "claim", version=old_version).status_code == 409
-    assert f.audit("one","claim").status_code==403 and f.audit("admin","claim").status_code==403
+    assert all(f.call(name, "GET", f.base).json()["can_claim"] for name in ("one", "admin"))
     assert f.audit("final","claim").status_code==200 and f.audit("final","pass",ALL).status_code==200
     assert f.audit("first","claim").status_code==200
     assert f.call("admin","PUT","/api/admin/company-map",CATALOG).status_code==200

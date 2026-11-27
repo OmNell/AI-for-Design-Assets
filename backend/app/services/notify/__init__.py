@@ -74,9 +74,9 @@ class NotifyService:
             add("check", "待核对", checking, single(checking, "/batches/{id}/review") if checking else "/")
             add("rejected", "已驳回", rejected, single(rejected, "/batches/{id}/review") if rejected else "/")
             if "first_reviewer" in roles:
-                add("first_review", "待初审", [row for row in batches if row.status == "待初审" and row.first_reviewer_id in (None, user.id) and not recused(session, self.auth.config.review, row, user)], "/first-review")
+                add("first_review", "待初审", [row for row in batches if row.status == "待初审" and row.first_reviewer_id in (None, user.id) and not recused(row, user)], "/first-review")
             if "final_reviewer" in roles:
-                add("final_review", "待终审", [row for row in batches if row.status == "待终审" and row.final_reviewer_id in (None, user.id) and not recused(session, self.auth.config.review, row, user)], "/final-review")
+                add("final_review", "待终审", [row for row in batches if row.status == "待终审" and row.final_reviewer_id in (None, user.id) and not recused(row, user)], "/final-review")
             failed = [row for row in batches if row.status == "AI 处理失败" and ("admin" in roles or row.owner_id == user.id)]
             add("ai_failed", "AI 处理失败", failed, single(failed, "/batches/{id}") if failed else "/")
             stalled_query = (select(Batch)

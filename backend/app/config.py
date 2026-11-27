@@ -102,6 +102,7 @@ class AiConfig(Section):
 
 class ReviewConfig(Section):
     overdue_days: int = Field(default=3, gt=0)
+    # 保留旧配置的读取兼容，审核资格由当前阶段的角色决定。
     self_review_admin: str = Field(default="", max_length=128)
 
 

@@ -83,7 +83,7 @@ export function AuditPage() {
         <p className="mt-1.5 text-xs text-slate-500">{batch.batch_no} · {batch.status} · 第 {batch.round} 轮 · 责任人 {batch.owner_name}
           <Link to={stage === 'final' ? '/final-review' : '/first-review'} className="ml-3 text-blue-700 underline underline-offset-4">返回队列</Link></p>
         <p data-testid="claim-state" className="mt-2 text-sm">{!stage ? `批次当前为「${batch.status}」，不在待审状态，仅供查看。` : mine ? '你已领取本批次，可以审核。' :
-          data.blocked ? '本账号须回避该阶段审核。' : data.claimed_by ? `已由 ${data.claimed_by.name} 领取。` : data.can_claim ? '尚未领取。领取后才能钉意见、通过或驳回。' : '当前账号没有这一级的审核权限，仅供查看。'}</p>
+          data.blocked ? '你已完成本轮初审，请由另一位有终审权限的用户终审。' : data.claimed_by ? `已由 ${data.claimed_by.name} 领取。` : data.can_claim ? '尚未领取。领取后才能钉意见、通过或驳回。' : '当前账号没有这一级的审核权限，仅供查看。'}</p>
         {done && <p role="status" className="mt-1 text-sm text-emerald-800">{done}</p>}
         {error && !rejecting && <p role="alert" className="mt-1 text-sm text-red-800">{error}</p>}</div>
       <div className="flex shrink-0 flex-wrap gap-2" data-testid="review-actions">{data.can_claim && <Button disabled={busy} onClick={() => void run(() => claimAudit(id, data.version))}>领取</Button>}

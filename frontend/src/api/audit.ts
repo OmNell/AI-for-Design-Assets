@@ -8,7 +8,7 @@ export interface CompanyMap { industries: Industry[]; companies: Company[] }
 export interface TreeRoot { won: boolean; folder: string; industries: { id: number; name: string; folder: string; companies: { id: number; name: string; folder: string }[] }[] }
 export interface Person { id: number; name: string }
 export interface QueueItem { id: number; kind?: OperationKind | 'ingest'; batch_no: string; folder_name: string; round: number; uploader_name: string; products: number; files: number; total_size: number
-  waiting_since: string; waiting_seconds: number; claimed_by: Person | null; claimed_by_me: boolean; blocked: boolean; self_review_exception?: boolean }
+  waiting_since: string; waiting_seconds: number; claimed_by: Person | null; claimed_by_me: boolean; blocked: boolean }
 export interface PathInfo { recommended: string | null; final: string | null; effective: string | null; company_name: string; company_in_tree: boolean }
 interface ComparedFile { id: number; rel_path: string; size: number; mtime: number; fingerprint: string }
 export interface SupplementComparison {

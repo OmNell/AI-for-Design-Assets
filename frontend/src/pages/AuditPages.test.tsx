@@ -170,7 +170,7 @@ it('未领取时只能领取；本轮初审人被告知不能终审', async () =
   act(() => root.unmount()); query.clear(); root = createRoot(host)
   serve(() => auditData({ review: reviewData('待终审'), stage: 'final', claimed_by: null, claimed_by_me: false, blocked: true })); audit()
   await until(() => !!host.querySelector('[data-testid="claim-state"]'))
-  expect(host.querySelector('[data-testid="claim-state"]')!.textContent).toBe('本账号须回避该阶段审核。')
+  expect(host.querySelector('[data-testid="claim-state"]')!.textContent).toBe('你已完成本轮初审，请由另一位有终审权限的用户终审。')
   expect(button('领取')).toBeUndefined()
   expect(button('驳回').disabled).toBe(true)
 })
@@ -226,28 +226,25 @@ it('队列显示上传人、商品数、文件量、等待时长、轮次与领�
   await until(() => host.querySelectorAll('tbody tr').length === 2)
   const rows = [...host.querySelectorAll('tbody tr')].map(row => row.textContent!)
   expect(rows[0]).toContain('one'); expect(rows[0]).toContain('40 个 · 3.0 MB'); expect(rows[0]).toContain('1 天 1 小时'); expect(rows[0]).toContain('第 2 轮'); expect(rows[0]).toContain('张三 已领取')
-  expect(rows[1]).toContain('本账号须回避')
+  expect(rows[1]).toContain('本轮初审人不能终审')
   expect(host.querySelector('a[href="/review/7"]')).not.toBeNull()
   expect([formatWaiting(30), formatWaiting(7200)]).toEqual(['1 分钟', '2 小时'])
 })
 
-it.each(['first', 'final'] as const)('%s 队列解释指定管理员例外，并只标记服务端确认的批次', async stage => {
+it.each(['first', 'final'] as const)('%s 队列说明本人提交的批次可以进入审核', async stage => {
   const entry = { batch_no: 'B7', round: 1, uploader_name: 'one', products: 1, files: 1, total_size: 10,
     waiting_since: '', waiting_seconds: 120, claimed_by: null, claimed_by_me: false }
   serve(() => [
-    { ...entry, id: 7, kind: 'ingest', folder_name: 'P1_企业_首次入库', blocked: false, self_review_exception: true },
-    { ...entry, id: 8, kind: 'supplement', folder_name: 'P2_企业_资料补充', blocked: true, self_review_exception: false },
+    { ...entry, id: 7, kind: 'ingest', folder_name: 'P1_企业_首次入库', blocked: false },
+    { ...entry, id: 8, kind: 'supplement', folder_name: 'P2_企业_资料补充', blocked: false },
   ])
   mount(<QueuePage stage={stage} />, stage === 'first' ? '/first-review' : '/final-review')
   await until(() => host.querySelectorAll('tbody tr').length === 2)
-  expect(host.textContent).toContain('本人上传并提交的首次入库批次')
-  expect(host.textContent).toContain('入库后操作须遵守回避规则')
+  expect(host.textContent).toContain('可以审核自己提交的批次')
+  expect(host.textContent).toContain('初审与终审由不同账号完成')
   const [first, second] = host.querySelectorAll('tbody tr')
-  expect(first.textContent).toContain('适用自审例外')
   expect(first.querySelector('a')?.textContent).toBe('进入审核')
-  expect(second.textContent).toContain('本账号须回避')
-  expect(second.textContent).not.toContain('适用自审例外')
-  expect(second.querySelector('a')?.textContent).toBe('查看')
+  expect(second.querySelector('a')?.textContent).toBe('进入审核')
 })
 
 it('对照表页新增行业和企业，别名按顿号拆分后保存', async () => {

@@ -37,7 +37,6 @@ ai:
   stall_alert_min: 30
 review:
   overdue_days: 3
-  self_review_admin: ""  # 可选：按真实登录名启用单个管理员的本人首次入库自审。
 purge:
   cooling_days: 30
 schedule:

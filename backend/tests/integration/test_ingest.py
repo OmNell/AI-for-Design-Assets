@@ -9,14 +9,13 @@ from sqlalchemy import select
 
 from app.config import Settings
 from app.db.database import Database
-from app.db.models import Batch, BatchProduct, CatalogFile, HistoryVersion, IngestPlan, Job, Link, Oplog, Product, ProductEmbedding, Project, ReviewRound, User
+from app.db.models import Batch, BatchProduct, CatalogFile, HistoryVersion, IngestPlan, Job, Link, Oplog, Product, ProductEmbedding, Project, ReviewRound
 from app.main import create_app
 from app.services import archive
 from app.services.archive import publication
 from app.services.jobs import JobFailure
 from app.services.nas import Region
 from app.services.nas.factory import create_paths
-from app.services.review.policy import self_review_allowed
 from test_two_stage_review import ALL, CATALOG, Flow, configure
 
 
@@ -48,52 +47,34 @@ def resume(flow: Flow):
     return progress(flow)
 
 
-def test_configured_admin_can_self_review_own_upload_through_formal_ingest(settings, tmp_path):
-    settings.review.self_review_admin = "one"
+@pytest.mark.parametrize(("first", "final"), [("one", "final"), ("first", "one")])
+def test_uploader_can_review_one_stage_through_formal_ingest(settings, tmp_path, first, final):
     app = app_for(settings, tmp_path)
     next(actor for actor in settings.dev_users if actor.username == "one").permissions["formal"] = "write"
     with TestClient(app) as client:
         flow = Flow(client)
-        roles = ["uploader", "first_reviewer", "final_reviewer"]
-        assert flow.audit("one", "claim").json()["code"] == "reviewer_conflict"
-        before = flow.call("one", "GET", "/api/review/queue?stage=first").json()[0]
-        assert before["blocked"] and not before["self_review_exception"]
-        flow.roles("one", roles + ["admin"])
         assert flow.call("admin", "PUT", "/api/admin/company-map", CATALOG).status_code == 200
-        assert flow.todos("one")["first_review"] == 1
-        queue = flow.call("one", "GET", "/api/review/queue?stage=first").json()
-        assert queue[0]["id"] == flow.bid and not queue[0]["blocked"]
-        assert queue[0]["self_review_exception"]
-        other_admin = flow.call("admin", "GET", "/api/review/queue?stage=first").json()[0]
-        assert not other_admin["self_review_exception"]
-        assert flow.audit("one", "claim").json()["claimed_by_me"]
-        assert flow.audit("one", "pass", {"checklist": {}}).status_code == 422
-        assert flow.audit("one", "pass", ALL).status_code == 200
-        assert flow.todos("one")["final_review"] == 1
-        final = flow.call("one", "GET", "/api/review/queue?stage=final").json()[0]
-        assert final["self_review_exception"] and not final["blocked"]
-        flow.roles("one", roles)
-        no_longer_allowed = flow.call("one", "GET", "/api/review/queue?stage=final").json()[0]
-        assert no_longer_allowed["blocked"] and not no_longer_allowed["self_review_exception"]
-        assert flow.audit("one", "claim").json()["code"] == "reviewer_conflict"
-        flow.roles("one", roles + ["admin"])
-        assert flow.audit("one", "claim").json()["claimed_by_me"]
-        assert flow.audit("one", "pass", ALL).status_code == 200
+        for stage, reviewer in (("first", first), ("final", final)):
+            assert flow.todos(reviewer)[f"{stage}_review"] == 1
+            queue = flow.call(reviewer, "GET", f"/api/review/queue?stage={stage}").json()
+            assert queue[0]["id"] == flow.bid and not queue[0]["blocked"]
+            assert flow.audit(reviewer, "claim").json()["claimed_by_me"]
+            assert flow.audit(reviewer, "pass", ALL).status_code == 200
+            if stage == "first":
+                assert flow.audit(reviewer, "claim").json()["code"] == "reviewer_conflict"
         assert app.state.jobs.wait_idle(8)
-        assert progress(flow, "one")["status"] == "已入库"
+        assert progress(flow, final)["status"] == "已入库"
         assert flow.todos("one")["ingested"] == 1
         with app.state.database.session() as session:
             batch = session.get(Batch, flow.bid)
-            assert batch.uploader_id == batch.first_reviewer_id == batch.final_reviewer_id == flow.users["one"]
+            assert batch.uploader_id == flow.users["one"]
             rounds = list(session.scalars(select(ReviewRound).where(ReviewRound.batch_id == batch.id)))
-            assert {row.stage for row in rounds if row.decision == "pass"} == {"first", "final"}
+            assert {row.stage: row.reviewer_id for row in rounds if row.decision == "pass"} == {
+                "first": flow.users[first], "final": flow.users[final],
+            }
             assert len({row.snapshot_id for row in rounds}) == 1
             decisions = list(session.scalars(select(Oplog).where(Oplog.action.in_(("初审通过", "终审通过")))))
-            assert len(decisions) == 2 and all(row.after["self_review_exception"] is True for row in decisions)
-            user = session.get(User, flow.users["one"])
-            batch.kind = "rename"
-            assert not self_review_allowed(session, settings.review, batch, user)
-            batch.kind = "ingest"
+            assert len(decisions) == 2
 
 
 def test_full_ingest_preserves_links_and_restores_from_nas(settings, tmp_path):
